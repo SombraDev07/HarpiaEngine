@@ -1,0 +1,14 @@
+build/
+_output/
+.cache/
+compile_commands.json
+
+*.o
+*.a
+*.so
+*.debuginfo
+
+.vscode/
+.idea/
+*.swp
+*~
