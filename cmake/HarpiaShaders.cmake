@@ -58,6 +58,13 @@ endmacro()
 
 _harpia_find_shader_compiler()
 
+find_program(HARPIA_SPIRV_VAL NAMES spirv-val HINTS ENV VULKAN_SDK PATH_SUFFIXES bin)
+if(HARPIA_SPIRV_VAL)
+    message(STATUS "SPIR-V validator: ${HARPIA_SPIRV_VAL}")
+else()
+    message(STATUS "SPIR-V validator: not found — shaders will not be validated")
+endif()
+
 # harpia_declare_shaders(SOURCES <files...>)
 #
 # Call once. Stage comes from the filename: Foo.vert.hlsl -> vert.
@@ -101,9 +108,18 @@ function(harpia_declare_shaders)
                 -o "${output}" "${absolute}")
         endif()
 
+        # Validating here turns a malformed module into a build failure instead
+        # of a driver crash or, worse, silently wrong pixels.
+        set(validate_command "")
+        if(HARPIA_SPIRV_VAL)
+            set(validate_command
+                COMMAND ${HARPIA_SPIRV_VAL} --target-env vulkan1.3 "${output}")
+        endif()
+
         add_custom_command(
             OUTPUT "${output}"
             COMMAND ${command}
+            ${validate_command}
             DEPENDS "${absolute}" ${HARPIA_SHADER_COMPILER_TARGET}
             COMMENT "Compiling shader ${stem}"
             VERBATIM)
