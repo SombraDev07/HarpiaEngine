@@ -14,7 +14,8 @@ add_executable(harpia_tests
     test_job_system.cpp
     test_render_golden.cpp
     test_reflection.cpp
-    test_serialization.cpp)
+    test_serialization.cpp
+    test_ecs.cpp)
 
 target_include_directories(harpia_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
