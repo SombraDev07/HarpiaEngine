@@ -88,6 +88,11 @@ struct TypeInfo {
     void (*construct)(void* memory) = nullptr;
     void (*destruct)(void* memory)  = nullptr;
 
+    // Needed by the ECS: adding or removing a component moves an entity between
+    // archetypes, which means relocating every component it already had.
+    void (*moveConstruct)(void* destination, void* source) = nullptr;
+    void (*copyConstruct)(void* destination, const void* source) = nullptr;
+
     MigrateFn migrate = nullptr;
 
     [[nodiscard]] const FieldInfo* findField(std::string_view fieldName) const noexcept;

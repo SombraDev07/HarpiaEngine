@@ -5,7 +5,8 @@ add_library(harpia_core STATIC
     Memory/Arena.cpp
     Threading/JobSystem.cpp
     Reflection/TypeRegistry.cpp
-    Serialization/Serializer.cpp)
+    Serialization/Serializer.cpp
+    ECS/World.cpp)
 
 add_library(Harpia::Core ALIAS harpia_core)
 
@@ -34,4 +35,6 @@ target_sources(harpia_core PUBLIC
         Reflection/TypeRegistry.h
         Reflection/Reflect.h
         Serialization/ByteStream.h
-        Serialization/Serializer.h)
+        Serialization/Serializer.h
+        ECS/Entity.h
+        ECS/World.h)

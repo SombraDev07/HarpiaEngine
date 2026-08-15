@@ -121,6 +121,17 @@ public:
             info_.construct = [](void* memory) { ::new (memory) T(); };
         }
         info_.destruct = [](void* memory) { static_cast<T*>(memory)->~T(); };
+
+        if constexpr (std::is_move_constructible_v<T>) {
+            info_.moveConstruct = [](void* destination, void* source) {
+                ::new (destination) T(std::move(*static_cast<T*>(source)));
+            };
+        }
+        if constexpr (std::is_copy_constructible_v<T>) {
+            info_.copyConstruct = [](void* destination, const void* source) {
+                ::new (destination) T(*static_cast<const T*>(source));
+            };
+        }
         return *this;
     }
 
