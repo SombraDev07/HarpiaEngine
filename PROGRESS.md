@@ -51,13 +51,50 @@ endereço absoluto — alinhamentos maiores que 64 bytes devolviam ponteiro desa
 - `validationErrorCount()` exposto e assertado nos testes — transforma "validation em zero"
   de intenção em gate.
 
+### F0.c — Reflection e serialização versionada ✅
+
+| Entrega | Onde |
+|---|---|
+| `TypeInfo` / `FieldInfo` — campos, kinds, metadados de editor, hook de migração | `Source/Core/Reflection/` |
+| `TypeRegistry` — busca por nome, registro eager via `AutoRegister` | `Source/Core/Reflection/` |
+| `Reflect.h` — macros `HARPIA_REFLECT_BEGIN/FIELD/END` | `Source/Core/Reflection/` |
+| `ByteStream` — writer/reader com length patchável | `Source/Core/Serialization/` |
+| `Serializer` — formato name-keyed, versionado, com migração | `Source/Core/Serialization/` |
+
+**Suporta:** escalares, enums, `std::string`, structs aninhados, `std::vector` de escalares
+e de structs. Acesso a campo por ponteiro-para-membro como parâmetro de template — **sem
+`offsetof`**, portanto sem UB em tipos non-standard-layout.
+
+**Evolução de schema, testada de verdade:**
+- Campo adicionado depois → ausente no dado antigo, mantém o default (`defaultedFields`)
+- Campo removido depois → pulado via length prefix, sem corromper o resto (`skippedFields`)
+- Semântica alterada → hook `HARPIA_MIGRATE` roda com a versão de origem
+- Magic errado, truncado, vazio, tipo errado → rejeitados com status, nunca meio-aplicados
+
+**Verificado:** 60 casos / 10.604 asserções · `-Werror` limpo · ASan, UBSan e TSan limpos.
+
+**Bug encontrado pelos testes:** `readStruct` gravava `sourceVersion` em cada nível da
+recursão, então um struct aninhado (`Point`, v1) sobrescrevia a versão do objeto raiz
+(`SaveGame`, v2). Uma migração teria rodado com a versão errada. Corrigido passando o
+out-param só na chamada raiz.
+
+**Decisões tomadas:**
+- Formato **name-keyed com length prefix por campo**, não ordinal compacto. Custa bytes e
+  compra sobrevivência a refactor — a troca certa para uma engine dirigida por editor.
+- `TypeRegistry` guarda `unique_ptr<TypeInfo>`: ponteiros estáveis enquanto o mapa cresce.
+- Suítes de teste separadas (`harpia_engine` / `harpia_gpu`). O driver Vulkan vaza alocações
+  JIT que o LeakSanitizer não consegue atribuir a módulo; em vez de afrouxar a detecção para
+  tudo, o código da engine mantém tolerância zero e só a suíte de GPU roda com
+  `detect_leaks=0`. Sem os testes de GPU, ASan reporta zero — então qualquer vazamento novo
+  é nosso.
+
 ## Próximo
 
-**F0.c — Reflection: TypeRegistry + macro + serialização versionada.**
-Entregável: struct salva, edita, carrega. É o gargalo do projeto — editor, serialização,
-save game, prefab, undo e hot reload dependem dela.
+**F0.d — ECS archetype + Input.** Entregável: 10k entidades, query multithread.
+O ECS integra ao `TypeRegistry` desde o início — no Dagor, registro de componente e
+DataBlock são sistemas separados; unificar é onde ganhamos.
 
-Depois: F0.d (ECS archetype + Input) → F1 (render graph + triângulo).
+Depois: F1 (render graph + triângulo) → F1.b (asset DB com GUID) → F2 (deferred PBR).
 
 ## Protocolo de retomada
 
