@@ -3,7 +3,9 @@ find_package(Threads REQUIRED)
 add_library(harpia_core STATIC
     Memory/MemoryTracker.cpp
     Memory/Arena.cpp
-    Threading/JobSystem.cpp)
+    Threading/JobSystem.cpp
+    Reflection/TypeRegistry.cpp
+    Serialization/Serializer.cpp)
 
 add_library(Harpia::Core ALIAS harpia_core)
 
@@ -27,4 +29,9 @@ target_sources(harpia_core PUBLIC
         Memory/Arena.h
         Memory/Pool.h
         Threading/JobSystem.h
-        Profiling/Profiler.h)
+        Profiling/Profiler.h
+        Reflection/TypeInfo.h
+        Reflection/TypeRegistry.h
+        Reflection/Reflect.h
+        Serialization/ByteStream.h
+        Serialization/Serializer.h)
