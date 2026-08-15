@@ -265,11 +265,43 @@ export VULKAN_SDK=$HOME/VulkanSDK/1.4.357.1/x86_64
 export PATH=$VULKAN_SDK/bin:$PATH
 ```
 
+### F2 passo 2 — GBuffer ✅
+
+| Target | Formato | Conteúdo |
+|---|---|---|
+| 0 | RGBA8 | albedo.rgb, occlusion |
+| 1 | RG16 snorm | normal octaédrica |
+| 2 | RG8 | roughness, metallic |
+| 3 | RG16 float | motion vector (espaço UV) |
+| depth | D32 | reverse-Z, limpo em 0 |
+
+Formatos são resolvidos **contra o device** — o snorm preferido para normal não é
+universalmente suportado como color attachment, então há fallback verificado.
+
+**Motion vectors nasceram junto**, não na F6 com o TAA. São só *usados* depois, mas adicioná-los
+depois significaria reabrir todo shader de geometria da engine.
+
+Espelhos dos structs GPU vivem em `Shaders/Common.hlsli`, com `static_assert` de tamanho no lado
+C++ — deriva de layout quebra o build, não o frame.
+
+**Verificado canal a canal, por número:** albedo contra o fator de cor, normal decodificada de
+volta à superfície dada, roughness/metallic nos canais e na ordem certa, motion contra uma
+câmera que se moveu uma quantidade conhecida. 142 casos / 26.378 asserções ·
+`-Werror`, ASan, UBSan e TSan limpos · 0 erros de validação.
+
+**Bug encontrado pelo teste:** sem `-fvk-use-scalar-layout`, o HLSL alinha `float3` em struct a
+16 bytes — `Vertex` tinha stride 64 na GPU contra 48 na CPU, e todo campo era lido do offset
+errado. O device já habilitava `scalarBlockLayout`; faltava pedir ao DXC.
+
+**Dois erros meus, não da engine:** o pass precisava de `neverCull` (nada no grafo lê o GBuffer
+ainda, então o culling o removeu — corretamente), e eu havia afirmado o sinal do motion ao
+contrário.
+
 ## Próximo
 
 **F2 — Deferred PBR**, continuando de:
-2. **GBuffer no render graph**: albedo, normal octaédrica, roughness/metallic, **motion vectors**, depth ← próximo
-3. BRDF GGX + Smith + Fresnel, difuso Burley
+2. ~~GBuffer no render graph~~ ✅ (ver abaixo)
+3. **BRDF GGX + Smith + Fresnel, difuso Burley** ← próximo (lighting pass lendo o GBuffer)
 4. IBL split-sum (BRDF LUT + prefiltered environment)
 5. Luzes direcional + pontuais com clustered culling
 6. Tonemap ACES

@@ -5,7 +5,7 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 
 ## Estado
 
-**F2 em andamento.** Meshes residentes na GPU via bindless; GBuffer é o próximo passo.
+**F2 em andamento.** GBuffer completo com motion vectors; lighting pass é o próximo.
 
 | Bloco | Status |
 |---|---|
@@ -17,7 +17,8 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 | **F1.b** Asset DB com GUID + sidecars .meta | ✅ |
 | **F2** Import glTF 2.0 | parcial ✅ |
 | **F2** Mesh na GPU (bindless + VMA) | ✅ |
-| F2 GBuffer + PBR + motion vectors | próximo |
+| **F2** GBuffer + motion vectors | ✅ |
+| F2 Lighting pass PBR + IBL | próximo |
 
 ## Build
 
@@ -71,6 +72,6 @@ sudo dnf install libasan libubsan libtsan
 
 ## Testes
 
-133 casos, 26.312 asserções, doctest. `Tests/`.
+142 casos, 26.378 asserções, doctest. `Tests/`.
 
 Duas suítes: `harpia_engine` (tolerância zero a leak) e `harpia_gpu`.
