@@ -23,7 +23,8 @@ add_executable(harpia_tests
     test_gltf.cpp
     test_gpu_mesh.cpp
     test_gbuffer.cpp
-    test_lighting.cpp)
+    test_lighting.cpp
+    test_texture.cpp)
 
 target_include_directories(harpia_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 

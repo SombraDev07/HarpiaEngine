@@ -12,6 +12,8 @@ add_library(harpia_core STATIC
     Assets/AssetDatabase.cpp
     Assets/AssetManager.cpp
     Assets/GltfLoader.cpp
+    Assets/TextureLoader.cpp
+    Assets/StbImageImpl.cpp
     Assets/CgltfImpl.cpp)
 
 add_library(Harpia::Core ALIAS harpia_core)
@@ -22,6 +24,7 @@ target_include_directories(harpia_core PUBLIC ${PROJECT_SOURCE_DIR}/Source)
 target_link_libraries(harpia_core
     PUBLIC  Threads::Threads
             cgltf
+            stb
             harpia_glm
     PRIVATE harpia_warnings)
 
@@ -51,7 +54,10 @@ target_sources(harpia_core PUBLIC
         Assets/AssetDatabase.h
         Assets/AssetManager.h
         Assets/MeshAsset.h
-        Assets/GltfLoader.h)
+        Assets/GltfLoader.h
+        Assets/TextureAsset.h
+        Assets/TextureLoader.h)
 
 # cgltf is a single-header library; its warnings are not ours to fix.
-set_source_files_properties(Assets/CgltfImpl.cpp PROPERTIES COMPILE_OPTIONS "-w")
+set_source_files_properties(Assets/CgltfImpl.cpp Assets/StbImageImpl.cpp
+    PROPERTIES COMPILE_OPTIONS "-w")
