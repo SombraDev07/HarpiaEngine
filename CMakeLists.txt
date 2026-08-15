@@ -131,7 +131,9 @@ harpia_declare_shaders(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Triangle.vert.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Triangle.frag.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/GBuffer.vert.hlsl
-    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/GBuffer.frag.hlsl)
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/GBuffer.frag.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Fullscreen.vert.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Lighting.frag.hlsl)
 
 add_subdirectory(Samples/ClearScreen)
 add_subdirectory(Samples/Triangle)

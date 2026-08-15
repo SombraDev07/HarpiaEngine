@@ -154,6 +154,12 @@ public:
     // this to hand the image to a presentation or readback path.
     [[nodiscard]] VkImageLayout finalLayout(RgHandle handle) const;
 
+    // Valid after compile(): a transient has a physical image only once the
+    // graph has assigned one. Needed to register a target in the bindless heap
+    // before the pass that samples it records.
+    [[nodiscard]] VkImage     imageOf(RgHandle handle) const;
+    [[nodiscard]] VkImageView viewOf(RgHandle handle) const;
+
 private:
     friend class RgBuilder;
     friend class RgContext;

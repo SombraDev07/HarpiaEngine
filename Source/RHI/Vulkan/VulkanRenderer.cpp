@@ -26,7 +26,7 @@ bool VulkanRenderer::create(VulkanDevice& device, std::uint32_t width, std::uint
     if (!createFrames()) {
         return false;
     }
-    if (!bindless_.create(device)) {
+    if (!bindless_.create(device) || !createDefaultSamplers()) {
         return false;
     }
 
@@ -57,10 +57,49 @@ bool VulkanRenderer::createOffscreen(VulkanDevice& device,
     if (!createFrames()) {
         return false;
     }
-    if (!bindless_.create(device)) {
+    if (!bindless_.create(device) || !createDefaultSamplers()) {
         return false;
     }
     return true;
+}
+
+bool VulkanRenderer::createDefaultSamplers()
+{
+    const VkDevice device = device_->device();
+
+    VkSamplerCreateInfo linear{};
+    linear.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    linear.magFilter    = VK_FILTER_LINEAR;
+    linear.minFilter    = VK_FILTER_LINEAR;
+    linear.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    linear.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    linear.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    linear.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    linear.maxLod       = VK_LOD_CLAMP_NONE;
+    linear.maxAnisotropy = 1.0f;
+    HARPIA_VK_CHECK(vkCreateSampler(device, &linear, nullptr, &linearRepeat_));
+
+    // GBuffer channels carry encoded values — an octahedral normal filtered
+    // across a silhouette is not a normal. Point sampling is not a quality
+    // compromise here, it is correctness.
+    VkSamplerCreateInfo point{};
+    point.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    point.magFilter    = VK_FILTER_NEAREST;
+    point.minFilter    = VK_FILTER_NEAREST;
+    point.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    point.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    point.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    point.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    point.maxAnisotropy = 1.0f;
+    HARPIA_VK_CHECK(vkCreateSampler(device, &point, nullptr, &pointClamp_));
+
+    setDebugName(device, VK_OBJECT_TYPE_SAMPLER, linearRepeat_, "Sampler_LinearRepeat");
+    setDebugName(device, VK_OBJECT_TYPE_SAMPLER, pointClamp_, "Sampler_PointClamp");
+
+    // Slot order must match SamplerSlot in RenderTypes.h.
+    const std::uint32_t linearSlot = bindless_.registerSampler(linearRepeat_);
+    const std::uint32_t pointSlot  = bindless_.registerSampler(pointClamp_);
+    return linearSlot == 0 && pointSlot == 1;
 }
 
 bool VulkanRenderer::createFrames()
@@ -170,6 +209,15 @@ void VulkanRenderer::destroy()
     }
     const VkDevice device = device_->device();
     vkDeviceWaitIdle(device);
+
+    if (linearRepeat_ != VK_NULL_HANDLE) {
+        vkDestroySampler(device, linearRepeat_, nullptr);
+        linearRepeat_ = VK_NULL_HANDLE;
+    }
+    if (pointClamp_ != VK_NULL_HANDLE) {
+        vkDestroySampler(device, pointClamp_, nullptr);
+        pointClamp_ = VK_NULL_HANDLE;
+    }
 
     bindless_.destroy();
 

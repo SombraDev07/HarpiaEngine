@@ -20,9 +20,16 @@ struct Vertex {
 struct FrameData {
     float4x4 viewProjection;
     float4x4 prevViewProjection;
+    float4x4 invViewProjection;
     float4   cameraPosition;
     float2   renderSize;
     float2   invRenderSize;
+};
+
+struct DirectionalLight {
+    float4 direction;       // points from the light
+    float4 colorIntensity;  // rgb colour, w intensity
+    float4 ambient;
 };
 
 struct ObjectData {
@@ -47,6 +54,10 @@ struct MaterialData {
 
 #define HARPIA_INVALID_TEXTURE 0xFFFFFFFFu
 
+// Sampler slots the renderer registers at startup.
+#define HARPIA_SAMPLER_LINEAR_REPEAT 0
+#define HARPIA_SAMPLER_POINT_CLAMP   1
+
 // Binding 0: sampled images. Binding 1: storage buffers. Binding 2: samplers.
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
 [[vk::binding(2, 0)]] SamplerState      g_samplers[];
@@ -54,8 +65,14 @@ struct MaterialData {
 [[vk::binding(1, 0)]] StructuredBuffer<Vertex>       g_vertices[];
 [[vk::binding(1, 0)]] StructuredBuffer<FrameData>    g_frames[];
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectData>   g_objects[];
-[[vk::binding(1, 0)]] StructuredBuffer<MaterialData> g_materials[];
+[[vk::binding(1, 0)]] StructuredBuffer<MaterialData>     g_materials[];
+[[vk::binding(1, 0)]] StructuredBuffer<DirectionalLight> g_lights[];
 
+// Push constant blocks. HLSL allows only one per shader, so each shader
+// declares the variable itself:
+//
+//   [[vk::push_constant]] GBufferPush g_push;
+//
 struct GBufferPush {
     uint frameBuffer;
     uint objectBuffer;
@@ -65,7 +82,15 @@ struct GBufferPush {
     uint3 padding;
 };
 
-[[vk::push_constant]] GBufferPush g_push;
+struct LightingPush {
+    uint frameBuffer;
+    uint lightBuffer;
+    uint albedoTexture;
+    uint normalTexture;
+    uint materialTexture;
+    uint depthTexture;
+    uint2 padding;
+};
 
 // --- normal encoding --------------------------------------------------------
 // Mirrors Core/Math encodeOctahedral; the C++ test sweeps the whole sphere.

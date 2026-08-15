@@ -76,6 +76,7 @@ private:
     };
 
     [[nodiscard]] bool createFrames();
+    [[nodiscard]] bool createDefaultSamplers();
     [[nodiscard]] bool createOffscreenTarget(std::uint32_t width, std::uint32_t height);
     void destroyOffscreenTarget();
 
@@ -88,6 +89,11 @@ private:
     // One per swapchain image, not per frame in flight: a semaphore signalled
     // for image N must not be waited on while image N is still being presented.
     std::vector<VkSemaphore> renderFinished_;
+
+    // Registered into the bindless heap at the slots RenderTypes.h publishes,
+    // so a shader names a sampler by constant rather than binding one.
+    VkSampler linearRepeat_ = VK_NULL_HANDLE;
+    VkSampler pointClamp_   = VK_NULL_HANDLE;
 
     std::uint32_t frameIndex_  = 0;
     std::uint64_t frameNumber_ = 0;

@@ -6,6 +6,8 @@
 
 #include "Common.hlsli"
 
+[[vk::push_constant]] GBufferPush g_push;
+
 struct VSOutput {
     float4 position     : SV_Position;
     float3 worldNormal  : NORMAL0;

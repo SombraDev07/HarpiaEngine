@@ -527,6 +527,26 @@ const RenderGraph::Resource& RenderGraph::resourceOf(RgHandle handle) const
     return resources_[handle];
 }
 
+VkImage RenderGraph::imageOf(RgHandle handle) const
+{
+    const Resource& resource = resourceOf(handle);
+    if (resource.imported) {
+        return resource.importedImage;
+    }
+    return resource.physical != kRgInvalid ? physical_[resource.physical].image
+                                           : VK_NULL_HANDLE;
+}
+
+VkImageView RenderGraph::viewOf(RgHandle handle) const
+{
+    const Resource& resource = resourceOf(handle);
+    if (resource.imported) {
+        return resource.importedView;
+    }
+    return resource.physical != kRgInvalid ? physical_[resource.physical].view
+                                           : VK_NULL_HANDLE;
+}
+
 VkImageLayout RenderGraph::finalLayout(RgHandle handle) const
 {
     return resourceOf(handle).layout;
