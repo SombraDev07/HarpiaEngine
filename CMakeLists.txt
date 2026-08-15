@@ -54,6 +54,8 @@ endif()
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 
@@ -92,7 +94,14 @@ endif()
 add_subdirectory(Source/Core)
 add_subdirectory(Source/Platform)
 add_subdirectory(Source/RHI)
+include(HarpiaShaders)
+
+harpia_declare_shaders(SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Triangle.vert.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Triangle.frag.hlsl)
+
 add_subdirectory(Samples/ClearScreen)
+add_subdirectory(Samples/Triangle)
 
 if(HARPIA_BUILD_TESTS)
     enable_testing()

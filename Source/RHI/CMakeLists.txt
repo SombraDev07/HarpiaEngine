@@ -4,6 +4,8 @@ add_library(harpia_rhi STATIC
     Vulkan/VulkanSwapchain.cpp
     Vulkan/VulkanBindless.cpp
     Vulkan/VulkanRenderer.cpp
+    Vulkan/VulkanPipeline.cpp
+    RenderGraph/RenderGraph.cpp
     ThirdPartyImpl.cpp)
 
 add_library(Harpia::RHI ALIAS harpia_rhi)
@@ -30,4 +32,6 @@ target_sources(harpia_rhi PUBLIC
         Vulkan/VulkanDevice.h
         Vulkan/VulkanSwapchain.h
         Vulkan/VulkanBindless.h
-        Vulkan/VulkanRenderer.h)
+        Vulkan/VulkanRenderer.h
+        Vulkan/VulkanPipeline.h
+        RenderGraph/RenderGraph.h)
