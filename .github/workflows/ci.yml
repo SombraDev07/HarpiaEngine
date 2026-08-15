@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Lavapipe is a software Vulkan device. It is slow, but it makes the render
+  # and golden-image tests real on a runner with no GPU.
+  VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.preset }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [ci, asan, tsan]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build cmake g++ \
+            libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers \
+            libglfw3-dev libwayland-dev libxkbcommon-dev xorg-dev
+
+      - name: Configure
+        run: cmake --preset=${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset=${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset=${{ matrix.preset }}
+
+      - name: Offscreen render smoke test
+        run: |
+          ./build/${{ matrix.preset }}/bin/HarpiaClearScreen \
+            --headless --frames 1 --width 320 --height 180 \
+            --fixed-time 1.0 --output /tmp/clear-${{ matrix.preset }}.png
+
+      - name: Upload rendered image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-${{ matrix.preset }}
+          path: /tmp/clear-${{ matrix.preset }}.png
+          if-no-files-found: ignore
+
+  tracy-build:
+    name: tracy enabled
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build cmake g++ \
+            libvulkan-dev mesa-vulkan-drivers \
+            libglfw3-dev libwayland-dev libxkbcommon-dev xorg-dev
+
+      # Tracy is off by default; this job only proves the instrumented build
+      # still compiles.
+      - name: Configure
+        run: cmake --preset=linux-relwithdebinfo
+
+      - name: Build
+        run: cmake --build --preset=linux-relwithdebinfo
