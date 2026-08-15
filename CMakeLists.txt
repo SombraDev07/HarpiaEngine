@@ -75,6 +75,15 @@ FetchContent_Declare(stb
     GIT_SHALLOW    FALSE)
 FetchContent_MakeAvailable(stb)
 
+FetchContent_Declare(cgltf
+    GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
+    GIT_TAG        v1.15
+    GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(cgltf)
+
+add_library(cgltf INTERFACE)
+target_include_directories(cgltf SYSTEM INTERFACE ${cgltf_SOURCE_DIR})
+
 add_library(stb INTERFACE)
 target_include_directories(stb SYSTEM INTERFACE ${stb_SOURCE_DIR})
 
