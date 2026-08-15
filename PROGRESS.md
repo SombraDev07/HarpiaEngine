@@ -297,12 +297,42 @@ errado. O device já habilitava `scalarBlockLayout`; faltava pedir ao DXC.
 ainda, então o culling o removeu — corretamente), e eu havia afirmado o sinal do motion ao
 contrário.
 
+### F2 passo 3 — Lighting pass PBR ✅
+
+| Entrega | Onde |
+|---|---|
+| `Brdf.hlsli` — GGX, Smith height-correlated, Schlick, Burley | `Shaders/` |
+| `Fullscreen.vert.hlsl` — triângulo único, sem vertex buffer | `Shaders/` |
+| `Lighting.frag.hlsl` — lê GBuffer, reconstrói posição do depth, escreve HDR | `Shaders/` |
+| Samplers padrão (linear-repeat, point-clamp) no heap bindless | `VulkanRenderer` |
+| `RenderGraph::imageOf/viewOf` — registrar target no bindless após o compile | `RenderGraph` |
+
+Roughness é **perceptual** em todo lugar, com `alpha = roughness²`. Pular esse quadrado é o
+motivo clássico de material parecer certo nos extremos e errado no meio.
+
+GBuffer é lido com **point-clamp**, não linear. Não é escolha de qualidade: normal octaédrica
+filtrada através de uma silhueta não é uma normal.
+
+Escreve **HDR**. Tonemap é o passo 6 — gravar LDR aqui jogaria fora a faixa que exposição e
+bloom precisam.
+
+**Verificação:** o teste tem um **espelho da BRDF em C++**, escrito das mesmas fórmulas mas não
+compartilhado com o shader — duas implementações independentes concordando é evidência, uma
+concordando consigo mesma não é. A referência também quantiza roughness/metallic/albedo como o
+GBuffer armazena, então compara contra o que foi de fato gravado.
+
+145 casos / 26.401 asserções · `-Werror`, ASan, UBSan e TSan limpos · 0 erros de validação.
+
+**O `neverCull` saiu do GBuffer:** agora o lighting lê os targets, então a dependência é real e
+o grafo mantém os dois passes sozinho. Só o consumidor final precisa de pin — e na engine real
+nem isso, porque o alvo final vem importado do swapchain.
+
 ## Próximo
 
 **F2 — Deferred PBR**, continuando de:
 2. ~~GBuffer no render graph~~ ✅ (ver abaixo)
-3. **BRDF GGX + Smith + Fresnel, difuso Burley** ← próximo (lighting pass lendo o GBuffer)
-4. IBL split-sum (BRDF LUT + prefiltered environment)
+3. ~~BRDF GGX + Smith + Fresnel, difuso Burley~~ ✅ (ver abaixo)
+4. **IBL split-sum (BRDF LUT + prefiltered environment)** ← próximo
 5. Luzes direcional + pontuais com clustered culling
 6. Tonemap ACES
 

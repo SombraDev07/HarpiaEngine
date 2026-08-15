@@ -5,7 +5,7 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 
 ## Estado
 
-**F2 em andamento.** GBuffer completo com motion vectors; lighting pass é o próximo.
+**F2 em andamento.** Deferred PBR shading funcionando; IBL é o próximo passo.
 
 | Bloco | Status |
 |---|---|
@@ -18,7 +18,8 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 | **F2** Import glTF 2.0 | parcial ✅ |
 | **F2** Mesh na GPU (bindless + VMA) | ✅ |
 | **F2** GBuffer + motion vectors | ✅ |
-| F2 Lighting pass PBR + IBL | próximo |
+| **F2** Lighting pass PBR deferred | ✅ |
+| F2 IBL split-sum | próximo |
 
 ## Build
 
@@ -72,6 +73,6 @@ sudo dnf install libasan libubsan libtsan
 
 ## Testes
 
-142 casos, 26.378 asserções, doctest. `Tests/`.
+145 casos, 26.401 asserções, doctest. `Tests/`.
 
 Duas suítes: `harpia_engine` (tolerância zero a leak) e `harpia_gpu`.
