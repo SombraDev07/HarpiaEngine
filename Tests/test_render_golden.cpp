@@ -172,17 +172,21 @@ TEST_CASE("bindless heap reports capacity and hands out distinct indices")
     VkSampler sampler = VK_NULL_HANDLE;
     REQUIRE(vkCreateSampler(device.device(), &samplerInfo, nullptr, &sampler) == VK_SUCCESS);
 
+    // The renderer registers its default samplers at startup, so this counts
+    // from wherever the heap already stands.
+    const std::uint32_t before = bindless.usage().samplers;
+
     const std::uint32_t first  = bindless.registerSampler(sampler);
     const std::uint32_t second = bindless.registerSampler(sampler);
 
     CHECK(first != rhi::VulkanBindless::kInvalidIndex);
     CHECK(second != rhi::VulkanBindless::kInvalidIndex);
     CHECK(first != second);
-    CHECK(bindless.usage().samplers == 2);
+    CHECK(bindless.usage().samplers == before + 2);
 
     // A released index is handed back out rather than leaked.
     bindless.releaseSampler(first);
-    CHECK(bindless.usage().samplers == 1);
+    CHECK(bindless.usage().samplers == before + 1);
     const std::uint32_t reused = bindless.registerSampler(sampler);
     CHECK(reused == first);
 
