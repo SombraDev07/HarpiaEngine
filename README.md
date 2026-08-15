@@ -71,6 +71,6 @@ sudo dnf install libasan libubsan libtsan
 
 ## Testes
 
-122 casos, 26.145 asserções, doctest. `Tests/`.
+133 casos, 26.312 asserções, doctest. `Tests/`.
 
 Duas suítes: `harpia_engine` (tolerância zero a leak) e `harpia_gpu`.

@@ -224,6 +224,47 @@ que o byte chegou em memória device-local.
 **DXC não existe no Fedora** — só importa em mesh shaders/wave intrinsics (F7); o CMake troca
 sozinho quando aparecer no PATH.
 
+### Math — fechada com glm ✅
+
+**Corrigi uma decisão errada minha.** Eu tinha escrito matemática própria; o roadmap dizia
+"biblioteca própria SIMD, **ou glm no início**", e a regra 7 diz para não escrever o que já
+existe. Em todo o resto do projeto eu segui isso (VMA, cgltf, stb, GLFW, doctest, Tracy) — a
+math foi a única exceção, sem motivo. Migrada para **glm 1.0.1**.
+
+| Fica com o glm | Fica nosso |
+|---|---|
+| Vec/Mat/Quat, operadores, `inverse`, `transpose`, `lookAt`, `slerp`, `mix` | `perspectiveReverseZ` (far infinito + Y flip Vulkan) |
+| `inverseTranspose` (via `normalMatrix`) | `orthographicReverseZ` (cascatas de sombra, F3) |
+| | `encodeOctahedral` / `decodeOctahedral` |
+| | `Transform`, `AABB`, `Plane`, `Frustum` (Gribb-Hartmann) |
+
+Config do glm setada **uma vez, global**: `GLM_FORCE_DEPTH_ZERO_TO_ONE` (faixa de clip do
+Vulkan) e `GLM_FORCE_CTOR_INIT` (vetor default zera em vez de vir com lixo). Uma TU que
+incluísse glm sem isso discordaria em silêncio de todas as outras.
+
+glm entra por um target `harpia_glm` com `SYSTEM` — os headers dele disparam
+`-Wsign-conversion` e não são nossos para consertar. Mesmo padrão de stb e cgltf.
+
+**Bug encontrado pelo teste:** a ortográfica reverse-Z saiu invertida — 0 no near e 1 no far.
+Com `GREATER_OR_EQUAL` isso descartaria tudo. O teste de faixa de profundidade pegou.
+
+**Verificado:** 121 casos / 26.219 asserções · `-Werror`, ASan, UBSan e TSan limpos.
+
+### Toolchain — DXC desbloqueado (2026-08-15)
+
+O frontend HLSL do **glslang não indexa array de buffer descriptor** — nem unbounded, nem
+tamanho fixo, nem por cópia local. É exatamente o que o bindless exige, então o GBuffer estava
+bloqueado. Eu tinha dito que DXC só importaria na F7; estava errado.
+
+Vulkan SDK 1.4.357.1 instalado em `~/VulkanSDK`. **DXC 1.9 compila e valida o padrão bindless**.
+O CMake trocou de compilador sozinho, sem alteração no projeto.
+
+Para novas sessões:
+```bash
+export VULKAN_SDK=$HOME/VulkanSDK/1.4.357.1/x86_64
+export PATH=$VULKAN_SDK/bin:$PATH
+```
+
 ## Próximo
 
 **F2 — Deferred PBR**, continuando de:
