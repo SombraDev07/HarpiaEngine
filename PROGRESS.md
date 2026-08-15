@@ -88,13 +88,33 @@ out-param só na chamada raiz.
   `detect_leaks=0`. Sem os testes de GPU, ASan reporta zero — então qualquer vazamento novo
   é nosso.
 
+### F0.d — ECS archetype ✅ *(Input pendente)*
+
+| Entrega | Onde |
+|---|---|
+| `Entity` — handle geracional; `ComponentRegistry` — ids densos por tipo | `Source/Core/ECS/Entity.h` |
+| `World` — arquétipos, chunks de 16KB SoA, transições, queries | `Source/Core/ECS/World.{h,cpp}` |
+| `TypeInfo::moveConstruct` / `copyConstruct` — exigidos pela transição | `Source/Core/Reflection/` |
+
+**Entregável batido:** 10k entidades espalhadas em vários chunks, `parallelEach` visitando
+cada uma exatamente uma vez.
+
+**Verificado:** 70 casos / 21.844 asserções · `-Werror` limpo · ASan, UBSan e TSan limpos.
+
+**Decisões:**
+- **Componentes precisam ser refletidos.** É a integração que a auditoria do Dagor apontou:
+  lá, registro de componente e DataBlock são sistemas separados, então editor e save cada um
+  descreve o tipo do seu jeito. Aqui um `TypeRegistry` serve ECS, inspector e serialização.
+- Remoção por **swap-remove**: storage fica sempre denso e a iteração nunca pula.
+- Índices de query vêm de `index_sequence`, não de contador — a ordem de avaliação de pack
+  expansion é indefinida e um cursor pareava array errado com componente errado.
+- Ids de componente são **por processo, nunca serializados**. A chave estável é o nome do
+  tipo (`ComponentRegistry::findByName`).
+
 ## Próximo
 
-**F0.d — ECS archetype + Input.** Entregável: 10k entidades, query multithread.
-O ECS integra ao `TypeRegistry` desde o início — no Dagor, registro de componente e
-DataBlock são sistemas separados; unificar é onde ganhamos.
-
-Depois: F1 (render graph + triângulo) → F1.b (asset DB com GUID) → F2 (deferred PBR).
+**Input** (`daInput` do Dagor como referência): camada de ação abstrata, rebinding, gamepad.
+Depois **F1** (render graph + triângulo) → **F1.b** (asset DB com GUID) → **F2** (deferred PBR).
 
 ## Protocolo de retomada
 
