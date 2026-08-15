@@ -154,10 +154,59 @@ expression antes do target glslang existir (quebrava na reconfiguração), e `Ha
 `harpia_tests` geravam o mesmo `.spv`. O teste de aliasing também estava errado — pedia
 compartilhamento onde os recursos coexistiam; o código estava certo.
 
+### F1.b — Asset DB com GUID ✅
+
+| Entrega | Onde |
+|---|---|
+| `AssetId` — GUID de 128 bits, texto de 32 hex | `Source/Core/Assets/AssetId.{h,cpp}` |
+| `AssetDatabase` — scan, sidecar `.meta`, índice binário, detecção de move/missing | `Source/Core/Assets/AssetDatabase.{h,cpp}` |
+| `AssetManager` — loaders por tipo, cache com mutex, `unloadUnused` | `Source/Core/Assets/AssetManager.{h,cpp}` |
+
+**A garantia, testada:** renomear ou mover um arquivo **não quebra referência nenhuma**. Um
+`AssetId` guardado numa cena continua carregando depois do arquivo mudar de nome e de pasta.
+
+**Dois artefatos, papéis diferentes:**
+- `<asset>.meta` — **texto**, porque vive no controle de versão ao lado do asset e precisa dar
+  diff e merge como código. É a **autoridade** sobre identidade.
+- `assets.db` — **binário**, cache de onde as coisas estão agora. Seguro apagar; um rescan
+  reconstrói. Serializado pela nossa própria camada de reflexão, de propósito: se a evolução
+  de schema não aguentar o índice de assets, não vai aguentar cena.
+
+**Bug encontrado pelos testes:** `AssetId::toString` deslocava `56 - i*4` onde 16 dígitos hex de
+metade de 64 bits exigem `60 - i*4`. A última iteração deslocava por valor **negativo — UB** — e
+todo GUID escrito em sidecar saía corrompido. O round-trip texto expôs isso na primeira execução.
+
+### F2 (parcial) — Import glTF 2.0 ✅
+
+| Entrega | Onde |
+|---|---|
+| `MeshAsset` — vértices, índices, sub-meshes, materiais, bounds. **Sem Vulkan** | `Source/Core/Assets/MeshAsset.h` |
+| `GltfLoader` — cgltf, hierarquia achatada em world space, texturas por GUID | `Source/Core/Assets/GltfLoader.{h,cpp}` |
+
+Índices ficam **locais à primitiva** com `vertexOffset` por sub-mesh — que é o que
+`vkCmdDrawIndexed` espera. Um caminho de draw só, sem reescrever índice no load.
+
+Texturas de material resolvem para **GUID**, não caminho. É o retorno da F1.b: renomear a
+textura não quebra o material.
+
+**Bug encontrado pelos testes:** `recomputeBounds` indexava o array de vértices com índices
+locais sem somar `vertexOffset`. Todo sub-mesh depois do primeiro reportava bounds dos vértices
+errados — invisível até o frustum culling começar a descartar os objetos errados.
+
+**Verificado:** 105 casos / 26.052 asserções · `-Werror`, ASan, UBSan e TSan limpos.
+
 ## Próximo
 
-**F1.b — Asset DB com GUID.** A decisão da coluna 4 que precisa estar na coluna 1: identidade
-estável independente de caminho no disco. Depois **F2** (deferred PBR + glTF + motion vectors).
+**F2 — Deferred PBR.** Nesta ordem:
+1. Upload de `MeshAsset` para buffers GPU via VMA, registrados no heap bindless
+2. GBuffer no render graph: albedo, normal octaédrica, roughness/metallic, **motion vectors**, depth
+3. BRDF GGX + Smith + Fresnel, difuso Burley
+4. IBL split-sum (BRDF LUT + prefiltered environment)
+5. Luzes direcional + pontuais com clustered culling
+6. Tonemap ACES
+
+> **Motion vectors nascem no passo 2**, junto do GBuffer — não na F6 com o TAA. Se não
+> nascerem agora, reabrir todo shader de geometria depois é a dívida mais cara do roadmap.
 
 ## Protocolo de retomada
 

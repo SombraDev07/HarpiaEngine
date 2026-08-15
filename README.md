@@ -5,7 +5,7 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 
 ## Estado
 
-**F1 concluída.** Triângulo renderizado por um pass declarado no render graph.
+**F1.b concluída.** Assets endereçados por GUID; renomear arquivo não quebra referência.
 
 | Bloco | Status |
 |---|---|
@@ -14,8 +14,9 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 | **F0.c** Reflection: TypeRegistry + serialização versionada | ✅ |
 | **F0.d** ECS archetype + Input | ✅ |
 | **F1** Render graph + primeiro triângulo | ✅ |
-| F1.b Asset DB com GUID | próximo |
-| F2 Deferred PBR + glTF | |
+| **F1.b** Asset DB com GUID + sidecars .meta | ✅ |
+| **F2** Import glTF 2.0 | parcial ✅ |
+| F2 GBuffer + PBR + motion vectors | próximo |
 
 ## Build
 
@@ -69,6 +70,6 @@ sudo dnf install libasan libubsan libtsan
 
 ## Testes
 
-91 casos, 21.939 asserções, doctest. `Tests/`.
+105 casos, 26.052 asserções, doctest. `Tests/`.
 
 Duas suítes: `harpia_engine` (tolerância zero a leak) e `harpia_gpu`.
