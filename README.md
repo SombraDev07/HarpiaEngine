@@ -20,7 +20,9 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 | **F2** GBuffer + motion vectors | ✅ |
 | **F2** Lighting pass PBR deferred | ✅ |
 | **F2** Tonemap ACES + sample Deferred | ✅ |
-| F2 IBL split-sum + loader de textura | próximo |
+| **F2** Loader de textura + mips + bindless | ✅ |
+| F2 IBL split-sum | próximo |
+| F2 Materiais texturizados → Sponza | |
 
 ## Build
 
@@ -74,6 +76,6 @@ sudo dnf install libasan libubsan libtsan
 
 ## Testes
 
-146 casos, 26.432 asserções, doctest. `Tests/`.
+151 casos, 26.487 asserções, doctest. `Tests/`.
 
 Duas suítes: `harpia_engine` (tolerância zero a leak) e `harpia_gpu`.

@@ -357,6 +357,34 @@ a normal oposta.
 
 146 casos / 26.432 asserções · `-Werror`, ASan, UBSan e TSan limpos · 0 erros de validação.
 
+### Loader de textura ✅
+
+| Entrega | Onde |
+|---|---|
+| `TextureAsset` — pixels RGBA8, sem Vulkan | `Source/Core/Assets/TextureAsset.h` |
+| `TextureLoader` — stb_image, de arquivo e de memória | `Source/Core/Assets/TextureLoader.{h,cpp}` |
+| `GpuTexture` — `VkImage`, cadeia de mips por blit, slot bindless | `Source/RHI/GpuTexture.{h,cpp}` |
+
+**A decisão de sRGB fica no `GpuTexture`, não no importador.** Se uma textura é sRGB depende do
+que ela *significa* — base color é sRGB, normal/roughness é linear, e o mesmo PNG pode ser as
+duas coisas. O material sabe; o arquivo não. Errar isso deixa a iluminação consistentemente e
+sutilmente errada — o tipo de erro que acaba sendo compensado na arte em vez de corrigido.
+
+Tudo é expandido para RGBA8: imagem de três canais não tem formato de GPU universalmente
+suportado, e preencher uma vez no load é melhor que ramificar em todo ponto de amostragem.
+
+Mips saem de uma cadeia de blit com barreira por nível — cada nível transita entre
+`TRANSFER_DST` e `TRANSFER_SRC` independentemente. A cadeia é pulada se o formato não filtra
+linearmente: um nível honesto é melhor que cadeia quebrada.
+
+`createSolid` dá um 1×1 para slot de material sem mapa — mais barato que ramificar no shader e
+mantém todo material num caminho só.
+
+O teste **escreve o próprio PNG** em vez de versionar um fixture: binário que ninguém lê é
+fixture que ninguém mantém.
+
+151 casos / 26.487 asserções · `-Werror`, ASan, UBSan e TSan limpos.
+
 ## Próximo
 
 **F2 — Deferred PBR**, continuando de:
