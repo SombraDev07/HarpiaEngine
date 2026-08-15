@@ -85,6 +85,11 @@ struct Rgba8 {
 
 } // namespace
 
+// Grouped so CTest can run these apart from the rest: the Vulkan driver leaks
+// one-time JIT allocations that LeakSanitizer cannot attribute to a module, so
+// this suite runs with leak detection off while the engine suite keeps it on.
+TEST_SUITE_BEGIN("gpu");
+
 TEST_CASE("offscreen clear produces exactly the requested colour")
 {
     rhi::VulkanDevice::resetValidationErrorCount();
@@ -185,3 +190,5 @@ TEST_CASE("bindless heap reports capacity and hands out distinct indices")
     renderer.destroy();
     device.destroy();
 }
+
+TEST_SUITE_END();

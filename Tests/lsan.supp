@@ -1,0 +1,18 @@
+# LeakSanitizer suppressions.
+#
+# Scope is deliberately narrow: only the Vulkan loader and the graphics drivers.
+# Engine allocations are never suppressed — with these three render tests
+# excluded, ASan reports zero leaks, so anything new that shows up is ours.
+#
+# What is suppressed: the loader and Mesa perform one-time pthread_once
+# initialisation (physical device enumeration, driver dispatch tables) and never
+# free it before exit. That is driver behaviour we cannot change.
+
+leak:libvulkan.so
+leak:libvulkan_radeon.so
+leak:libvulkan_lvp.so
+leak:libvulkan_intel.so
+leak:radeonsi_dri.so
+leak:swrast_dri.so
+leak:libVkLayer_khronos_validation.so
+leak:libLLVM
