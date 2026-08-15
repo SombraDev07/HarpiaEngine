@@ -5,15 +5,17 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 
 ## Estado
 
-**F0.a — Fundação: concluída.** Job system, memória com tracking, profiling e CI.
+**F1 concluída.** Triângulo renderizado por um pass declarado no render graph.
 
 | Bloco | Status |
 |---|---|
 | **F0.a** Memory, Threading, CMake, CI, Tracy | ✅ |
-| F0.b Vulkan device, bindless heap, VMA | próximo |
-| F0.c Reflection: TypeRegistry + serialização | |
-| F0.d ECS archetype + Input | |
-| F1 Render graph + primeiro triângulo | |
+| **F0.b** Vulkan device, bindless heap, VMA, offscreen | ✅ |
+| **F0.c** Reflection: TypeRegistry + serialização versionada | ✅ |
+| **F0.d** ECS archetype + Input | ✅ |
+| **F1** Render graph + primeiro triângulo | ✅ |
+| F1.b Asset DB com GUID | próximo |
+| F2 Deferred PBR + glTF | |
 
 ## Build
 
@@ -67,4 +69,6 @@ sudo dnf install libasan libubsan libtsan
 
 ## Testes
 
-41 casos, 10.486 asserções, doctest. `Tests/`.
+91 casos, 21.939 asserções, doctest. `Tests/`.
+
+Duas suítes: `harpia_engine` (tolerância zero a leak) e `harpia_gpu`.

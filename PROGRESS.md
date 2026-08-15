@@ -111,10 +111,53 @@ cada uma exatamente uma vez.
 - Ids de componente são **por processo, nunca serializados**. A chave estável é o nome do
   tipo (`ComponentRegistry::findByName`).
 
+### Input ✅
+
+| Entrega | Onde |
+|---|---|
+| `InputTypes.h` — Key, MouseButton, GamepadButton/Axis, `InputContext` | `Source/Platform/` |
+| `Input` — ações por nome, bindings múltiplos, contextos, rebinding, edge detection | `Source/Platform/Input.{h,cpp}` |
+| `Window::readInput` — coleta GLFW, deltas de mouse, gamepad | `Source/Platform/Window.cpp` |
+
+**Decisão central:** `RawInputState` (o que os devices reportam) separado de `Input` (ações,
+bindings, contextos). Isso torna toda a camada de ação **testável sem janela** e deixa a porta
+aberta para replay de input gravado no editor.
+
+Dead zone de analógico é **radial, não por componente** — por componente transforma um stick
+circular em quadrado e corta a diagonal abaixo do alcance total. O teste fixa isso.
+
+### F1 — Render graph + triângulo ✅
+
+| Entrega | Onde |
+|---|---|
+| Pipeline HLSL → SPIR-V (DXC preferido, glslang fallback, build from source) | `cmake/HarpiaShaders.cmake` |
+| `VulkanPipeline` — dynamic rendering, viewport/scissor dinâmicos | `Source/RHI/Vulkan/` |
+| `RenderGraph` — passes declarados, culling, barreiras derivadas, aliasing de transientes | `Source/RHI/RenderGraph/` |
+| `HarpiaTriangle` — o entregável da fase | `Samples/Triangle/` |
+
+**Verificado em RADV NAVI22:** triângulo renderizado por pass declarado, **0 erros de validação**.
+91 casos / 21.939 asserções · `-Werror`, ASan, UBSan e TSan limpos.
+
+**Decisões:**
+- **Nenhuma barreira escrita à mão, nunca mais.** Um pass declara "eu amostro isso" e o grafo
+  deriva layout, stage e access de uma tabela única. Barreira manual é como um renderer acumula
+  stall que ninguém acha depois.
+- Aliasing é **nível de recurso**, não de memória: transientes com tempos de vida disjuntos
+  compartilham o mesmo `VkImage`. Seguro sem malabarismo de bloco VMA, e já elimina as
+  alocações que importam.
+- O grafo dirige o dynamic rendering — um pass nunca escreve `VkRenderingInfo`.
+- Shaders compilam **uma vez** num alvo global `harpia_shaders`. Dois alvos declarando regra
+  para o mesmo `.spv` é erro de output duplicado, e um deles vencer em silêncio é pior.
+
+**Dois bugs meus corrigidos aqui:** o path do compilador ficou cacheado como generator
+expression antes do target glslang existir (quebrava na reconfiguração), e `HarpiaTriangle` e
+`harpia_tests` geravam o mesmo `.spv`. O teste de aliasing também estava errado — pedia
+compartilhamento onde os recursos coexistiam; o código estava certo.
+
 ## Próximo
 
-**Input** (`daInput` do Dagor como referência): camada de ação abstrata, rebinding, gamepad.
-Depois **F1** (render graph + triângulo) → **F1.b** (asset DB com GUID) → **F2** (deferred PBR).
+**F1.b — Asset DB com GUID.** A decisão da coluna 4 que precisa estar na coluna 1: identidade
+estável independente de caminho no disco. Depois **F2** (deferred PBR + glTF + motion vectors).
 
 ## Protocolo de retomada
 
