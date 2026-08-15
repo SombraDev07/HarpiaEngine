@@ -24,23 +24,13 @@ struct MeshVertex {
     Vec2 uv;
 };
 
-struct Bounds {
-    Vec3 min{ 1e30f,  1e30f,  1e30f};
-    Vec3 max{-1e30f, -1e30f, -1e30f};
-
-    void grow(const Vec3& point) noexcept;
-    [[nodiscard]] Vec3 centre() const noexcept;
-    [[nodiscard]] Vec3 extent() const noexcept;
-    [[nodiscard]] bool valid() const noexcept { return min.x <= max.x; }
-};
-
 // One draw's worth of the mesh. glTF primitives map onto these one to one.
 struct SubMesh {
     std::uint32_t firstIndex   = 0;
     std::uint32_t indexCount   = 0;
     std::uint32_t vertexOffset = 0;
     std::int32_t  material     = -1;  // index into MeshAsset::materials
-    Bounds        bounds;
+    AABB          bounds;
 };
 
 struct MeshMaterial {
@@ -65,7 +55,7 @@ public:
     std::vector<std::uint32_t> indices;
     std::vector<SubMesh>      subMeshes;
     std::vector<MeshMaterial> materials;
-    Bounds                    bounds;
+    AABB                      bounds;
 
     [[nodiscard]] std::size_t triangleCount() const noexcept { return indices.size() / 3; }
     [[nodiscard]] bool        empty() const noexcept { return indices.empty(); }

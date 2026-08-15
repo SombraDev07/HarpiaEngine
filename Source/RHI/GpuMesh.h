@@ -60,7 +60,7 @@ public:
     [[nodiscard]] const std::vector<GpuSubMesh>& subMeshes() const noexcept { return subMeshes_; }
     [[nodiscard]] std::uint32_t vertexCount() const noexcept { return vertexCount_; }
     [[nodiscard]] std::uint32_t indexCount() const noexcept  { return indexCount_; }
-    [[nodiscard]] const Bounds& bounds() const noexcept      { return bounds_; }
+    [[nodiscard]] const AABB& bounds() const noexcept      { return bounds_; }
     [[nodiscard]] bool valid() const noexcept { return vertexBuffer_.valid(); }
 
     [[nodiscard]] MeshDrawConstants drawConstants(std::size_t subMesh) const;
@@ -76,7 +76,7 @@ private:
     std::uint32_t indexCount_  = 0;
 
     std::vector<GpuSubMesh> subMeshes_;
-    Bounds                  bounds_;
+    AABB                    bounds_;
 };
 
 } // namespace harpia::rhi

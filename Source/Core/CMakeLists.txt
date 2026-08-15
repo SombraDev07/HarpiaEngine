@@ -22,6 +22,7 @@ target_include_directories(harpia_core PUBLIC ${PROJECT_SOURCE_DIR}/Source)
 target_link_libraries(harpia_core
     PUBLIC  Threads::Threads
             cgltf
+            harpia_glm
     PRIVATE harpia_warnings)
 
 if(HARPIA_ENABLE_TRACY)

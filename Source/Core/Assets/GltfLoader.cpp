@@ -3,6 +3,7 @@
 #include "Core/Assets/AssetDatabase.h"
 
 #include <cgltf.h>
+#include <glm/gtc/type_ptr.hpp>
 
 #include <cmath>
 #include <cstring>
@@ -12,15 +13,21 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// cgltf writes column-major floats, which is exactly Mat4's layout.
+// cgltf writes column-major floats, which is exactly glm::mat4's layout.
 using Matrix4 = Mat4;
 
-// Directions ignore translation. This is not the inverse-transpose, so a
-// non-uniform scale will skew normals; normalising afterwards is correct for
-// the uniform and near-uniform scales glTF content overwhelmingly uses.
+[[nodiscard]] Vec3 transformPosition(const Matrix4& matrix, const Vec3& point)
+{
+    return Vec3(matrix * Vec4(point, 1.0f));
+}
+
+// Directions ignore translation. Using normalMatrix here would be the strictly
+// correct thing for non-uniform scale; glTF content is overwhelmingly uniform,
+// and normalising after the rotation is right for that case.
 [[nodiscard]] Vec3 transformNormal(const Matrix4& matrix, const Vec3& direction)
 {
-    return normalize(transformDirection(matrix, direction));
+    const Vec3 rotated = Vec3(matrix * Vec4(direction, 0.0f));
+    return glm::dot(rotated, rotated) > 1e-16f ? normalize(rotated) : Vec3(0.0f);
 }
 
 [[nodiscard]] AssetId resolveTexture(const cgltf_texture* texture,
@@ -105,7 +112,7 @@ void readPrimitive(const cgltf_primitive& primitive,
                     float values[3]{};
                     cgltf_accessor_read_float(accessor, v, values, 3);
                     vertices[v].position =
-                        transformPoint(transform, Vec3{values[0], values[1], values[2]});
+                        transformPosition(transform, Vec3{values[0], values[1], values[2]});
                 }
                 break;
             }
@@ -174,7 +181,7 @@ void readPrimitive(const cgltf_primitive& primitive,
 void readNode(const cgltf_node& node, const cgltf_data& data, MeshAsset& mesh)
 {
     Matrix4 transform;
-    cgltf_node_transform_world(&node, transform.m);
+    cgltf_node_transform_world(&node, glm::value_ptr(transform));
 
     if (node.mesh != nullptr) {
         for (cgltf_size p = 0; p < node.mesh->primitives_count; ++p) {
@@ -188,31 +195,11 @@ void readNode(const cgltf_node& node, const cgltf_data& data, MeshAsset& mesh)
 
 } // namespace
 
-void Bounds::grow(const Vec3& point) noexcept
-{
-    min.x = point.x < min.x ? point.x : min.x;
-    min.y = point.y < min.y ? point.y : min.y;
-    min.z = point.z < min.z ? point.z : min.z;
-    max.x = point.x > max.x ? point.x : max.x;
-    max.y = point.y > max.y ? point.y : max.y;
-    max.z = point.z > max.z ? point.z : max.z;
-}
-
-Vec3 Bounds::centre() const noexcept
-{
-    return Vec3{(min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f, (min.z + max.z) * 0.5f};
-}
-
-Vec3 Bounds::extent() const noexcept
-{
-    return Vec3{(max.x - min.x) * 0.5f, (max.y - min.y) * 0.5f, (max.z - min.z) * 0.5f};
-}
-
 void MeshAsset::recomputeBounds() noexcept
 {
-    bounds = Bounds{};
+    bounds = AABB{};
     for (SubMesh& subMesh : subMeshes) {
-        subMesh.bounds = Bounds{};
+        subMesh.bounds = AABB{};
         // Indices are primitive-local; vertexOffset is what vkCmdDrawIndexed
         // adds on the GPU. Anything walking the CPU arrays has to add it too.
         for (std::uint32_t i = 0; i < subMesh.indexCount; ++i) {
