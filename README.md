@@ -5,7 +5,7 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 
 ## Estado
 
-**F2 em andamento.** Deferred PBR shading funcionando; IBL é o próximo passo.
+**F2 em andamento.** Frame completo GBuffer→lighting→tonemap. `HarpiaDeferred` renderiza a grade PBR.
 
 | Bloco | Status |
 |---|---|
@@ -19,7 +19,8 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 | **F2** Mesh na GPU (bindless + VMA) | ✅ |
 | **F2** GBuffer + motion vectors | ✅ |
 | **F2** Lighting pass PBR deferred | ✅ |
-| F2 IBL split-sum | próximo |
+| **F2** Tonemap ACES + sample Deferred | ✅ |
+| F2 IBL split-sum + loader de textura | próximo |
 
 ## Build
 
@@ -73,6 +74,6 @@ sudo dnf install libasan libubsan libtsan
 
 ## Testes
 
-145 casos, 26.401 asserções, doctest. `Tests/`.
+146 casos, 26.432 asserções, doctest. `Tests/`.
 
 Duas suítes: `harpia_engine` (tolerância zero a leak) e `harpia_gpu`.

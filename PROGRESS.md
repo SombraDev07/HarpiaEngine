@@ -327,6 +327,36 @@ GBuffer armazena, então compara contra o que foi de fato gravado.
 o grafo mantém os dois passes sozinho. Só o consumidor final precisa de pin — e na engine real
 nem isso, porque o alvo final vem importado do swapchain.
 
+### Sample Deferred — primeiro frame completo ✅
+
+`Samples/Deferred` — **GBuffer → lighting → tonemap**, três passes declarados no grafo, 13
+barreiras todas derivadas das declarações. Grade de 28 esferas: roughness no eixo X, metallic
+no Y, uma luz direcional.
+
+Malhas **procedurais** (`MeshPrimitives`), não asset importado — roda de um checkout limpo, sem
+download, sem textura, sem pipeline de arte. É assim que PBR se valida a olho: qualquer erro na
+BRDF, na codificação de normal, na convenção de profundidade ou no tonemap aparece como uma
+linha que não progride suavemente.
+
+Tonemap ACES (curva fitted) + encode sRGB entrou junto — sem ele HDR não vira imagem. O
+swapchain é UNORM justamente para este pass ser o dono do encode; um alvo SRGB aplicaria a
+curva duas vezes.
+
+**Metal sai escuro com só um brilho concentrado, e isso está certo:** metal não tem lóbulo
+difuso, então com uma direcional e sem ambiente não há mais nada para refletir. É exatamente o
+que o IBL do passo 4 resolve.
+
+**Bug encontrado pela imagem, não por teste unitário:** o winding das esferas estava invertido —
+com backface culling ligado renderizávamos o *interior*. Sintoma era luz quase ausente, o que
+parece bug de iluminação e não de topologia. Nenhum teste anterior pegaria: triângulo e testes
+de GBuffer usavam `CULL_MODE_NONE`.
+
+Agora fixado em teste: malha convexa fechada tem de produzir **imagem idêntica** com culling
+ligado e desligado. Comparação do canal de normal, que é o mais estrito — face traseira carrega
+a normal oposta.
+
+146 casos / 26.432 asserções · `-Werror`, ASan, UBSan e TSan limpos · 0 erros de validação.
+
 ## Próximo
 
 **F2 — Deferred PBR**, continuando de:
@@ -334,7 +364,7 @@ nem isso, porque o alvo final vem importado do swapchain.
 3. ~~BRDF GGX + Smith + Fresnel, difuso Burley~~ ✅ (ver abaixo)
 4. **IBL split-sum (BRDF LUT + prefiltered environment)** ← próximo
 5. Luzes direcional + pontuais com clustered culling
-6. Tonemap ACES
+6. ~~Tonemap ACES~~ ✅ (entrou junto do sample)
 
 > **Motion vectors nascem no passo 2**, junto do GBuffer — não na F6 com o TAA. Se não
 > nascerem agora, reabrir todo shader de geometria depois é a dívida mais cara do roadmap.
