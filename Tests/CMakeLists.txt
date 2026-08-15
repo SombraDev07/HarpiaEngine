@@ -8,6 +8,7 @@ FetchContent_MakeAvailable(doctest)
 
 add_executable(harpia_tests
     main.cpp
+    test_math.cpp
     test_memory_tracker.cpp
     test_arena.cpp
     test_pool.cpp

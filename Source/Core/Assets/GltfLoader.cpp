@@ -12,39 +12,15 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// glTF node transforms are 4x4 column-major. We only need to move points and
-// directions, so a full matrix type would be scope we do not have yet.
-struct Matrix4 {
-    float m[16]{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-};
-
-[[nodiscard]] Vec3 transformPoint(const Matrix4& matrix, const Vec3& point)
-{
-    return Vec3{
-        matrix.m[0] * point.x + matrix.m[4] * point.y + matrix.m[8]  * point.z + matrix.m[12],
-        matrix.m[1] * point.x + matrix.m[5] * point.y + matrix.m[9]  * point.z + matrix.m[13],
-        matrix.m[2] * point.x + matrix.m[6] * point.y + matrix.m[10] * point.z + matrix.m[14]};
-}
+// cgltf writes column-major floats, which is exactly Mat4's layout.
+using Matrix4 = Mat4;
 
 // Directions ignore translation. This is not the inverse-transpose, so a
-// non-uniform scale will skew normals; the importer normalises afterwards,
-// which is correct for uniform and near-uniform scales and is what glTF
-// content overwhelmingly uses.
-[[nodiscard]] Vec3 transformDirection(const Matrix4& matrix, const Vec3& direction)
+// non-uniform scale will skew normals; normalising afterwards is correct for
+// the uniform and near-uniform scales glTF content overwhelmingly uses.
+[[nodiscard]] Vec3 transformNormal(const Matrix4& matrix, const Vec3& direction)
 {
-    Vec3 result{
-        matrix.m[0] * direction.x + matrix.m[4] * direction.y + matrix.m[8]  * direction.z,
-        matrix.m[1] * direction.x + matrix.m[5] * direction.y + matrix.m[9]  * direction.z,
-        matrix.m[2] * direction.x + matrix.m[6] * direction.y + matrix.m[10] * direction.z};
-
-    const float length = std::sqrt(result.x * result.x + result.y * result.y
-                                 + result.z * result.z);
-    if (length > 1e-8f) {
-        result.x /= length;
-        result.y /= length;
-        result.z /= length;
-    }
-    return result;
+    return normalize(transformDirection(matrix, direction));
 }
 
 [[nodiscard]] AssetId resolveTexture(const cgltf_texture* texture,
@@ -138,7 +114,7 @@ void readPrimitive(const cgltf_primitive& primitive,
                     float values[3]{};
                     cgltf_accessor_read_float(accessor, v, values, 3);
                     vertices[v].normal =
-                        transformDirection(transform, Vec3{values[0], values[1], values[2]});
+                        transformNormal(transform, Vec3{values[0], values[1], values[2]});
                 }
                 break;
             }
@@ -147,7 +123,7 @@ void readPrimitive(const cgltf_primitive& primitive,
                     float values[4]{};
                     cgltf_accessor_read_float(accessor, v, values, 4);
                     const Vec3 direction =
-                        transformDirection(transform, Vec3{values[0], values[1], values[2]});
+                        transformNormal(transform, Vec3{values[0], values[1], values[2]});
                     // w is handedness, not a direction — it must not be rotated.
                     vertices[v].tangent = Vec4{direction.x, direction.y, direction.z, values[3]};
                 }

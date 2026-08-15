@@ -1,6 +1,7 @@
 find_package(Threads REQUIRED)
 
 add_library(harpia_core STATIC
+    Math/Math.cpp
     Memory/MemoryTracker.cpp
     Memory/Arena.cpp
     Threading/JobSystem.cpp
@@ -32,6 +33,7 @@ target_sources(harpia_core PUBLIC
     FILE_SET harpia_headers TYPE HEADERS
     BASE_DIRS ${PROJECT_SOURCE_DIR}/Source
     FILES
+        Math/Math.h
         Memory/MemoryTracker.h
         Memory/Arena.h
         Memory/Pool.h

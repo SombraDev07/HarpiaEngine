@@ -9,16 +9,13 @@
 #pragma once
 
 #include "Core/Assets/AssetManager.h"
+#include "Core/Math/Math.h"
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace harpia {
-
-struct Vec2 { float x = 0.0f; float y = 0.0f; };
-struct Vec3 { float x = 0.0f; float y = 0.0f; float z = 0.0f; };
-struct Vec4 { float x = 0.0f; float y = 0.0f; float z = 0.0f; float w = 0.0f; };
 
 struct MeshVertex {
     Vec3 position;
