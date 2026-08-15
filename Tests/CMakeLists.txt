@@ -16,7 +16,8 @@ add_executable(harpia_tests
     test_reflection.cpp
     test_serialization.cpp
     test_ecs.cpp
-    test_input.cpp)
+    test_input.cpp
+    test_render_graph.cpp)
 
 target_include_directories(harpia_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -44,3 +45,8 @@ set_tests_properties(harpia_engine PROPERTIES TIMEOUT 300)
 set_tests_properties(harpia_gpu PROPERTIES
     TIMEOUT 300
     ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0;LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
+
+# The graph test draws the F1 triangle, so it needs the same shaders the sample
+# does. harpia_use_shaders attaches the one global shader target rather than
+# declaring a second rule for the same output.
+harpia_use_shaders(harpia_tests)
