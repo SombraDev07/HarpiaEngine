@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 struct VmaAllocation_T;
 using VmaAllocation = VmaAllocation_T*;
@@ -84,6 +85,17 @@ public:
                                 void*               destination,
                                 VkDeviceSize        size,
                                 VkDeviceSize        offset = 0);
+
+    // Reads an image back as tightly packed texels. This is how a golden image
+    // is produced for one GBuffer channel; like download(), it stalls the queue
+    // and never belongs in a frame path.
+    [[nodiscard]] bool downloadImage(VkImage                    image,
+                                     VkImageLayout              currentLayout,
+                                     VkExtent2D                 extent,
+                                     std::uint32_t              texelBytes,
+                                     std::vector<std::uint8_t>& outTexels,
+                                     VkImageAspectFlags         aspect
+                                         = VK_IMAGE_ASPECT_COLOR_BIT);
 
 private:
     VulkanDevice* device_ = nullptr;

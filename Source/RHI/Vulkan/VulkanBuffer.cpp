@@ -293,4 +293,79 @@ bool GpuUploader::download(const VulkanBuffer& source,
     return true;
 }
 
+bool GpuUploader::downloadImage(VkImage                    image,
+                                VkImageLayout              currentLayout,
+                                VkExtent2D                 extent,
+                                std::uint32_t              texelBytes,
+                                std::vector<std::uint8_t>& outTexels,
+                                VkImageAspectFlags         aspect)
+{
+    if (device_ == nullptr || image == VK_NULL_HANDLE || texelBytes == 0) {
+        return false;
+    }
+
+    const VkDeviceSize size = VkDeviceSize{extent.width} * extent.height * texelBytes;
+
+    BufferDesc stagingDesc;
+    stagingDesc.size      = size;
+    stagingDesc.usage     = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    stagingDesc.memory    = BufferMemory::HostVisible;
+    stagingDesc.debugName = "Staging_ImageDownload";
+
+    VulkanBuffer staging;
+    if (!staging.create(*device_, stagingDesc) || staging.mapped() == nullptr) {
+        return false;
+    }
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool        = pool_;
+    allocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+    HARPIA_VK_CHECK(vkAllocateCommandBuffers(device_->device(), &allocInfo, &cmd));
+
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    HARPIA_VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
+
+    // The caller says where the image is; we bring it to TRANSFER_SRC and put
+    // it back, so the graph's own layout tracking stays true.
+    imageBarrier(cmd, image, currentLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, aspect);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = aspect;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = VkExtent3D{extent.width, extent.height, 1};
+    vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           staging.handle(), 1, &region);
+
+    imageBarrier(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, currentLayout,
+                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT, aspect);
+
+    HARPIA_VK_CHECK(vkEndCommandBuffer(cmd));
+
+    VkCommandBufferSubmitInfo cmdSubmit{};
+    cmdSubmit.sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmdSubmit.commandBuffer = cmd;
+
+    VkSubmitInfo2 submit{};
+    submit.sType                  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submit.commandBufferInfoCount = 1;
+    submit.pCommandBufferInfos    = &cmdSubmit;
+
+    HARPIA_VK_CHECK(vkQueueSubmit2(device_->graphics().queue, 1, &submit, VK_NULL_HANDLE));
+    HARPIA_VK_CHECK(vkQueueWaitIdle(device_->graphics().queue));
+
+    outTexels.resize(static_cast<std::size_t>(size));
+    std::memcpy(outTexels.data(), staging.mapped(), static_cast<std::size_t>(size));
+
+    vkFreeCommandBuffers(device_->device(), pool_, 1, &cmd);
+    return true;
+}
+
 } // namespace harpia::rhi

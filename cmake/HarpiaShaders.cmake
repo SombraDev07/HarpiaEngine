@@ -71,6 +71,11 @@ endif()
 function(harpia_declare_shaders)
     cmake_parse_arguments(ARG "" "" "SOURCES" ${ARGN})
 
+    # Every shader depends on every .hlsli: editing a shared struct must rebuild
+    # everything that mirrors it, and tracking real include graphs is not worth
+    # the machinery at this size.
+    file(GLOB HARPIA_SHADER_HEADERS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../Shaders/*.hlsli")
+
     file(MAKE_DIRECTORY "${HARPIA_SHADER_OUTPUT_DIR}")
     set(outputs "")
 
@@ -96,15 +101,22 @@ function(harpia_declare_shaders)
             else()
                 set(profile "cs_6_0")
             endif()
+            # Scalar layout makes a struct in a buffer pack exactly like the C++
+            # mirror. Without it HLSL aligns float3 to 16 bytes, so a Vertex
+            # would stride 64 on the GPU against 48 on the CPU and every read
+            # would land on the wrong field. The device enables
+            # scalarBlockLayout for precisely this.
             set(command ${HARPIA_SHADER_COMPILER}
-                -spirv -fspv-target-env=vulkan1.3
+                -spirv -fspv-target-env=vulkan1.3 -fvk-use-scalar-layout
                 -T ${profile} -E main
+                -I "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../Shaders"
                 -Fo "${output}" "${absolute}")
         else()
             # -D tells glslang the input is HLSL rather than GLSL.
             set(command ${HARPIA_SHADER_COMPILER}
                 -D -e main --target-env vulkan1.3
                 -S ${stage} -V
+                -I"${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../Shaders"
                 -o "${output}" "${absolute}")
         endif()
 
@@ -113,14 +125,15 @@ function(harpia_declare_shaders)
         set(validate_command "")
         if(HARPIA_SPIRV_VAL)
             set(validate_command
-                COMMAND ${HARPIA_SPIRV_VAL} --target-env vulkan1.3 "${output}")
+                COMMAND ${HARPIA_SPIRV_VAL} --target-env vulkan1.3
+                        --scalar-block-layout "${output}")
         endif()
 
         add_custom_command(
             OUTPUT "${output}"
             COMMAND ${command}
             ${validate_command}
-            DEPENDS "${absolute}" ${HARPIA_SHADER_COMPILER_TARGET}
+            DEPENDS "${absolute}" ${HARPIA_SHADER_HEADERS} ${HARPIA_SHADER_COMPILER_TARGET}
             COMMENT "Compiling shader ${stem}"
             VERBATIM)
 
