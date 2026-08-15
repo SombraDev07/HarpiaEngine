@@ -17,7 +17,8 @@ add_executable(harpia_tests
     test_serialization.cpp
     test_ecs.cpp
     test_input.cpp
-    test_render_graph.cpp)
+    test_render_graph.cpp
+    test_assets.cpp)
 
 target_include_directories(harpia_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
