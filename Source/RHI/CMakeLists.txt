@@ -8,6 +8,7 @@ add_library(harpia_rhi STATIC
     Vulkan/VulkanBuffer.cpp
     GpuMesh.cpp
     GBuffer.cpp
+    MeshPrimitives.cpp
     RenderGraph/RenderGraph.cpp
     ThirdPartyImpl.cpp)
 
@@ -40,5 +41,6 @@ target_sources(harpia_rhi PUBLIC
         Vulkan/VulkanBuffer.h
         GpuMesh.h
         GBuffer.h
+        MeshPrimitives.h
         RenderTypes.h
         RenderGraph/RenderGraph.h)

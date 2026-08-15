@@ -9,6 +9,7 @@
 #include "Core/Math/Math.h"
 #include "RHI/GBuffer.h"
 #include "RHI/GpuMesh.h"
+#include "RHI/MeshPrimitives.h"
 #include "RHI/RenderTypes.h"
 #include "RHI/Vulkan/VulkanDevice.h"
 #include "RHI/Vulkan/VulkanPipeline.h"
@@ -64,7 +65,8 @@ struct GBufferFixture {
 
     bool ready = false;
 
-    GBufferFixture()
+    explicit GBufferFixture(VkCullModeFlags cullMode = VK_CULL_MODE_NONE,
+                            const MeshAsset& asset = makeQuad())
     {
         rhi::DeviceDesc desc;
         desc.applicationName  = "HarpiaGBufferTest";
@@ -86,6 +88,7 @@ struct GBufferFixture {
         pipelineDesc.depthFormat  = formats.depth;
         pipelineDesc.depthTest    = true;
         pipelineDesc.depthWrite   = true;
+        pipelineDesc.cullMode     = cullMode;
         pipelineDesc.descriptorSetLayout = renderer.bindless().layout();
         pipelineDesc.pushConstantBytes   = sizeof(rhi::GBufferPushConstants);
         pipelineDesc.debugName           = "Pipeline_GBuffer";
@@ -94,7 +97,6 @@ struct GBufferFixture {
             return;
         }
 
-        const MeshAsset asset = makeQuad();
         if (!mesh.create(device, uploader, renderer.bindless(), asset, "GBufferQuad")) {
             return;
         }
@@ -441,6 +443,64 @@ TEST_CASE("the background stays cleared where no geometry covers it")
     CHECK(albedo[0] == 0);
     CHECK(albedo[1] == 0);
     CHECK(albedo[2] == 0);
+}
+
+TEST_SUITE_END();
+
+// Appended: winding is a property no unit test catches and only a rendered
+// image reveals. A closed convex mesh must look identical with backface culling
+// on and off — if it does not, the outward faces are wound backwards and the
+// renderer is drawing the inside.
+TEST_SUITE_BEGIN("gpu");
+
+TEST_CASE("procedural meshes are wound so backface culling is a no-op")
+{
+    rhi::VulkanDevice::resetValidationErrorCount();
+
+    for (const char* which : {"sphere", "cube"}) {
+        const MeshAsset asset = std::strcmp(which, "sphere") == 0
+                              ? rhi::makeSphere(1.0f, 24, 12)
+                              : rhi::makeCube(1.5f);
+
+        std::vector<std::uint8_t> withCulling;
+        std::vector<std::uint8_t> withoutCulling;
+
+        for (int pass = 0; pass < 2; ++pass) {
+            GBufferFixture fixture(pass == 0 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE,
+                                   asset);
+            if (!fixture.ready) {
+                MESSAGE("no Vulkan device available — skipping");
+                return;
+            }
+
+            const Vec3 eye(0.0f, 0.0f, 4.0f);
+            rhi::GpuFrameData frame;
+            frame.viewProjection = perspectiveReverseZ(radians(60.0f), 1.0f, 0.1f)
+                                 * glm::lookAt(eye, Vec3(0.0f), Vec3(0, 1, 0));
+            frame.prevViewProjection = frame.viewProjection;
+            frame.invViewProjection  = inverse(frame.viewProjection);
+            frame.cameraPosition     = Vec4(eye, 1.0f);
+
+            rhi::GpuObjectData object;
+            object.normalMatrix = Mat4(normalMatrix(object.model));
+
+            rhi::GpuMaterialData material;
+            REQUIRE(fixture.prepare(frame, object, material));
+
+            const GBufferFixture::Readback readback = fixture.render();
+            (pass == 0 ? withCulling : withoutCulling) = readback.normal;
+        }
+
+        REQUIRE(withCulling.size() == withoutCulling.size());
+        REQUIRE(!withCulling.empty());
+
+        // The normal target is the strictest of the four: a back face carries
+        // the opposite normal, so any leak shows here first.
+        CHECK_MESSAGE(withCulling == withoutCulling,
+                      "backface culling changed the image for ", which);
+    }
+
+    CHECK(rhi::VulkanDevice::validationErrorCount() == 0);
 }
 
 TEST_SUITE_END();
