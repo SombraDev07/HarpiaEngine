@@ -6,7 +6,10 @@ add_library(harpia_core STATIC
     Threading/JobSystem.cpp
     Reflection/TypeRegistry.cpp
     Serialization/Serializer.cpp
-    ECS/World.cpp)
+    ECS/World.cpp
+    Assets/AssetId.cpp
+    Assets/AssetDatabase.cpp
+    Assets/AssetManager.cpp)
 
 add_library(Harpia::Core ALIAS harpia_core)
 
@@ -37,4 +40,7 @@ target_sources(harpia_core PUBLIC
         Serialization/ByteStream.h
         Serialization/Serializer.h
         ECS/Entity.h
-        ECS/World.h)
+        ECS/World.h
+        Assets/AssetId.h
+        Assets/AssetDatabase.h
+        Assets/AssetManager.h)
