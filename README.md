@@ -5,7 +5,7 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 
 ## Estado
 
-**F1.b concluída.** Assets endereçados por GUID; renomear arquivo não quebra referência.
+**F2 em andamento.** Meshes residentes na GPU via bindless; GBuffer é o próximo passo.
 
 | Bloco | Status |
 |---|---|
@@ -16,6 +16,7 @@ Plano completo em [HARPIA-ROADMAP.md](HARPIA-ROADMAP.md).
 | **F1** Render graph + primeiro triângulo | ✅ |
 | **F1.b** Asset DB com GUID + sidecars .meta | ✅ |
 | **F2** Import glTF 2.0 | parcial ✅ |
+| **F2** Mesh na GPU (bindless + VMA) | ✅ |
 | F2 GBuffer + PBR + motion vectors | próximo |
 
 ## Build
@@ -70,6 +71,6 @@ sudo dnf install libasan libubsan libtsan
 
 ## Testes
 
-105 casos, 26.052 asserções, doctest. `Tests/`.
+122 casos, 26.145 asserções, doctest. `Tests/`.
 
 Duas suítes: `harpia_engine` (tolerância zero a leak) e `harpia_gpu`.

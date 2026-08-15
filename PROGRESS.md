@@ -195,11 +195,39 @@ errados — invisível até o frustum culling começar a descartar os objetos er
 
 **Verificado:** 105 casos / 26.052 asserções · `-Werror`, ASan, UBSan e TSan limpos.
 
+### F2 passo 1 — Mesh na GPU ✅
+
+| Entrega | Onde |
+|---|---|
+| `VulkanBuffer` + `GpuUploader` — VMA, upload staged, `download` para verificação | `Source/RHI/Vulkan/VulkanBuffer.{h,cpp}` |
+| `GpuMesh` — vertex storage buffer no heap bindless, index buffer, sub-meshes | `Source/RHI/GpuMesh.{h,cpp}` |
+| `spirv-val` como gate de build | `cmake/HarpiaShaders.cmake` |
+
+**Decisão central:** vértices vão para **storage buffer indexado por bindless**, não para vertex
+buffer bindado. O vertex shader lê via `SV_VertexID`. É o que permite um pipeline só servir toda
+mesh, e é o layout que a submissão GPU-driven da F7 vai exigir. Índices ficam em index buffer de
+verdade — index fetch ainda é fixed function e ainda é o caminho mais rápido.
+
+`vertexOffset` vai para o `vkCmdDrawIndexed` em vez de ser embutido nos índices — que é por que
+o importador glTF os mantém locais à primitiva.
+
+Upload é síncrono, um submit por chamada. Mesh e textura carregam em load time, não por frame,
+então essa é a forma certa até streaming precisar de ring buffer e timeline na fila de transfer.
+
+**Verificado:** 122 casos / 26.145 asserções · `-Werror`, ASan, UBSan e TSan limpos ·
+0 erros de validação. Todo teste de upload faz round-trip por `download` — só readback prova
+que o byte chegou em memória device-local.
+
+### Ferramentas instaladas (2026-08-15)
+
+`glslang` (configure caiu de ~2min para 6,8s), `spirv-tools`, `renderdoc` 1.45, `vulkan-tools`.
+**DXC não existe no Fedora** — só importa em mesh shaders/wave intrinsics (F7); o CMake troca
+sozinho quando aparecer no PATH.
+
 ## Próximo
 
-**F2 — Deferred PBR.** Nesta ordem:
-1. Upload de `MeshAsset` para buffers GPU via VMA, registrados no heap bindless
-2. GBuffer no render graph: albedo, normal octaédrica, roughness/metallic, **motion vectors**, depth
+**F2 — Deferred PBR**, continuando de:
+2. **GBuffer no render graph**: albedo, normal octaédrica, roughness/metallic, **motion vectors**, depth ← próximo
 3. BRDF GGX + Smith + Fresnel, difuso Burley
 4. IBL split-sum (BRDF LUT + prefiltered environment)
 5. Luzes direcional + pontuais com clustered culling
