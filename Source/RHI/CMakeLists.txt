@@ -5,6 +5,8 @@ add_library(harpia_rhi STATIC
     Vulkan/VulkanBindless.cpp
     Vulkan/VulkanRenderer.cpp
     Vulkan/VulkanPipeline.cpp
+    Vulkan/VulkanBuffer.cpp
+    GpuMesh.cpp
     RenderGraph/RenderGraph.cpp
     ThirdPartyImpl.cpp)
 
@@ -34,4 +36,6 @@ target_sources(harpia_rhi PUBLIC
         Vulkan/VulkanBindless.h
         Vulkan/VulkanRenderer.h
         Vulkan/VulkanPipeline.h
+        Vulkan/VulkanBuffer.h
+        GpuMesh.h
         RenderGraph/RenderGraph.h)
