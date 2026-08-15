@@ -5,6 +5,8 @@
 // outside Source/RHI.
 #pragma once
 
+#include "Platform/Input.h"
+
 #include <cstdint>
 #include <string>
 
@@ -47,6 +49,10 @@ public:
 
     [[nodiscard]] GLFWwindow* nativeHandle() const noexcept { return window_; }
 
+    // Fills one frame of device truth. Mouse axes are deltas since the last
+    // call, which is why this must run exactly once per frame.
+    void readInput(RawInputState& outState);
+
     // True when a window system is reachable. Headless machines (CI) get false
     // and are expected to run the offscreen path instead.
     [[nodiscard]] static bool platformAvailable();
@@ -62,6 +68,10 @@ private:
     std::uint32_t width_   = 0;
     std::uint32_t height_  = 0;
     bool          resized_ = false;
+
+    double lastMouseX_    = 0.0;
+    double lastMouseY_    = 0.0;
+    bool   mousePrimed_   = false;
 };
 
 } // namespace harpia

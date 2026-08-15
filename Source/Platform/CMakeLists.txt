@@ -1,5 +1,6 @@
 add_library(harpia_platform STATIC
-    Window.cpp)
+    Window.cpp
+    Input.cpp)
 
 add_library(Harpia::Platform ALIAS harpia_platform)
 
@@ -13,4 +14,7 @@ target_link_libraries(harpia_platform
 target_sources(harpia_platform PUBLIC
     FILE_SET harpia_platform_headers TYPE HEADERS
     BASE_DIRS ${PROJECT_SOURCE_DIR}/Source
-    FILES Window.h)
+    FILES
+        Window.h
+        Input.h
+        InputTypes.h)

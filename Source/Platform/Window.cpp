@@ -131,6 +131,61 @@ void Window::requestClose()
     }
 }
 
+void Window::readInput(RawInputState& outState)
+{
+    outState.clear();
+    if (window_ == nullptr) {
+        return;
+    }
+
+    // Key and mouse-button enum values mirror GLFW's, so this is a cast rather
+    // than a table. InputTypes.h is the place that promise is documented.
+    for (std::size_t key = 0; key < static_cast<std::size_t>(Key::Count); ++key) {
+        if (glfwGetKey(window_, static_cast<int>(key)) == GLFW_PRESS) {
+            outState.keys.set(key);
+        }
+    }
+    for (std::size_t button = 0; button < static_cast<std::size_t>(MouseButton::Count); ++button) {
+        if (glfwGetMouseButton(window_, static_cast<int>(button)) == GLFW_PRESS) {
+            outState.mouseButtons.set(button);
+        }
+    }
+
+    double mouseX = 0.0;
+    double mouseY = 0.0;
+    glfwGetCursorPos(window_, &mouseX, &mouseY);
+
+    // The first frame has no previous position; reporting the absolute cursor
+    // as a delta would fling the camera.
+    if (mousePrimed_) {
+        outState.mouseAxes[static_cast<std::size_t>(MouseAxis::X)] =
+            static_cast<float>(mouseX - lastMouseX_);
+        outState.mouseAxes[static_cast<std::size_t>(MouseAxis::Y)] =
+            static_cast<float>(mouseY - lastMouseY_);
+    }
+    lastMouseX_  = mouseX;
+    lastMouseY_  = mouseY;
+    mousePrimed_ = true;
+
+    GLFWgamepadstate pad{};
+    if (glfwGetGamepadState(GLFW_JOYSTICK_1, &pad) == GLFW_TRUE) {
+        outState.gamepadConnected = true;
+        for (std::size_t i = 0; i < static_cast<std::size_t>(GamepadButton::Count); ++i) {
+            if (pad.buttons[i] == GLFW_PRESS) {
+                outState.gamepadButtons.set(i);
+            }
+        }
+        for (std::size_t i = 0; i < static_cast<std::size_t>(GamepadAxis::Count); ++i) {
+            outState.gamepadAxes[i] = pad.axes[i];
+        }
+        // GLFW reports triggers in [-1,1]; the engine treats them as [0,1].
+        for (const GamepadAxis trigger : {GamepadAxis::LeftTrigger, GamepadAxis::RightTrigger}) {
+            float& value = outState.gamepadAxes[static_cast<std::size_t>(trigger)];
+            value = (value + 1.0f) * 0.5f;
+        }
+    }
+}
+
 bool Window::consumeResized() noexcept
 {
     const bool was = resized_;

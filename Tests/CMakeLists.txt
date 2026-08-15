@@ -15,7 +15,8 @@ add_executable(harpia_tests
     test_render_golden.cpp
     test_reflection.cpp
     test_serialization.cpp
-    test_ecs.cpp)
+    test_ecs.cpp
+    test_input.cpp)
 
 target_include_directories(harpia_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -27,6 +28,7 @@ target_compile_definitions(harpia_tests PRIVATE DOCTEST_CONFIG_DOUBLE_STRINGIFY)
 target_link_libraries(harpia_tests
     PRIVATE Harpia::Core
             Harpia::RHI
+            Harpia::Platform
             doctest::doctest
             harpia_warnings)
 
