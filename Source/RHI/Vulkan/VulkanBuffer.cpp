@@ -299,7 +299,8 @@ bool GpuUploader::downloadImage(VkImage                    image,
                                 std::uint32_t              texelBytes,
                                 std::vector<std::uint8_t>& outTexels,
                                 VkImageAspectFlags         aspect,
-                                std::uint32_t              baseArrayLayer)
+                                std::uint32_t              baseArrayLayer,
+                                std::uint32_t              mipLevel)
 {
     if (device_ == nullptr || image == VK_NULL_HANDLE || texelBytes == 0) {
         return false;
@@ -339,6 +340,7 @@ bool GpuUploader::downloadImage(VkImage                    image,
 
     VkBufferImageCopy region{};
     region.imageSubresource.aspectMask     = aspect;
+    region.imageSubresource.mipLevel       = mipLevel;
     region.imageSubresource.baseArrayLayer = baseArrayLayer;
     region.imageSubresource.layerCount     = 1;
     region.imageExtent = VkExtent3D{extent.width, extent.height, 1};

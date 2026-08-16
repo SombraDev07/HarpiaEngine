@@ -43,6 +43,22 @@ public:
 
     static constexpr std::uint32_t kCubeFaces = 6;
 
+    // One mip per roughness step: 128, 64, 32, 16, 8, 4. Six is where the
+    // sequence stops being useful — a 2x2 face carries no direction left to
+    // convolve, and roughness 1 is already an almost uniform hemisphere.
+    static constexpr std::uint32_t kEnvironmentMips = 6;
+
+    // Samples per texel in the prefilter. 128 is enough because the sequence is
+    // low-discrepancy rather than random; the visible artefact of too few is
+    // banding in the rough mips, not noise.
+    static constexpr std::uint32_t kPrefilterSamples = 128;
+
+    // Roughness the given mip was convolved for. Mip 0 is the mirror.
+    [[nodiscard]] static constexpr float roughnessOfMip(std::uint32_t mip) noexcept
+    {
+        return static_cast<float>(mip) / static_cast<float>(kEnvironmentMips - 1);
+    }
+
     // Renders the table and registers it in the bindless heap.
     [[nodiscard]] bool create(VulkanDevice&      device,
                               VulkanBindless&    bindless,
@@ -83,7 +99,14 @@ private:
     VkImageView   envCubeView_   = VK_NULL_HANDLE;
     VmaAllocation envAllocation_ = nullptr;
     std::uint32_t envIndex_      = VulkanBindless::kInvalidIndex;
-    std::array<VkImageView, kCubeFaces> envFaceViews_{};
+
+    // Rendering targets one mip of one face at a time, so the attachment views
+    // are per pair. The mirror view is a cube restricted to mip 0: the prefilter
+    // samples it while writing the mips below, and a view spanning the whole
+    // chain would let it read levels it is in the middle of producing.
+    std::array<std::array<VkImageView, kCubeFaces>, kEnvironmentMips> envFaceViews_{};
+    VkImageView   envMirrorView_  = VK_NULL_HANDLE;
+    std::uint32_t envMirrorIndex_ = VulkanBindless::kInvalidIndex;
 };
 
 } // namespace harpia::rhi

@@ -99,7 +99,8 @@ public:
                                      std::vector<std::uint8_t>& outTexels,
                                      VkImageAspectFlags         aspect
                                          = VK_IMAGE_ASPECT_COLOR_BIT,
-                                     std::uint32_t              baseArrayLayer = 0);
+                                     std::uint32_t              baseArrayLayer = 0,
+                                     std::uint32_t              mipLevel = 0);
 
 private:
     VulkanDevice* device_ = nullptr;

@@ -344,4 +344,130 @@ TEST_CASE("the equirectangular projection puts each face where it looks")
     device.destroy();
 }
 
+TEST_CASE("the prefiltered chain widens the lobe without inventing energy")
+{
+    rhi::VulkanDevice::resetValidationErrorCount();
+
+    rhi::DeviceDesc desc;
+    desc.enableValidation = true;
+    desc.window           = nullptr;
+
+    rhi::VulkanDevice device;
+    if (!device.create(desc)) {
+        MESSAGE("no Vulkan device available — skipping");
+        return;
+    }
+
+    rhi::VulkanRenderer renderer;
+    rhi::GpuUploader    uploader;
+    REQUIRE(renderer.createOffscreen(device, 16, 16));
+    REQUIRE(uploader.create(device));
+
+    // Half the sphere bright, half dark, split at the equator. A convolution
+    // has nowhere to hide against a step: the mirror mip must keep it sharp,
+    // and each rougher mip must soften it by a measurable amount.
+    constexpr std::uint32_t kSourceWidth  = 64;
+    constexpr std::uint32_t kSourceHeight = 32;
+    constexpr float         kBright       = 8.0f;
+    constexpr float         kDark         = 0.5f;
+
+    HdrImageAsset source;
+    source.width  = kSourceWidth;
+    source.height = kSourceHeight;
+    source.pixels.resize(static_cast<std::size_t>(kSourceWidth) * kSourceHeight * 4);
+
+    for (std::uint32_t y = 0; y < kSourceHeight; ++y) {
+        // Latitude runs from the north pole, so the top half is the sky.
+        const float value = y < kSourceHeight / 2 ? kBright : kDark;
+        for (std::uint32_t x = 0; x < kSourceWidth; ++x) {
+            const std::size_t offset =
+                (static_cast<std::size_t>(y) * kSourceWidth + x) * 4;
+            source.pixels[offset + 0] = value;
+            source.pixels[offset + 1] = value;
+            source.pixels[offset + 2] = value;
+            source.pixels[offset + 3] = 1.0f;
+        }
+    }
+
+    rhi::IblResources ibl;
+    REQUIRE(ibl.create(device, renderer.bindless(), std::string(HARPIA_SHADER_DIR)));
+    REQUIRE(ibl.loadEnvironment(device, renderer.bindless(), source,
+                                std::string(HARPIA_SHADER_DIR)));
+
+    const auto faceMean = [&](std::uint32_t mip, std::uint32_t face) {
+        const std::uint32_t edge = rhi::IblResources::kEnvironmentSize >> mip;
+        std::vector<std::uint8_t> raw;
+        REQUIRE(uploader.downloadImage(ibl.environmentImage(),
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                       VkExtent2D{edge, edge}, 8, raw,
+                                       VK_IMAGE_ASPECT_COLOR_BIT, face, mip));
+        const auto* halves = reinterpret_cast<const std::uint16_t*>(raw.data());
+
+        double sum = 0.0;
+        for (std::uint32_t i = 0; i < edge * edge; ++i) {
+            sum += static_cast<double>(half16ToFloat(halves[static_cast<std::size_t>(i) * 4]));
+        }
+        return static_cast<float>(sum / (edge * edge));
+    };
+
+    SUBCASE("no mip brightens or darkens the environment as a whole")
+    {
+        // Convolution redistributes energy, it does not create it. Every mip's
+        // mean has to stay inside the range the source spans — a prefilter that
+        // forgot to divide by the accumulated weight fails right here, and that
+        // is the failure which otherwise reads as a wrong exposure.
+        for (std::uint32_t mip = 0; mip < rhi::IblResources::kEnvironmentMips; ++mip) {
+            const float mean = faceMean(mip, 2);
+            CAPTURE(mip);
+            CHECK(mean >= kDark * 0.95f);
+            CHECK(mean <= kBright * 1.05f);
+        }
+    }
+
+    SUBCASE("roughness pulls the bright face towards the average")
+    {
+        // +Y sees only sky at roughness 0. As the lobe widens it reaches across
+        // the equator and picks up ground, so the face mean has to fall.
+        float previous = faceMean(0, 2);
+        CHECK(previous == doctest::Approx(kBright).epsilon(0.05));
+
+        for (std::uint32_t mip = 1; mip < rhi::IblResources::kEnvironmentMips; ++mip) {
+            const float mean = faceMean(mip, 2);
+            CAPTURE(mip);
+            CHECK(mean <= previous + 1e-3f);
+            previous = mean;
+        }
+
+        // And it has to have actually moved, or the prefilter ran and did
+        // nothing measurable.
+        CHECK(previous < kBright * 0.95f);
+    }
+
+    SUBCASE("the mirror mip keeps the contrast the rough mips lose")
+    {
+        // -Y looks into the ground. The contrast between opposing faces is what
+        // roughness destroys, so it is largest at mip 0.
+        const float sharpContrast = faceMean(0, 2) - faceMean(0, 3);
+        const float roughContrast = faceMean(rhi::IblResources::kEnvironmentMips - 1, 2)
+                                  - faceMean(rhi::IblResources::kEnvironmentMips - 1, 3);
+
+        CHECK(sharpContrast > 0.0f);
+        CHECK(roughContrast < sharpContrast);
+    }
+
+    SUBCASE("roughness per mip spans zero to one")
+    {
+        CHECK(rhi::IblResources::roughnessOfMip(0) == doctest::Approx(0.0f));
+        CHECK(rhi::IblResources::roughnessOfMip(rhi::IblResources::kEnvironmentMips - 1)
+              == doctest::Approx(1.0f));
+    }
+
+    CHECK(rhi::VulkanDevice::validationErrorCount() == 0);
+
+    ibl.destroy();
+    uploader.destroy();
+    renderer.destroy();
+    device.destroy();
+}
+
 TEST_SUITE_END();

@@ -77,7 +77,8 @@ harpia_declare_shaders(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Lighting.frag.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Tonemap.frag.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/BrdfLut.frag.hlsl
-    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/EquirectToCube.frag.hlsl)
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/EquirectToCube.frag.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Prefilter.frag.hlsl)
 
 add_subdirectory(Samples/ClearScreen)
 add_subdirectory(Samples/Triangle)

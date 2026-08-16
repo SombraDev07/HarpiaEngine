@@ -264,7 +264,7 @@ bool IblResources::loadEnvironment(VulkanDevice&        device,
     cubeInfo.imageType     = VK_IMAGE_TYPE_2D;
     cubeInfo.format        = kFormat;
     cubeInfo.extent        = VkExtent3D{kEnvironmentSize, kEnvironmentSize, 1};
-    cubeInfo.mipLevels     = 1;
+    cubeInfo.mipLevels     = kEnvironmentMips;
     cubeInfo.arrayLayers   = kCubeFaces;
     cubeInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
     cubeInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
@@ -282,34 +282,53 @@ bool IblResources::loadEnvironment(VulkanDevice&        device,
 
     setDebugName(device.device(), VK_OBJECT_TYPE_IMAGE, envImage_, "Ibl_Environment");
 
-    // One 2D view per face to render into, plus a cube view to sample from.
-    // Rendering through the cube view is not possible: an attachment is a single
-    // layer, and the face is which layer.
-    for (std::uint32_t face = 0; face < kCubeFaces; ++face) {
-        VkImageViewCreateInfo faceInfo{};
-        faceInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        faceInfo.image    = envImage_;
-        faceInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        faceInfo.format   = kFormat;
-        faceInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-        faceInfo.subresourceRange.levelCount     = 1;
-        faceInfo.subresourceRange.baseArrayLayer = face;
-        faceInfo.subresourceRange.layerCount     = 1;
-        HARPIA_VK_CHECK(vkCreateImageView(device.device(), &faceInfo, nullptr,
-                                          &envFaceViews_[face]));
+    // One 2D view per (mip, face) to render into. Rendering through a cube view
+    // is not possible: an attachment is a single layer, and the face is which
+    // layer.
+    for (std::uint32_t mip = 0; mip < kEnvironmentMips; ++mip) {
+        for (std::uint32_t face = 0; face < kCubeFaces; ++face) {
+            VkImageViewCreateInfo faceInfo{};
+            faceInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            faceInfo.image    = envImage_;
+            faceInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            faceInfo.format   = kFormat;
+            faceInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+            faceInfo.subresourceRange.baseMipLevel   = mip;
+            faceInfo.subresourceRange.levelCount     = 1;
+            faceInfo.subresourceRange.baseArrayLayer = face;
+            faceInfo.subresourceRange.layerCount     = 1;
+            HARPIA_VK_CHECK(vkCreateImageView(device.device(), &faceInfo, nullptr,
+                                              &envFaceViews_[mip][face]));
+        }
     }
 
+    // The mirror view: a cube restricted to mip 0. The prefilter reads through
+    // this while writing every mip below it, and a view spanning the whole chain
+    // would let it sample levels it is in the middle of producing.
+    VkImageViewCreateInfo mirrorInfo{};
+    mirrorInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    mirrorInfo.image    = envImage_;
+    mirrorInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+    mirrorInfo.format   = kFormat;
+    mirrorInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    mirrorInfo.subresourceRange.levelCount = 1;
+    mirrorInfo.subresourceRange.layerCount = kCubeFaces;
+    HARPIA_VK_CHECK(vkCreateImageView(device.device(), &mirrorInfo, nullptr, &envMirrorView_));
+
+    // The sampling view spans the whole chain: shading picks its roughness by
+    // choosing a mip, so the level of detail has to be reachable from one index.
     VkImageViewCreateInfo cubeViewInfo{};
     cubeViewInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     cubeViewInfo.image    = envImage_;
     cubeViewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
     cubeViewInfo.format   = kFormat;
     cubeViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    cubeViewInfo.subresourceRange.levelCount = 1;
+    cubeViewInfo.subresourceRange.levelCount = kEnvironmentMips;
     cubeViewInfo.subresourceRange.layerCount = kCubeFaces;
     HARPIA_VK_CHECK(vkCreateImageView(device.device(), &cubeViewInfo, nullptr, &envCubeView_));
 
     setDebugName(device.device(), VK_OBJECT_TYPE_IMAGE_VIEW, envCubeView_, "Ibl_EnvironmentCube");
+    setDebugName(device.device(), VK_OBJECT_TYPE_IMAGE_VIEW, envMirrorView_, "Ibl_EnvironmentMip0");
 
     // --- project -------------------------------------------------------------
     const std::uint32_t sourceIndex = bindless.registerSampledImage(
@@ -330,8 +349,29 @@ bool IblResources::loadEnvironment(VulkanDevice&        device,
     pipelineDesc.pushConstantBytes   = sizeof(CubePushConstants);
     pipelineDesc.debugName           = "Pipeline_EquirectToCube";
 
+    GraphicsPipelineDesc prefilterDesc = pipelineDesc;
+    prefilterDesc.fragmentSpirvPath = shaderDirectory + "/Prefilter.frag.spv";
+    prefilterDesc.debugName         = "Pipeline_Prefilter";
+
     VulkanPipeline pipeline;
-    if (!pipeline.create(device, pipelineDesc)) {
+    VulkanPipeline prefilter;
+    if (!pipeline.create(device, pipelineDesc) || !prefilter.create(device, prefilterDesc)) {
+        pipeline.destroy();
+        bindless.releaseSampledImage(sourceIndex);
+        vkDestroyImageView(device.device(), sourceView, nullptr);
+        vmaDestroyImage(device.allocator(), sourceImage, sourceAllocation);
+        destroyEnvironment();
+        return false;
+    }
+
+    // Registered before recording: the prefilter reads the mirror mip through a
+    // bindless index that has to exist when the push constants are written.
+    envMirrorIndex_ = bindless.registerSampledImage(
+        envMirrorView_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (envMirrorIndex_ == VulkanBindless::kInvalidIndex) {
+        std::fprintf(stderr, "[ibl] bindless sampled image slots exhausted\n");
+        pipeline.destroy();
+        prefilter.destroy();
         bindless.releaseSampledImage(sourceIndex);
         vkDestroyImageView(device.device(), sourceView, nullptr);
         vmaDestroyImage(device.allocator(), sourceImage, sourceAllocation);
@@ -402,44 +442,84 @@ bool IblResources::loadEnvironment(VulkanDevice&        device,
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(),
                             0, 1, &descriptorSet, 0, nullptr);
 
-    for (std::uint32_t face = 0; face < kCubeFaces; ++face) {
-        VkRenderingAttachmentInfo attachment{};
-        attachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        attachment.imageView   = envFaceViews_[face];
-        attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        attachment.loadOp      = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        attachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
+    // One draw per (mip, face). Mip 0 comes from the equirect; every mip below
+    // it is that mirror convolved with a wider GGX lobe.
+    const auto drawFaces = [&](VulkanPipeline&      target,
+                               std::uint32_t        mip,
+                               const CubePushConstants& push) {
+        const std::uint32_t edge = kEnvironmentSize >> mip;
+        for (std::uint32_t face = 0; face < kCubeFaces; ++face) {
+            VkRenderingAttachmentInfo attachment{};
+            attachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            attachment.imageView   = envFaceViews_[mip][face];
+            attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            attachment.loadOp      = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            attachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
 
-        VkRenderingInfo rendering{};
-        rendering.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        rendering.renderArea.extent    = VkExtent2D{kEnvironmentSize, kEnvironmentSize};
-        rendering.layerCount           = 1;
-        rendering.colorAttachmentCount = 1;
-        rendering.pColorAttachments    = &attachment;
+            VkRenderingInfo rendering{};
+            rendering.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            rendering.renderArea.extent    = VkExtent2D{edge, edge};
+            rendering.layerCount           = 1;
+            rendering.colorAttachmentCount = 1;
+            rendering.pColorAttachments    = &attachment;
 
-        CubePushConstants push;
-        push.sourceTexture = sourceIndex;
-        push.face          = face;
+            CubePushConstants facePush = push;
+            facePush.face = face;
 
-        vkCmdBeginRendering(cmd, &rendering);
-        pipeline.bind(cmd);
-        pipeline.setViewportAndScissor(cmd, VkExtent2D{kEnvironmentSize, kEnvironmentSize});
-        vkCmdPushConstants(cmd, pipeline.layout(), VK_SHADER_STAGE_ALL, 0,
-                           sizeof(push), &push);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
-        vkCmdEndRendering(cmd);
-    }
+            vkCmdBeginRendering(cmd, &rendering);
+            target.bind(cmd);
+            target.setViewportAndScissor(cmd, VkExtent2D{edge, edge});
+            vkCmdPushConstants(cmd, target.layout(), VK_SHADER_STAGE_ALL, 0,
+                               sizeof(facePush), &facePush);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+            vkCmdEndRendering(cmd);
+        }
+    };
 
-    VkImageMemoryBarrier2 toSampled = toAttachment;
-    toSampled.srcStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    toSampled.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    toSampled.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    toSampled.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    toSampled.oldLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    toSampled.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    dependency.pImageMemoryBarriers = &toSampled;
+    CubePushConstants projectPush;
+    projectPush.sourceTexture = sourceIndex;
+    drawFaces(pipeline, 0, projectPush);
+
+    // Mip 0 becomes readable before anything convolves it. This barrier is the
+    // whole reason the chain is correct: without it the prefilter would sample
+    // an image the projection has not finished writing.
+    VkImageMemoryBarrier2 mirrorReadable{};
+    mirrorReadable.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    mirrorReadable.srcStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    mirrorReadable.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    mirrorReadable.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    mirrorReadable.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    mirrorReadable.oldLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    mirrorReadable.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    mirrorReadable.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    mirrorReadable.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    mirrorReadable.image = envImage_;
+    mirrorReadable.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    mirrorReadable.subresourceRange.levelCount = 1;
+    mirrorReadable.subresourceRange.layerCount = kCubeFaces;
+    dependency.pImageMemoryBarriers = &mirrorReadable;
     vkCmdPipelineBarrier2(cmd, &dependency);
 
+    for (std::uint32_t mip = 1; mip < kEnvironmentMips; ++mip) {
+        VkImageMemoryBarrier2 levelToAttachment = toAttachment;
+        levelToAttachment.subresourceRange.baseMipLevel = mip;
+        dependency.pImageMemoryBarriers = &levelToAttachment;
+        vkCmdPipelineBarrier2(cmd, &dependency);
+
+        CubePushConstants push;
+        push.sourceTexture = envMirrorIndex_;
+        push.roughness     = roughnessOfMip(mip);
+        push.sampleCount   = kPrefilterSamples;
+        drawFaces(prefilter, mip, push);
+
+        VkImageMemoryBarrier2 levelToSampled = mirrorReadable;
+        levelToSampled.subresourceRange.baseMipLevel = mip;
+        dependency.pImageMemoryBarriers = &levelToSampled;
+        vkCmdPipelineBarrier2(cmd, &dependency);
+    }
+
+    // Every level was moved to SHADER_READ_ONLY as it finished, so there is no
+    // whole-image transition left to do here.
     HARPIA_VK_CHECK(vkEndCommandBuffer(cmd));
 
     VkCommandBufferSubmitInfo cmdSubmit{};
@@ -456,6 +536,7 @@ bool IblResources::loadEnvironment(VulkanDevice&        device,
 
     vkDestroyCommandPool(device.device(), pool, nullptr);
     pipeline.destroy();
+    prefilter.destroy();
 
     // The equirect existed only to be projected; nothing samples it afterwards.
     bindless.releaseSampledImage(sourceIndex);
@@ -478,15 +559,29 @@ void IblResources::destroyEnvironment()
     if (device_ == nullptr) {
         return;
     }
-    if (bindless_ != nullptr && envIndex_ != VulkanBindless::kInvalidIndex) {
-        bindless_->releaseSampledImage(envIndex_);
-        envIndex_ = VulkanBindless::kInvalidIndex;
-    }
-    for (VkImageView& face : envFaceViews_) {
-        if (face != VK_NULL_HANDLE) {
-            vkDestroyImageView(device_->device(), face, nullptr);
-            face = VK_NULL_HANDLE;
+    if (bindless_ != nullptr) {
+        if (envIndex_ != VulkanBindless::kInvalidIndex) {
+            bindless_->releaseSampledImage(envIndex_);
+            envIndex_ = VulkanBindless::kInvalidIndex;
         }
+        // The mirror slot outlives the prefilter only because releasing a
+        // descriptor the GPU may still be reading is worse than holding it.
+        if (envMirrorIndex_ != VulkanBindless::kInvalidIndex) {
+            bindless_->releaseSampledImage(envMirrorIndex_);
+            envMirrorIndex_ = VulkanBindless::kInvalidIndex;
+        }
+    }
+    for (std::array<VkImageView, kCubeFaces>& level : envFaceViews_) {
+        for (VkImageView& face : level) {
+            if (face != VK_NULL_HANDLE) {
+                vkDestroyImageView(device_->device(), face, nullptr);
+                face = VK_NULL_HANDLE;
+            }
+        }
+    }
+    if (envMirrorView_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(device_->device(), envMirrorView_, nullptr);
+        envMirrorView_ = VK_NULL_HANDLE;
     }
     if (envCubeView_ != VK_NULL_HANDLE) {
         vkDestroyImageView(device_->device(), envCubeView_, nullptr);
