@@ -55,6 +55,7 @@ target_sources(harpia_core PUBLIC
         Assets/AssetManager.h
         Assets/MeshAsset.h
         Assets/GltfLoader.h
+        Assets/HdrImage.h
         Assets/TextureAsset.h
         Assets/TextureLoader.h)
 

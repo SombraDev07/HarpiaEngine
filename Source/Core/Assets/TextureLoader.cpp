@@ -68,6 +68,54 @@ TextureImportResult importTexture(const std::filesystem::path& path)
     return result;
 }
 
+const float* HdrImageAsset::texel(std::uint32_t x, std::uint32_t y) const noexcept
+{
+    static constexpr float kBlack[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    if (width == 0 || height == 0) {
+        return kBlack;
+    }
+    const std::uint32_t cx = x < width ? x : width - 1;
+    const std::uint32_t cy = y < height ? y : height - 1;
+    return &pixels[(static_cast<std::size_t>(cy) * width + cx) * 4];
+}
+
+HdrImportResult importHdrImage(const std::filesystem::path& path)
+{
+    HdrImportResult result;
+
+    int width    = 0;
+    int height   = 0;
+    int channels = 0;
+
+    float* decoded = stbi_loadf(path.string().c_str(), &width, &height, &channels,
+                                STBI_rgb_alpha);
+    if (decoded == nullptr) {
+        const char* reason = stbi_failure_reason();
+        result.error = "stbi_loadf failed for " + path.string()
+                     + (reason != nullptr ? std::string(": ") + reason : std::string());
+        return result;
+    }
+
+    if (width <= 0 || height <= 0) {
+        stbi_image_free(decoded);
+        result.error = "degenerate image size in " + path.string();
+        return result;
+    }
+
+    auto image = std::make_shared<HdrImageAsset>();
+    image->width  = static_cast<std::uint32_t>(width);
+    image->height = static_cast<std::uint32_t>(height);
+
+    const std::size_t floatCount = static_cast<std::size_t>(width)
+                                 * static_cast<std::size_t>(height) * 4;
+    image->pixels.assign(decoded, decoded + floatCount);
+
+    stbi_image_free(decoded);
+
+    result.image = std::move(image);
+    return result;
+}
+
 TextureImportResult importTextureFromMemory(std::span<const std::uint8_t> bytes)
 {
     TextureImportResult result;

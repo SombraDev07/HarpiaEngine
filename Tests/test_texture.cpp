@@ -11,9 +11,13 @@
 #include "RHI/Vulkan/VulkanDevice.h"
 #include "RHI/Vulkan/VulkanRenderer.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <vector>
 
 using namespace harpia;
@@ -125,6 +129,74 @@ std::vector<std::uint8_t> makePng(std::uint32_t width, std::uint32_t height,
     appendChunk(png, "IEND", {});
     return png;
 }
+
+// Radiance RGBE: one shared 8-bit exponent for the three mantissas, which is
+// what buys the range in four bytes. Written by hand for the same reason the
+// PNG above is — a fixture nobody reads is a fixture nobody maintains.
+void encodeRgbe(const std::array<float, 3>& rgb, std::uint8_t out[4])
+{
+    const float largest = std::max({rgb[0], rgb[1], rgb[2]});
+    if (largest < 1e-32f) {
+        out[0] = out[1] = out[2] = out[3] = 0;
+        return;
+    }
+
+    int exponent = 0;
+    (void)std::frexp(largest, &exponent);
+    const double scale = std::ldexp(1.0, 8 - exponent);
+
+    for (int c = 0; c < 3; ++c) {
+        const double scaled = static_cast<double>(rgb[static_cast<std::size_t>(c)]) * scale;
+        out[c] = static_cast<std::uint8_t>(scaled < 0.0 ? 0.0
+                                         : (scaled > 255.0 ? 255.0 : scaled));
+    }
+    out[3] = static_cast<std::uint8_t>(exponent + 128);
+}
+
+// Writes flat (uncompressed) scanlines. Widths under 8 make stb_image take the
+// non-RLE path unconditionally, which keeps this writer to what it is.
+std::vector<std::uint8_t> makeHdr(std::uint32_t width, std::uint32_t height,
+                                  const std::vector<std::array<float, 3>>& radiance)
+{
+    const std::string header = "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n"
+                             + std::string("-Y ") + std::to_string(height)
+                             + " +X " + std::to_string(width) + "\n";
+
+    std::vector<std::uint8_t> out(header.begin(), header.end());
+    for (const std::array<float, 3>& pixel : radiance) {
+        std::uint8_t rgbe[4];
+        encodeRgbe(pixel, rgbe);
+        out.insert(out.end(), rgbe, rgbe + 4);
+    }
+    return out;
+}
+
+struct TempHdr {
+    fs::path root;
+    fs::path file;
+
+    TempHdr(std::uint32_t width, std::uint32_t height,
+            const std::vector<std::array<float, 3>>& radiance)
+    {
+        root = fs::temp_directory_path() / ("harpia_hdr_" + AssetId::generate().toString());
+        fs::create_directories(root);
+        file = root / "environment.hdr";
+
+        const std::vector<std::uint8_t> bytes = makeHdr(width, height, radiance);
+        std::ofstream out(file, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+    }
+
+    ~TempHdr()
+    {
+        std::error_code error;
+        fs::remove_all(root, error);
+    }
+
+    TempHdr(const TempHdr&)            = delete;
+    TempHdr& operator=(const TempHdr&) = delete;
+};
 
 struct TempImage {
     fs::path root;
@@ -253,6 +325,91 @@ TEST_CASE("textures load through the asset manager by GUID")
     CHECK(texture->width == 8);
     CHECK(texture->type() == AssetType::Texture);
     CHECK(manager.load<TextureAsset>(id) == texture); // cached
+}
+
+TEST_CASE("a radiance .hdr decodes to float with its range intact")
+{
+    // Values chosen to straddle 1.0: the whole reason an environment map is not
+    // an 8-bit texture is that a sky is many times brighter than white.
+    const std::vector<std::array<float, 3>> radiance{
+        {0.25f, 0.50f, 0.75f},
+        {12.0f, 12.0f, 12.0f},
+        {0.00f, 0.00f, 0.00f},
+        {40.0f, 10.0f,  2.5f},
+        {1.00f, 1.00f, 1.00f},
+        {0.10f, 0.20f, 0.30f},
+        {3.50f, 0.05f, 0.00f},
+        {0.01f, 0.01f, 0.01f},
+    };
+
+    const TempHdr image(4, 2, radiance);
+
+    const HdrImportResult imported = importHdrImage(image.file);
+    REQUIRE(imported);
+    REQUIRE(imported.image != nullptr);
+
+    const HdrImageAsset& hdr = *imported.image;
+    CHECK(hdr.width == 4);
+    CHECK(hdr.height == 2);
+    CHECK(hdr.pixels.size() == 4 * 2 * 4);
+
+    SUBCASE("values above one survive the round trip")
+    {
+        // RGBE carries an 8-bit mantissa, so the tolerance is relative, not
+        // absolute — 40.0 cannot come back to more precision than ~0.4%.
+        for (std::size_t i = 0; i < radiance.size(); ++i) {
+            const float* texel = &hdr.pixels[i * 4];
+            for (int c = 0; c < 3; ++c) {
+                const float expected = radiance[i][static_cast<std::size_t>(c)];
+                if (expected > 0.0f) {
+                    CHECK(texel[c] == doctest::Approx(expected).epsilon(0.01));
+                } else {
+                    CHECK(texel[c] == doctest::Approx(0.0f).epsilon(0.001));
+                }
+            }
+        }
+    }
+
+    SUBCASE("the brightest sample stays far above white")
+    {
+        // The property that matters downstream: clamping to 1.0 anywhere in the
+        // path would make prefiltering average away the sun.
+        const float* sun = &hdr.pixels[3 * 4];
+        CHECK(sun[0] > 30.0f);
+    }
+
+    SUBCASE("alpha is padding, not data")
+    {
+        for (std::size_t i = 0; i < radiance.size(); ++i) {
+            CHECK(hdr.pixels[i * 4 + 3] == doctest::Approx(1.0f));
+        }
+    }
+
+    SUBCASE("the clamped fetch never reads outside the image")
+    {
+        const float* inside  = hdr.texel(3, 1);
+        const float* clamped = hdr.texel(99, 99);
+        CHECK(clamped == inside); // same address: clamped to the last texel
+    }
+}
+
+TEST_CASE("a file that is not radiance is reported rather than crashed on")
+{
+    const fs::path root = fs::temp_directory_path()
+                        / ("harpia_hdr_bad_" + AssetId::generate().toString());
+    fs::create_directories(root);
+    const fs::path file = root / "not_really.hdr";
+    {
+        std::ofstream out(file, std::ios::binary);
+        out << "this is not a radiance file";
+    }
+
+    const HdrImportResult imported = importHdrImage(file);
+    CHECK_FALSE(imported);
+    CHECK_FALSE(imported.error.empty());
+
+    std::error_code error;
+    fs::remove_all(root, error);
 }
 
 TEST_SUITE_BEGIN("gpu");
