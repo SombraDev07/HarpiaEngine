@@ -507,6 +507,35 @@ cmake --build --preset=ci --target harpia_navigation_tests
 
 **Verificado:** 14 casos / 59 asserções em `Tests/test_physics.cpp` — caixa cai e assenta, raycast, mesh de colisão (winding CCW; mesh do Jolt é de uma face), character anda e para em parede, sync ECS, memória da tag volta a zero no shutdown, jobs passam pelo `JobSystem`. Preset `ci` com `-Werror`. **ASan e TSan limpos.**
 
+### Cena importada — do arquivo ao frame ✅
+
+| Entrega | Onde |
+|---|---|
+| `GpuScene` — materiais, texturas e malha residentes a partir de um `MeshAsset` | `Source/RHI/GpuScene.{h,cpp}` |
+| `HarpiaGltfViewer` — carrega `.gltf`, opcionalmente `.hdr`, renderiza | `Samples/GltfViewer/` |
+
+Cada peça deste caminho já existia e **nenhuma tinha se encontrado**: o importador resolve
+textura para GUID, o `AssetManager` vira pixels, o `GpuTexture` torna residente, o GBuffer lê
+material por índice bindless. Faltava o que percorre a lista de materiais e liga os quatro. O
+sample Deferred desenhava primitivas geradas, então nenhum arquivo real tinha chegado a um frame.
+
+**O bug que virou teste:** um mesmo PNG usado como base color e como metallic-roughness tem que
+virar **duas** imagens de GPU. Base color carrega a curva sRGB, roughness não; compartilhar
+aplicaria a curva a números que não são cor. É invisível numa captura e consistentemente errado
+na iluminação — o tipo que acaba compensado na arte. O cache é chaveado por GUID **e** espaço de
+cor, e a contagem é afirmada.
+
+Referência quebrada é fato de conteúdo real, não erro: material que nomeia textura que ninguém
+importou mantém o slot inválido e renderiza pelo factor.
+
+A câmera enquadra pelos bounds do próprio modelo. Um viewer que assume escala renderiza todo
+asset menos aquele em que foi ajustado como um grão ou uma parede.
+
+**Verificado rodando:** quad texturizado importado de `.gltf`, com e sem `.hdr` de ambiente,
+3 passes, 0 erros de validação, imagem conferida.
+
+185 casos / 27.692 asserções · `-Werror`, ASan e TSan limpos.
+
 ## Próximo
 
 **F2 — Deferred PBR**, continuando de:

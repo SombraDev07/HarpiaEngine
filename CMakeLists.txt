@@ -84,6 +84,7 @@ harpia_declare_shaders(SOURCES
 add_subdirectory(Samples/ClearScreen)
 add_subdirectory(Samples/Triangle)
 add_subdirectory(Samples/Deferred)
+add_subdirectory(Samples/GltfViewer)
 
 if(HARPIA_BUILD_TESTS)
     enable_testing()
