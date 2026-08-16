@@ -1,10 +1,4 @@
-include(FetchContent)
-
-FetchContent_Declare(doctest
-    GIT_REPOSITORY https://github.com/doctest/doctest.git
-    GIT_TAG        v2.4.12
-    GIT_SHALLOW    TRUE)
-FetchContent_MakeAvailable(doctest)
+# doctest is fetched in cmake/HarpiaDependencies.cmake, with every other pin.
 
 add_executable(harpia_tests
     main.cpp

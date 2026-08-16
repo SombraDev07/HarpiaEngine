@@ -56,68 +56,7 @@ endif()
 # ------------------------------------------------------------------------------
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
-include(FetchContent)
-set(FETCHCONTENT_QUIET OFF)
-
-find_package(Vulkan REQUIRED)
-find_package(glfw3 3.3 REQUIRED)
-
-FetchContent_Declare(vma
-    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
-    GIT_TAG        v3.4.0
-    GIT_SHALLOW    TRUE)
-FetchContent_MakeAvailable(vma)
-
-# stb ships headers only, with no build system of its own.
-FetchContent_Declare(stb
-    GIT_REPOSITORY https://github.com/nothings/stb.git
-    GIT_TAG        f0569113c93ad095470c54bf34a17b36646bbbb5
-    GIT_SHALLOW    FALSE)
-FetchContent_MakeAvailable(stb)
-
-FetchContent_Declare(glm
-    GIT_REPOSITORY https://github.com/g-truc/glm.git
-    GIT_TAG        1.0.1
-    GIT_SHALLOW    TRUE)
-set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(GLM_BUILD_LIBRARY OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(glm)
-
-# Wrapped rather than used directly, the same way stb and cgltf are: glm's own
-# target carries its includes through a generator expression, which defeats
-# promoting them to SYSTEM after the fact. Its headers trip -Wsign-conversion
-# and are not ours to fix.
-add_library(harpia_glm INTERFACE)
-target_include_directories(harpia_glm SYSTEM INTERFACE ${glm_SOURCE_DIR})
-
-# Set once, globally: a translation unit that includes glm without these would
-# disagree with every other one about depth range and constructor behaviour.
-target_compile_definitions(harpia_glm INTERFACE
-    GLM_FORCE_DEPTH_ZERO_TO_ONE   # Vulkan clip depth is [0,1], not [-1,1]
-    GLM_FORCE_CTOR_INIT           # default-construct to zero, not to garbage
-    GLM_ENABLE_EXPERIMENTAL)
-
-FetchContent_Declare(cgltf
-    GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
-    GIT_TAG        v1.15
-    GIT_SHALLOW    TRUE)
-FetchContent_MakeAvailable(cgltf)
-
-add_library(cgltf INTERFACE)
-target_include_directories(cgltf SYSTEM INTERFACE ${cgltf_SOURCE_DIR})
-
-add_library(stb INTERFACE)
-target_include_directories(stb SYSTEM INTERFACE ${stb_SOURCE_DIR})
-
-if(HARPIA_ENABLE_TRACY)
-    FetchContent_Declare(tracy
-        GIT_REPOSITORY https://github.com/wolfpld/tracy.git
-        GIT_TAG        v0.11.1
-        GIT_SHALLOW    TRUE)
-    set(TRACY_ENABLE ON  CACHE BOOL "" FORCE)
-    set(TRACY_ON_DEMAND ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(tracy)
-endif()
+include(HarpiaDependencies)
 
 # ------------------------------------------------------------------------------
 # Targets
