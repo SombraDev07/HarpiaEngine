@@ -99,10 +99,14 @@ struct LightingPushConstants {
     std::uint32_t materialTexture = 0;
     std::uint32_t depthTexture    = 0;
     std::uint32_t environmentBuffer = 0;
-    std::uint32_t padding          = 0;
+    std::uint32_t punctualBuffer    = 0xFFFFFFFFu;
+    std::uint32_t clusterIndices    = 0xFFFFFFFFu;
+    float         nearPlane         = 0.1f;
+    float         farPlane          = 1000.0f;
+    std::uint32_t padding           = 0;
 };
 
-static_assert(sizeof(LightingPushConstants) == 32, "must match Common.hlsli");
+static_assert(sizeof(LightingPushConstants) == 48, "must match Common.hlsli");
 
 inline constexpr std::uint32_t kInvalidTextureIndex = 0xFFFFFFFFu;
 
@@ -134,6 +138,27 @@ struct GpuClusterBounds {
     Vec4 minPoint{0.0f};
     Vec4 maxPoint{0.0f};
 };
+
+inline constexpr std::uint32_t kMaxLightsPerCluster = 64;
+
+// Mirrors PunctualLight in Common.hlsli.
+struct GpuPunctualLight {
+    Vec4 positionRange{0.0f, 0.0f, 0.0f, 10.0f};
+    Vec4 colorIntensity{1.0f, 1.0f, 1.0f, 1.0f};
+    Vec4 directionAngles{0.0f, -1.0f, 0.0f, -1.0f};
+    Vec4 params{-1.0f, 0.0f, 0.0f, 0.0f};   // x cos(inner), y type
+};
+
+struct ClusterLightPushConstants {
+    std::uint32_t clusterBuffer = 0;
+    std::uint32_t lightBuffer   = 0;
+    std::uint32_t indexBuffer   = 0;
+    std::uint32_t lightCount    = 0;
+    Mat4          view{1.0f};
+};
+
+static_assert(sizeof(GpuPunctualLight) == 64, "must match Common.hlsli");
+static_assert(sizeof(ClusterLightPushConstants) == 80, "must match Common.hlsli");
 
 struct ClusterPushConstants {
     std::uint32_t clusterBuffer = 0;

@@ -536,13 +536,44 @@ asset menos aquele em que foi ajustado como um grão ou uma parede.
 
 185 casos / 27.692 asserções · `-Werror`, ASan e TSan limpos.
 
+### F2 passo 5 — luzes clustered ✅
+
+| Entrega | Onde |
+|---|---|
+| `VulkanComputePipeline` — o primeiro compute da engine | `Source/RHI/Vulkan/VulkanPipeline.{h,cpp}` |
+| `ClusterBounds.comp` — AABB de cada célula da grade 16×9×24 | `Shaders/` |
+| `ClusterAssign.comp` — esfera de luz contra AABB, listas por cluster | `Shaders/` |
+| Luz pontual e spot no `Lighting.frag`, atenuação e cone | `Shaders/Lighting.frag.hlsl` |
+
+O build já sabia compilar `.comp.hlsl`; faltava o C++ para rodar.
+
+**Profundidade fatiada exponencialmente.** Uma grade linear gasta quase toda célula em distância
+sem geometria e deixa o campo próximo — onde as luzes se sobrepõem — em uma ou duas.
+
+**Fatia fixa por cluster, sem pool atômico.** O pool compartilhado é o que todo tutorial usa e é
+também como um renderer clustered corrompe memória de GPU: dimensione errado e o estouro escreve
+além do buffer em vez de falhar alto. Fatia fixa custa 884 KB e não pode estourar — o pior caso é
+uma luz descartada de um cluster lotado, que é visível e limitado.
+
+**Atenuação com janela.** Inverso do quadrado janelado para chegar exatamente a zero no alcance.
+Sem a janela a luz *estala* ao sair de um cluster, porque a queda ainda era não-zero onde o
+culling a cortou.
+
+**Dois erros que os testes pegaram.** Primeiro, afirmei que clusters vizinhos se encontram borda
+com borda em X — eles se sobrepõem, porque cada AABB limita uma pirâmide que alarga com a
+profundidade. Só o buraco é bug. Segundo, os dois pipelines de compute têm push constants de
+tamanhos diferentes, o que torna seus layouts **incompatíveis** e invalida o descriptor set ao
+trocar de pipeline. A validation layer pegou — mas só porque é assertada.
+
+186 casos / 27.723 asserções · `-Werror`, ASan e TSan limpos · 0 erros de validação.
+
 ## Próximo
 
 **F2 — Deferred PBR**, continuando de:
 2. ~~GBuffer no render graph~~ ✅ (ver abaixo)
 3. ~~BRDF GGX + Smith + Fresnel, difuso Burley~~ ✅ (ver abaixo)
 4. ~~IBL split-sum — tabela, `.hdr`, cubo, prefiltro GGX, irradiância~~ ✅
-5. **Luzes direcional + pontuais com clustered culling** ← aqui
+5. ~~Luzes direcional + pontuais/spot com clustered culling~~ ✅
 6. ~~Tonemap ACES~~ ✅ (entrou junto do sample)
 
 > **Motion vectors nascem no passo 2**, junto do GBuffer — não na F6 com o TAA. Se não

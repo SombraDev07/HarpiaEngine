@@ -223,4 +223,222 @@ TEST_CASE("the cluster grid tiles the frustum the way shading will read it")
     device.destroy();
 }
 
+TEST_CASE("light assignment puts a light in exactly the clusters it reaches")
+{
+    rhi::VulkanDevice::resetValidationErrorCount();
+
+    rhi::DeviceDesc desc;
+    desc.enableValidation = true;
+    desc.window           = nullptr;
+
+    rhi::VulkanDevice device;
+    if (!device.create(desc)) {
+        MESSAGE("no Vulkan device available — skipping");
+        return;
+    }
+
+    rhi::VulkanRenderer renderer;
+    rhi::GpuUploader    uploader;
+    REQUIRE(renderer.createOffscreen(device, 16, 16));
+    REQUIRE(uploader.create(device));
+
+    constexpr float kNear = 0.1f;
+    constexpr float kFar  = 100.0f;
+
+    rhi::VulkanBindless& bindless = renderer.bindless();
+
+    const auto makeBuffer = [&](rhi::VulkanBuffer& buffer, VkDeviceSize size,
+                                const char* name) {
+        rhi::BufferDesc d;
+        d.size = size;
+        d.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        d.memory = rhi::BufferMemory::DeviceLocal;
+        d.debugName = name;
+        return buffer.create(device, d);
+    };
+
+    // Two lights: one straight ahead well inside the frustum, one far behind
+    // the camera. The second is the assertion that matters — a culling bug that
+    // accepts everything still lights the scene correctly and only shows up as
+    // a frame time nobody can explain.
+    std::vector<rhi::GpuPunctualLight> lights(2);
+    lights[0].positionRange = Vec4(0.0f, 0.0f, 5.0f, 3.0f);
+    lights[1].positionRange = Vec4(0.0f, 0.0f, -50.0f, 3.0f);
+
+    rhi::VulkanBuffer clusterBuffer, lightBuffer, indexBuffer;
+    REQUIRE(makeBuffer(clusterBuffer, sizeof(rhi::GpuClusterBounds) * rhi::kClusterCount,
+                       "Test_ClusterBounds"));
+    REQUIRE(makeBuffer(lightBuffer, sizeof(rhi::GpuPunctualLight) * lights.size(),
+                       "Test_Lights"));
+    const VkDeviceSize indexBytes =
+        sizeof(std::uint32_t) * rhi::kClusterCount * (rhi::kMaxLightsPerCluster + 1);
+    REQUIRE(makeBuffer(indexBuffer, indexBytes, "Test_LightIndices"));
+    REQUIRE(uploader.upload(lightBuffer, lights.data(),
+                            sizeof(rhi::GpuPunctualLight) * lights.size()));
+
+    const std::uint32_t clusterIndex =
+        bindless.registerStorageBuffer(clusterBuffer.handle(), 0, clusterBuffer.size());
+    const std::uint32_t lightIndex =
+        bindless.registerStorageBuffer(lightBuffer.handle(), 0, lightBuffer.size());
+    const std::uint32_t listIndex =
+        bindless.registerStorageBuffer(indexBuffer.handle(), 0, indexBytes);
+
+    rhi::ComputePipelineDesc boundsDesc;
+    boundsDesc.spirvPath = std::string(HARPIA_SHADER_DIR) + "/ClusterBounds.comp.spv";
+    boundsDesc.descriptorSetLayout = bindless.layout();
+    boundsDesc.pushConstantBytes   = sizeof(rhi::ClusterPushConstants);
+    boundsDesc.debugName           = "Pipeline_Bounds";
+
+    rhi::ComputePipelineDesc assignDesc;
+    assignDesc.spirvPath = std::string(HARPIA_SHADER_DIR) + "/ClusterAssign.comp.spv";
+    assignDesc.descriptorSetLayout = bindless.layout();
+    assignDesc.pushConstantBytes   = sizeof(rhi::ClusterLightPushConstants);
+    assignDesc.debugName           = "Pipeline_Assign";
+
+    rhi::VulkanComputePipeline boundsPipeline, assignPipeline;
+    REQUIRE(boundsPipeline.create(device, boundsDesc));
+    REQUIRE(assignPipeline.create(device, assignDesc));
+
+    rhi::ClusterPushConstants boundsPush;
+    boundsPush.clusterBuffer = clusterIndex;
+    boundsPush.nearPlane = kNear;
+    boundsPush.farPlane  = kFar;
+    boundsPush.tanHalfFov = std::tan(radians(45.0f) * 0.5f);
+    boundsPush.aspect     = 16.0f / 9.0f;
+    boundsPush.renderSize = Vec2(1280.0f, 720.0f);
+
+    rhi::ClusterLightPushConstants assignPush;
+    assignPush.clusterBuffer = clusterIndex;
+    assignPush.lightBuffer   = lightIndex;
+    assignPush.indexBuffer   = listIndex;
+    assignPush.lightCount    = static_cast<std::uint32_t>(lights.size());
+    assignPush.view          = Mat4(1.0f);   // camera at the origin looking down +Z
+
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    poolInfo.queueFamilyIndex = device.graphics().family;
+    REQUIRE(vkCreateCommandPool(device.device(), &poolInfo, nullptr, &pool) == VK_SUCCESS);
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo cmdAlloc{};
+    cmdAlloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAlloc.commandPool = pool;
+    cmdAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAlloc.commandBufferCount = 1;
+    REQUIRE(vkAllocateCommandBuffers(device.device(), &cmdAlloc, &cmd) == VK_SUCCESS);
+
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    REQUIRE(vkBeginCommandBuffer(cmd, &begin) == VK_SUCCESS);
+
+    const VkDescriptorSet set = bindless.set();
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, boundsPipeline.layout(),
+                            0, 1, &set, 0, nullptr);
+    boundsPipeline.bind(cmd);
+    vkCmdPushConstants(cmd, boundsPipeline.layout(), VK_SHADER_STAGE_ALL, 0,
+                       sizeof(boundsPush), &boundsPush);
+    rhi::VulkanComputePipeline::dispatchCovering(cmd, rhi::kClustersX, rhi::kClustersY,
+                                                 rhi::kClustersZ, 4, 4, 4);
+
+    VkMemoryBarrier2 between{};
+    between.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    between.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    between.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    between.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    between.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+
+    VkDependencyInfo dependency{};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &between;
+    vkCmdPipelineBarrier2(cmd, &dependency);
+
+    // Rebound, not reused. The two pipelines carry different push constant
+    // sizes, which makes their layouts incompatible, and an incompatible layout
+    // disturbs the descriptor set bound under the previous one. Vulkan says so
+    // and the validation layer catches it — but only because it is checked.
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, assignPipeline.layout(),
+                            0, 1, &set, 0, nullptr);
+    assignPipeline.bind(cmd);
+    vkCmdPushConstants(cmd, assignPipeline.layout(), VK_SHADER_STAGE_ALL, 0,
+                       sizeof(assignPush), &assignPush);
+    rhi::VulkanComputePipeline::dispatchCovering(cmd, rhi::kClustersX, rhi::kClustersY,
+                                                 rhi::kClustersZ, 4, 4, 4);
+
+    between.dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    between.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
+    vkCmdPipelineBarrier2(cmd, &dependency);
+
+    REQUIRE(vkEndCommandBuffer(cmd) == VK_SUCCESS);
+
+    VkCommandBufferSubmitInfo cmdSubmit{};
+    cmdSubmit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmdSubmit.commandBuffer = cmd;
+    VkSubmitInfo2 submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submit.commandBufferInfoCount = 1;
+    submit.pCommandBufferInfos = &cmdSubmit;
+    REQUIRE(vkQueueSubmit2(device.graphics().queue, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS);
+    REQUIRE(vkQueueWaitIdle(device.graphics().queue) == VK_SUCCESS);
+    vkDestroyCommandPool(device.device(), pool, nullptr);
+
+    std::vector<std::uint32_t> indices(rhi::kClusterCount * (rhi::kMaxLightsPerCluster + 1));
+    REQUIRE(uploader.download(indexBuffer, indices.data(), indexBytes));
+
+    const auto countAt = [&](std::uint32_t cluster) {
+        return indices[cluster * (rhi::kMaxLightsPerCluster + 1)];
+    };
+
+    std::uint32_t withLight = 0;
+    std::uint32_t behindCameraHits = 0;
+    for (std::uint32_t c = 0; c < rhi::kClusterCount; ++c) {
+        const std::uint32_t count = countAt(c);
+        REQUIRE(count <= rhi::kMaxLightsPerCluster);
+        if (count > 0) {
+            ++withLight;
+        }
+        for (std::uint32_t i = 0; i < count; ++i) {
+            if (indices[c * (rhi::kMaxLightsPerCluster + 1) + 1 + i] == 1) {
+                ++behindCameraHits;
+            }
+        }
+    }
+
+    SUBCASE("the light in front reaches some clusters but nowhere near all")
+    {
+        // Culling that accepts everything still lights the scene correctly and
+        // shows up only as a frame time nobody can explain. Both bounds matter.
+        CHECK(withLight > 0);
+        CHECK(withLight < rhi::kClusterCount / 2);
+    }
+
+    SUBCASE("a light behind the camera reaches nothing")
+    {
+        CHECK(behindCameraHits == 0);
+    }
+
+    SUBCASE("no cluster ever overflows its fixed slice")
+    {
+        // The reason there is no atomic pool: overflow here would be a write
+        // past the buffer, and this bound is what makes that impossible.
+        for (std::uint32_t c = 0; c < rhi::kClusterCount; ++c) {
+            REQUIRE(countAt(c) <= rhi::kMaxLightsPerCluster);
+        }
+    }
+
+    CHECK(rhi::VulkanDevice::validationErrorCount() == 0);
+
+    boundsPipeline.destroy();
+    assignPipeline.destroy();
+    clusterBuffer.destroy();
+    lightBuffer.destroy();
+    indexBuffer.destroy();
+    uploader.destroy();
+    renderer.destroy();
+    device.destroy();
+}
+
 TEST_SUITE_END();

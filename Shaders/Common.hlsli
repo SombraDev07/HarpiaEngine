@@ -44,6 +44,16 @@ struct DirectionalLight {
     float4 ambient;
 };
 
+// Punctual light. Directional stays separate: it has no position to cull
+// against, so putting it in the cluster grid would mean every cluster listing
+// it and nothing being saved.
+struct PunctualLight {
+    float4 positionRange;    // xyz world position, w range
+    float4 colorIntensity;   // rgb colour, w intensity
+    float4 directionAngles;  // xyz spot direction, w cos(outer cone)
+    float4 params;           // x cos(inner cone), y type: 0 point, 1 spot
+};
+
 struct ObjectData {
     float4x4 model;
     float4x4 prevModel;
@@ -109,6 +119,8 @@ bool harpiaValidSampler(uint index)       { return index < HARPIA_MAX_SAMPLERS; 
 [[vk::binding(1, 0)]] StructuredBuffer<MaterialData>     g_materials[];
 [[vk::binding(1, 0)]] StructuredBuffer<DirectionalLight> g_lights[];
 [[vk::binding(1, 0)]] StructuredBuffer<Environment>      g_environments[];
+[[vk::binding(1, 0)]] StructuredBuffer<PunctualLight>   g_punctualLights[];
+[[vk::binding(1, 0)]] StructuredBuffer<uint>            g_clusterIndices[];
 
 // Clustered lighting grid. 16x9x24 is the shape Doom 2016 settled on and every
 // clustered renderer since has copied: enough tiles that a light touches few of
@@ -117,6 +129,15 @@ bool harpiaValidSampler(uint index)       { return index < HARPIA_MAX_SAMPLERS; 
 #define HARPIA_CLUSTERS_Y 9
 #define HARPIA_CLUSTERS_Z 24
 #define HARPIA_CLUSTER_COUNT (HARPIA_CLUSTERS_X * HARPIA_CLUSTERS_Y * HARPIA_CLUSTERS_Z)
+
+// Each cluster owns a fixed slice of the index buffer rather than carving one
+// out of a shared pool with an atomic counter. The pool is what every tutorial
+// reaches for and it is also how a clustered renderer corrupts GPU memory: get
+// the pool size wrong and the overflow writes past the buffer instead of
+// failing loudly. A fixed stride costs 884 KB and cannot overflow — the worst
+// case is a light dropped from a crowded cluster, which is visible and bounded.
+#define HARPIA_MAX_LIGHTS_PER_CLUSTER 64
+
 
 // Push constant blocks. HLSL allows only one per shader, so each shader
 // declares the variable itself:
@@ -133,15 +154,29 @@ struct GBufferPush {
 };
 
 struct LightingPush {
-    uint frameBuffer;
-    uint lightBuffer;
-    uint albedoTexture;
-    uint normalTexture;
-    uint materialTexture;
-    uint depthTexture;
-    uint environmentBuffer;
-    uint padding;
+    uint  frameBuffer;
+    uint  lightBuffer;
+    uint  albedoTexture;
+    uint  normalTexture;
+    uint  materialTexture;
+    uint  depthTexture;
+    uint  environmentBuffer;
+    uint  punctualBuffer;    // PunctualLight array; invalid = directional only
+    uint  clusterIndices;    // per-cluster light lists
+    float nearPlane;         // the depth slicing has to match ClusterBounds
+    float farPlane;
+    uint  padding;
 };
+
+// Which depth slice a view-space depth falls in. The inverse of the
+// exponential slicing in ClusterBounds.comp — the two must agree exactly, or
+// shading reads a cluster the assignment never filled.
+uint harpiaDepthSlice(float viewDepth, float nearPlane, float farPlane)
+{
+    const float slice = log(viewDepth / nearPlane) / log(farPlane / nearPlane)
+                      * float(HARPIA_CLUSTERS_Z);
+    return uint(clamp(slice, 0.0, float(HARPIA_CLUSTERS_Z - 1)));
+}
 
 // Shared by every cubemap pass: equirect projection, GGX prefilter, irradiance.
 // One struct rather than three because they differ only in which fields they
@@ -151,6 +186,14 @@ struct CubePush {
     uint  face;            // 0..5, which face this draw is rendering
     float roughness;       // prefilter only
     uint  sampleCount;     // prefilter only
+};
+
+struct ClusterLightPush {
+    uint  clusterBuffer;     // cluster AABBs
+    uint  lightBuffer;       // PunctualLight array
+    uint  indexBuffer;       // per-cluster light indices
+    uint  lightCount;
+    float4x4 view;           // lights arrive in world space, clusters in view
 };
 
 struct ClusterPush {
