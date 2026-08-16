@@ -123,6 +123,31 @@ struct CubePushConstants {
 
 static_assert(sizeof(CubePushConstants) == 16, "must match Common.hlsli");
 
+// Clustered lighting. Mirrors the HARPIA_CLUSTERS_* defines in Common.hlsli.
+inline constexpr std::uint32_t kClustersX = 16;
+inline constexpr std::uint32_t kClustersY = 9;
+inline constexpr std::uint32_t kClustersZ = 24;
+inline constexpr std::uint32_t kClusterCount = kClustersX * kClustersY * kClustersZ;
+
+// View-space AABB of one cluster, written by ClusterBounds.comp.
+struct GpuClusterBounds {
+    Vec4 minPoint{0.0f};
+    Vec4 maxPoint{0.0f};
+};
+
+struct ClusterPushConstants {
+    std::uint32_t clusterBuffer = 0;
+    float         nearPlane     = 0.1f;
+    float         farPlane      = 1000.0f;
+    float         tanHalfFov    = 1.0f;
+    float         aspect        = 1.0f;
+    Vec2          renderSize{0.0f};
+    std::uint32_t padding       = 0;
+};
+
+static_assert(sizeof(GpuClusterBounds) == 32, "must match ClusterBounds.comp.hlsl");
+static_assert(sizeof(ClusterPushConstants) == 32, "must match Common.hlsli");
+
 // Catch a mirror drift at compile time rather than in a frame.
 static_assert(sizeof(GpuFrameData) == 224, "GpuFrameData must match Common.hlsli");
 static_assert(sizeof(GpuDirectionalLight) == 48, "GpuDirectionalLight must match Common.hlsli");

@@ -110,6 +110,14 @@ bool harpiaValidSampler(uint index)       { return index < HARPIA_MAX_SAMPLERS; 
 [[vk::binding(1, 0)]] StructuredBuffer<DirectionalLight> g_lights[];
 [[vk::binding(1, 0)]] StructuredBuffer<Environment>      g_environments[];
 
+// Clustered lighting grid. 16x9x24 is the shape Doom 2016 settled on and every
+// clustered renderer since has copied: enough tiles that a light touches few of
+// them, few enough that the per-cluster list stays in cache.
+#define HARPIA_CLUSTERS_X 16
+#define HARPIA_CLUSTERS_Y 9
+#define HARPIA_CLUSTERS_Z 24
+#define HARPIA_CLUSTER_COUNT (HARPIA_CLUSTERS_X * HARPIA_CLUSTERS_Y * HARPIA_CLUSTERS_Z)
+
 // Push constant blocks. HLSL allows only one per shader, so each shader
 // declares the variable itself:
 //
@@ -143,6 +151,16 @@ struct CubePush {
     uint  face;            // 0..5, which face this draw is rendering
     float roughness;       // prefilter only
     uint  sampleCount;     // prefilter only
+};
+
+struct ClusterPush {
+    uint   clusterBuffer;
+    float  nearPlane;
+    float  farPlane;
+    float  tanHalfFov;
+    float  aspect;
+    float2 renderSize;
+    uint   padding;
 };
 
 // --- normal encoding --------------------------------------------------------

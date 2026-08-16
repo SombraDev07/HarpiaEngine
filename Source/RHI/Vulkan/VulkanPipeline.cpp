@@ -237,4 +237,106 @@ void VulkanPipeline::setViewportAndScissor(VkCommandBuffer cmd, VkExtent2D exten
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 }
 
+// --- compute ----------------------------------------------------------------
+
+VulkanComputePipeline::~VulkanComputePipeline()
+{
+    destroy();
+}
+
+bool VulkanComputePipeline::create(VulkanDevice& device, const ComputePipelineDesc& desc)
+{
+    device_ = &device;
+    const VkDevice handle = device.device();
+
+    const std::vector<std::uint32_t> code = loadSpirv(desc.spirvPath);
+    if (code.empty()) {
+        return false;
+    }
+
+    VkShaderModule module = createModule(handle, code, "Shader_Compute");
+    if (module == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_ALL;
+    pushRange.size       = desc.pushConstantBytes;
+
+    VkPipelineLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    if (desc.descriptorSetLayout != VK_NULL_HANDLE) {
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts    = &desc.descriptorSetLayout;
+    }
+    if (desc.pushConstantBytes > 0) {
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges    = &pushRange;
+    }
+    HARPIA_VK_CHECK(vkCreatePipelineLayout(handle, &layoutInfo, nullptr, &layout_));
+
+    VkComputePipelineCreateInfo info{};
+    info.sType        = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    info.stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    info.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+    info.stage.module = module;
+    info.stage.pName  = "main";
+    info.layout       = layout_;
+
+    const VkResult result =
+        vkCreateComputePipelines(handle, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline_);
+
+    // The module is only needed while the pipeline is being built.
+    vkDestroyShaderModule(handle, module, nullptr);
+
+    if (result != VK_SUCCESS) {
+        std::fprintf(stderr, "[vulkan] vkCreateComputePipelines failed: %s\n",
+                     resultToString(result));
+        destroy();
+        return false;
+    }
+
+    setDebugName(handle, VK_OBJECT_TYPE_PIPELINE, pipeline_, desc.debugName);
+    setDebugName(handle, VK_OBJECT_TYPE_PIPELINE_LAYOUT, layout_, desc.debugName);
+    return true;
+}
+
+void VulkanComputePipeline::destroy()
+{
+    if (device_ == nullptr) {
+        return;
+    }
+    if (pipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device_->device(), pipeline_, nullptr);
+        pipeline_ = VK_NULL_HANDLE;
+    }
+    if (layout_ != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(device_->device(), layout_, nullptr);
+        layout_ = VK_NULL_HANDLE;
+    }
+    device_ = nullptr;
+}
+
+void VulkanComputePipeline::bind(VkCommandBuffer cmd) const
+{
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
+}
+
+void VulkanComputePipeline::dispatchCovering(VkCommandBuffer cmd,
+                                             std::uint32_t   width,
+                                             std::uint32_t   height,
+                                             std::uint32_t   depth,
+                                             std::uint32_t   groupWidth,
+                                             std::uint32_t   groupHeight,
+                                             std::uint32_t   groupDepth)
+{
+    const auto groups = [](std::uint32_t total, std::uint32_t size) {
+        return size == 0 ? 0u : (total + size - 1) / size;
+    };
+    vkCmdDispatch(cmd,
+                  groups(width, groupWidth),
+                  groups(height, groupHeight),
+                  groups(depth, groupDepth));
+}
+
 } // namespace harpia::rhi

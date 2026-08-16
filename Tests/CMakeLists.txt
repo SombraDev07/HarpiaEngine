@@ -21,6 +21,7 @@ add_executable(harpia_tests
     test_texture.cpp
     test_ibl.cpp
     test_scene.cpp
+    test_clusters.cpp
     test_navigation.cpp
     test_physics.cpp)
 
