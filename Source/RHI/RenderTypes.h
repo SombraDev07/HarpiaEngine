@@ -37,16 +37,18 @@ struct GpuDirectionalLight {
     Vec4 ambient{0.03f, 0.03f, 0.03f, 0.0f};  // stands in until IBL lands in step 4
 };
 
-// The environment the IBL pass integrates against. Analytic sky for now; a
-// prefiltered cubemap replaces the radiance source without changing the split-
-// sum maths or the LUT.
+// The environment the IBL pass integrates against. The cube indices win when
+// they are valid; the analytic sky below is what a scene with no .hdr falls
+// back to, which is why both live here rather than one replacing the other.
 struct GpuEnvironment {
     Vec4 skyZenith{0.20f, 0.35f, 0.65f, 1.0f};   // rgb radiance, w intensity
     Vec4 skyHorizon{0.55f, 0.62f, 0.72f, 0.0f};
     Vec4 groundColor{0.12f, 0.10f, 0.09f, 0.0f};
 
-    std::uint32_t brdfLut = 0xFFFFFFFFu;         // bindless index
-    std::uint32_t padding[3]{};
+    std::uint32_t brdfLut         = 0xFFFFFFFFu;  // split-sum table
+    std::uint32_t environmentCube = 0xFFFFFFFFu;  // prefiltered chain
+    std::uint32_t irradianceCube  = 0xFFFFFFFFu;  // diffuse
+    std::uint32_t padding         = 0;
 };
 
 // One per drawable. prevModel is separate so a moving object produces motion

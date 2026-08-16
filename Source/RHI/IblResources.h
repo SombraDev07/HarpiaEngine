@@ -48,6 +48,12 @@ public:
     // convolve, and roughness 1 is already an almost uniform hemisphere.
     static constexpr std::uint32_t kEnvironmentMips = 6;
 
+    // Diffuse irradiance gets its own small cube rather than a mip of the
+    // chain: it is a different integral, not a coarser one. A cosine lobe
+    // covers the whole hemisphere, so the result is smooth by construction and
+    // 32 is already more resolution than the signal carries.
+    static constexpr std::uint32_t kIrradianceSize = 32;
+
     // Samples per texel in the prefilter. 128 is enough because the sequence is
     // low-discrepancy rather than random; the visible artefact of too few is
     // banding in the rough mips, not noise.
@@ -81,6 +87,8 @@ public:
     [[nodiscard]] bool          valid() const noexcept { return image_ != VK_NULL_HANDLE; }
 
     [[nodiscard]] std::uint32_t environmentIndex() const noexcept { return envIndex_; }
+    [[nodiscard]] std::uint32_t irradianceIndex() const noexcept { return irrIndex_; }
+    [[nodiscard]] VkImage       irradianceImage() const noexcept { return irrImage_; }
     [[nodiscard]] VkImage       environmentImage() const noexcept { return envImage_; }
     [[nodiscard]] bool hasEnvironment() const noexcept { return envImage_ != VK_NULL_HANDLE; }
 
@@ -107,6 +115,12 @@ private:
     std::array<std::array<VkImageView, kCubeFaces>, kEnvironmentMips> envFaceViews_{};
     VkImageView   envMirrorView_  = VK_NULL_HANDLE;
     std::uint32_t envMirrorIndex_ = VulkanBindless::kInvalidIndex;
+
+    VkImage       irrImage_      = VK_NULL_HANDLE;
+    VkImageView   irrCubeView_   = VK_NULL_HANDLE;
+    VmaAllocation irrAllocation_ = nullptr;
+    std::uint32_t irrIndex_      = VulkanBindless::kInvalidIndex;
+    std::array<VkImageView, kCubeFaces> irrFaceViews_{};
 };
 
 } // namespace harpia::rhi

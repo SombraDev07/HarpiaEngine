@@ -32,8 +32,10 @@ struct Environment {
     float4 skyZenith;    // rgb radiance looking straight up, w intensity
     float4 skyHorizon;
     float4 groundColor;
-    uint   brdfLut;      // bindless index of the split-sum table
-    uint3  padding;
+    uint   brdfLut;          // split-sum table
+    uint   environmentCube;  // prefiltered chain; invalid falls back to the sky
+    uint   irradianceCube;   // diffuse
+    uint   padding;
 };
 
 struct DirectionalLight {
@@ -65,6 +67,10 @@ struct MaterialData {
 #define HARPIA_PI 3.14159265358979323846
 
 #define HARPIA_INVALID_TEXTURE 0xFFFFFFFFu
+
+// Mirrors IblResources::kEnvironmentMips. Shading picks its blur by choosing a
+// mip, so it has to know how many the chain has.
+#define HARPIA_ENVIRONMENT_MIPS 6
 
 // Sampler slots the renderer registers at startup.
 #define HARPIA_SAMPLER_LINEAR_REPEAT 0

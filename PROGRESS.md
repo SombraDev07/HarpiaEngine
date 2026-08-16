@@ -385,7 +385,7 @@ fixture que ninguém mantém.
 
 151 casos / 26.487 asserções · `-Werror`, ASan, UBSan e TSan limpos.
 
-### IBL split-sum — a tabela BRDF 🟡
+### IBL split-sum — passo 4 completo ✅
 
 | Entrega | Onde |
 |---|---|
@@ -448,7 +448,27 @@ primeira versão do teste falhou ali, reportando o meio de uma mistura entre os 
 wrap está **correto**, porque um mapa real é contínuo nas bordas; só o source sintético não
 era. Codificar de forma periódica mantém o teste honesto sobre qual dos dois ele mede.
 
-Falta o prefiltro GGX (cadeia de mips por roughness) e a irradiância difusa.
+**Prefiltro GGX.** Seis mips, 128 até 4, roughness 0 a 1: cada nível é o ambiente convoluído
+com o lobo daquela rugosidade, então sombrear escolhe o blur pelo mip em vez de integrar em
+runtime. A aproximação é a de Karis, N = V = R — custa o realce esticado em ângulo rasante, que
+toda engine de tempo real abre mão porque a alternativa é uma segunda dimensão de lookup.
+
+Duas decisões carregam a correção, e nenhuma falha de forma óbvia. Amostras pesam por NoL em
+vez de entrarem numa média: direção abaixo do horizonte não carrega energia, e deixá-la entrar
+escurece toda superfície rugosa por igual — parece exposição errada, não integral errada. E o
+prefiltro lê uma view restrita ao mip 0, não a cadeia: uma view sobre todos os níveis o deixaria
+ler mips que ele mesmo está produzindo, acumulando blur por passo.
+
+**Irradiância** ganhou cubo próprio de 32², não um mip da cadeia — é integral diferente, não
+resolução mais grossa. Amostrada em grade esférica uniforme, com o Jacobiano `sin(theta)`
+explícito: omiti-lo super-pondera o polo e deixa toda superfície brilhante demais na direção
+que encara.
+
+**O wiring fecha o passo.** O `evaluateIbl` agora lê os dois cubos quando existem e cai no céu
+analítico quando não — cena sem `.hdr` continua renderizando, que é o que impede "sem ambiente"
+de virar "metal preto".
+
+183 casos / 27.649 asserções · `-Werror`, ASan e TSan limpos · 0 erros de validação.
 
 182 casos / 27.593 asserções · `-Werror`, ASan e TSan limpos · 0 erros de validação.
 
@@ -492,9 +512,8 @@ cmake --build --preset=ci --target harpia_navigation_tests
 **F2 — Deferred PBR**, continuando de:
 2. ~~GBuffer no render graph~~ ✅ (ver abaixo)
 3. ~~BRDF GGX + Smith + Fresnel, difuso Burley~~ ✅ (ver abaixo)
-4. **IBL split-sum** — tabela BRDF ✅, `.hdr` ✅, projeção no cubo ✅,
-   prefiltro GGX e irradiância pendentes ← aqui
-5. Luzes direcional + pontuais com clustered culling
+4. ~~IBL split-sum — tabela, `.hdr`, cubo, prefiltro GGX, irradiância~~ ✅
+5. **Luzes direcional + pontuais com clustered culling** ← aqui
 6. ~~Tonemap ACES~~ ✅ (entrou junto do sample)
 
 > **Motion vectors nascem no passo 2**, junto do GBuffer — não na F6 com o TAA. Se não

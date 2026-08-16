@@ -455,6 +455,39 @@ TEST_CASE("the prefiltered chain widens the lobe without inventing energy")
         CHECK(roughContrast < sharpContrast);
     }
 
+    SUBCASE("irradiance follows the hemisphere each normal faces")
+    {
+        // A cosine integral over a sky/ground step: a normal pointing up sees
+        // mostly sky, one pointing down mostly ground, and both land strictly
+        // between the two source values. Landing outside would mean the sin
+        // Jacobian or the PI were wrong — the two errors that scale the whole
+        // diffuse term and read as a wrong exposure rather than a wrong lobe.
+        const auto irradianceMean = [&](std::uint32_t face) {
+            constexpr std::uint32_t kEdge = rhi::IblResources::kIrradianceSize;
+            std::vector<std::uint8_t> raw;
+            REQUIRE(uploader.downloadImage(ibl.irradianceImage(),
+                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                           VkExtent2D{kEdge, kEdge}, 8, raw,
+                                           VK_IMAGE_ASPECT_COLOR_BIT, face, 0));
+            const auto* halves = reinterpret_cast<const std::uint16_t*>(raw.data());
+            double sum = 0.0;
+            for (std::uint32_t i = 0; i < kEdge * kEdge; ++i) {
+                sum += static_cast<double>(
+                    half16ToFloat(halves[static_cast<std::size_t>(i) * 4]));
+            }
+            return static_cast<float>(sum / (kEdge * kEdge));
+        };
+
+        CHECK(ibl.irradianceIndex() != rhi::VulkanBindless::kInvalidIndex);
+
+        const float up   = irradianceMean(2);   // +Y, facing the sky
+        const float down = irradianceMean(3);   // -Y, facing the ground
+
+        CHECK(up > down);
+        CHECK(up < kBright);
+        CHECK(down > kDark);
+    }
+
     SUBCASE("roughness per mip spans zero to one")
     {
         CHECK(rhi::IblResources::roughnessOfMip(0) == doctest::Approx(0.0f));

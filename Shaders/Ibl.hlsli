@@ -81,8 +81,20 @@ float3 evaluateIbl(Environment environment,
     // --- specular ---------------------------------------------------------
     const float3 reflection = reflect(-viewDirection, normal);
 
-    // Stands in for the mip chain a prefiltered cubemap would provide.
-    const float3 prefiltered = sampleSky(environment, reflection, perceptualRoughness);
+    // The prefiltered chain when a map was loaded, the analytic sky otherwise.
+    // Both paths stay: a scene with no .hdr still has to render, and the
+    // fallback is what keeps "no environment" from meaning "black metal".
+    float3 prefiltered;
+    if (harpiaValidTexture(environment.environmentCube)) {
+        // Roughness picks the mip. That is the whole point of prefiltering —
+        // the convolution happened once at load, and shading only chooses how
+        // far down the chain to read.
+        const float lod = perceptualRoughness * float(HARPIA_ENVIRONMENT_MIPS - 1);
+        prefiltered = g_cubeTextures[environment.environmentCube].SampleLevel(
+            lutSampler, reflection, lod).rgb;
+    } else {
+        prefiltered = sampleSky(environment, reflection, perceptualRoughness);
+    }
 
     const float2 ab = g_textures[brdfLutIndex].SampleLevel(
         lutSampler, float2(NoV, perceptualRoughness), 0).rg;
@@ -93,7 +105,14 @@ float3 evaluateIbl(Environment environment,
     // specular term above. This is why a metal with no environment renders
     // black, and why IBL is what makes metal look like metal.
     const float3 diffuseColor = albedo * (1.0 - metallic);
-    const float3 irradiance   = skyIrradiance(environment, normal);
+
+    float3 irradiance;
+    if (harpiaValidTexture(environment.irradianceCube)) {
+        irradiance = g_cubeTextures[environment.irradianceCube].SampleLevel(
+            lutSampler, normal, 0).rgb;
+    } else {
+        irradiance = skyIrradiance(environment, normal);
+    }
 
     // Energy not taken by the specular lobe is what is left for diffuse.
     const float3 kD = (1.0 - f0) * (1.0 - metallic);

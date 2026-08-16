@@ -330,6 +330,39 @@ bool IblResources::loadEnvironment(VulkanDevice&        device,
     setDebugName(device.device(), VK_OBJECT_TYPE_IMAGE_VIEW, envCubeView_, "Ibl_EnvironmentCube");
     setDebugName(device.device(), VK_OBJECT_TYPE_IMAGE_VIEW, envMirrorView_, "Ibl_EnvironmentMip0");
 
+    // --- irradiance ----------------------------------------------------------
+    VkImageCreateInfo irrInfo = cubeInfo;
+    irrInfo.extent    = VkExtent3D{kIrradianceSize, kIrradianceSize, 1};
+    irrInfo.mipLevels = 1;
+
+    if (vmaCreateImage(device.allocator(), &irrInfo, &allocInfo,
+                       &irrImage_, &irrAllocation_, nullptr) != VK_SUCCESS) {
+        vkDestroyImageView(device.device(), sourceView, nullptr);
+        vmaDestroyImage(device.allocator(), sourceImage, sourceAllocation);
+        destroyEnvironment();
+        return false;
+    }
+    setDebugName(device.device(), VK_OBJECT_TYPE_IMAGE, irrImage_, "Ibl_Irradiance");
+
+    for (std::uint32_t face = 0; face < kCubeFaces; ++face) {
+        VkImageViewCreateInfo faceInfo{};
+        faceInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        faceInfo.image    = irrImage_;
+        faceInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        faceInfo.format   = kFormat;
+        faceInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        faceInfo.subresourceRange.levelCount     = 1;
+        faceInfo.subresourceRange.baseArrayLayer = face;
+        faceInfo.subresourceRange.layerCount     = 1;
+        HARPIA_VK_CHECK(vkCreateImageView(device.device(), &faceInfo, nullptr,
+                                          &irrFaceViews_[face]));
+    }
+
+    VkImageViewCreateInfo irrCubeInfo = mirrorInfo;
+    irrCubeInfo.image = irrImage_;
+    HARPIA_VK_CHECK(vkCreateImageView(device.device(), &irrCubeInfo, nullptr, &irrCubeView_));
+    setDebugName(device.device(), VK_OBJECT_TYPE_IMAGE_VIEW, irrCubeView_, "Ibl_IrradianceCube");
+
     // --- project -------------------------------------------------------------
     const std::uint32_t sourceIndex = bindless.registerSampledImage(
         sourceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -353,10 +386,17 @@ bool IblResources::loadEnvironment(VulkanDevice&        device,
     prefilterDesc.fragmentSpirvPath = shaderDirectory + "/Prefilter.frag.spv";
     prefilterDesc.debugName         = "Pipeline_Prefilter";
 
+    GraphicsPipelineDesc irradianceDesc = pipelineDesc;
+    irradianceDesc.fragmentSpirvPath = shaderDirectory + "/Irradiance.frag.spv";
+    irradianceDesc.debugName         = "Pipeline_Irradiance";
+
     VulkanPipeline pipeline;
     VulkanPipeline prefilter;
-    if (!pipeline.create(device, pipelineDesc) || !prefilter.create(device, prefilterDesc)) {
+    VulkanPipeline irradiance;
+    if (!pipeline.create(device, pipelineDesc) || !prefilter.create(device, prefilterDesc)
+        || !irradiance.create(device, irradianceDesc)) {
         pipeline.destroy();
+        prefilter.destroy();
         bindless.releaseSampledImage(sourceIndex);
         vkDestroyImageView(device.device(), sourceView, nullptr);
         vmaDestroyImage(device.allocator(), sourceImage, sourceAllocation);
@@ -372,6 +412,7 @@ bool IblResources::loadEnvironment(VulkanDevice&        device,
         std::fprintf(stderr, "[ibl] bindless sampled image slots exhausted\n");
         pipeline.destroy();
         prefilter.destroy();
+        irradiance.destroy();
         bindless.releaseSampledImage(sourceIndex);
         vkDestroyImageView(device.device(), sourceView, nullptr);
         vmaDestroyImage(device.allocator(), sourceImage, sourceAllocation);
@@ -518,6 +559,50 @@ bool IblResources::loadEnvironment(VulkanDevice&        device,
         vkCmdPipelineBarrier2(cmd, &dependency);
     }
 
+    // --- irradiance ----------------------------------------------------------
+    // Reads the same mirror mip the prefilter did. It could read a rough mip
+    // and converge faster, but that would be integrating an already-convolved
+    // image — the diffuse lobe is its own integral, not a blurrier specular one.
+    VkImageMemoryBarrier2 irrToAttachment = toAttachment;
+    irrToAttachment.image = irrImage_;
+    irrToAttachment.subresourceRange.baseMipLevel = 0;
+    dependency.pImageMemoryBarriers = &irrToAttachment;
+    vkCmdPipelineBarrier2(cmd, &dependency);
+
+    for (std::uint32_t face = 0; face < kCubeFaces; ++face) {
+        VkRenderingAttachmentInfo attachment{};
+        attachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        attachment.imageView   = irrFaceViews_[face];
+        attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachment.loadOp      = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
+
+        VkRenderingInfo rendering{};
+        rendering.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        rendering.renderArea.extent    = VkExtent2D{kIrradianceSize, kIrradianceSize};
+        rendering.layerCount           = 1;
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachments    = &attachment;
+
+        CubePushConstants push;
+        push.sourceTexture = envMirrorIndex_;
+        push.face          = face;
+
+        vkCmdBeginRendering(cmd, &rendering);
+        irradiance.bind(cmd);
+        irradiance.setViewportAndScissor(cmd, VkExtent2D{kIrradianceSize, kIrradianceSize});
+        vkCmdPushConstants(cmd, irradiance.layout(), VK_SHADER_STAGE_ALL, 0,
+                           sizeof(push), &push);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdEndRendering(cmd);
+    }
+
+    VkImageMemoryBarrier2 irrToSampled = mirrorReadable;
+    irrToSampled.image = irrImage_;
+    irrToSampled.subresourceRange.baseMipLevel = 0;
+    dependency.pImageMemoryBarriers = &irrToSampled;
+    vkCmdPipelineBarrier2(cmd, &dependency);
+
     // Every level was moved to SHADER_READ_ONLY as it finished, so there is no
     // whole-image transition left to do here.
     HARPIA_VK_CHECK(vkEndCommandBuffer(cmd));
@@ -537,6 +622,7 @@ bool IblResources::loadEnvironment(VulkanDevice&        device,
     vkDestroyCommandPool(device.device(), pool, nullptr);
     pipeline.destroy();
     prefilter.destroy();
+    irradiance.destroy();
 
     // The equirect existed only to be projected; nothing samples it afterwards.
     bindless.releaseSampledImage(sourceIndex);
@@ -546,7 +632,10 @@ bool IblResources::loadEnvironment(VulkanDevice&        device,
 
     envIndex_ = bindless.registerSampledImage(envCubeView_,
                                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    if (envIndex_ == VulkanBindless::kInvalidIndex) {
+    irrIndex_ = bindless.registerSampledImage(irrCubeView_,
+                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (envIndex_ == VulkanBindless::kInvalidIndex
+        || irrIndex_ == VulkanBindless::kInvalidIndex) {
         std::fprintf(stderr, "[ibl] bindless sampled image slots exhausted\n");
         destroyEnvironment();
         return false;
@@ -570,6 +659,25 @@ void IblResources::destroyEnvironment()
             bindless_->releaseSampledImage(envMirrorIndex_);
             envMirrorIndex_ = VulkanBindless::kInvalidIndex;
         }
+        if (irrIndex_ != VulkanBindless::kInvalidIndex) {
+            bindless_->releaseSampledImage(irrIndex_);
+            irrIndex_ = VulkanBindless::kInvalidIndex;
+        }
+    }
+    for (VkImageView& face : irrFaceViews_) {
+        if (face != VK_NULL_HANDLE) {
+            vkDestroyImageView(device_->device(), face, nullptr);
+            face = VK_NULL_HANDLE;
+        }
+    }
+    if (irrCubeView_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(device_->device(), irrCubeView_, nullptr);
+        irrCubeView_ = VK_NULL_HANDLE;
+    }
+    if (irrImage_ != VK_NULL_HANDLE) {
+        vmaDestroyImage(device_->allocator(), irrImage_, irrAllocation_);
+        irrImage_      = VK_NULL_HANDLE;
+        irrAllocation_ = nullptr;
     }
     for (std::array<VkImageView, kCubeFaces>& level : envFaceViews_) {
         for (VkImageView& face : level) {
