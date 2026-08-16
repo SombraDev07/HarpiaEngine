@@ -428,6 +428,20 @@ VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ./build/ci/bin/harpi
 
 152 casos / 27.277 asserções · `-Werror`, ASan e TSan limpos · 0 erros de validação.
 
+### Física — Jolt direto (4.3) ✅
+
+| Entrega | Onde |
+|---|---|
+| Jolt 5.6.0, sem backend abstrato, sem Vulkan compute | `cmake/HarpiaDependencies.cmake` |
+| `JoltJobSystem` — jobs do Jolt no `JobSystem` da engine, zero thread própria | `Source/Physics/JoltJobSystem.*` |
+| Alocador Jolt com `MemTag::Physics` | `Source/Physics/JoltAllocator.*` |
+| `PhysicsWorld` — `JPH::PhysicsSystem` exposto; rigid body, character, raycast, mesh | `Source/Physics/PhysicsWorld.*` |
+| `RigidBody`, `CharacterController`, `CollisionMesh` no World | `Source/Physics/PhysicsComponents.h` |
+
+**Decisão:** Jolt é a API. `PhysicsWorld` é o boilerplate do HelloWorld (factory, layers, temp allocator) mais as duas coisas que a engine já exige — jobs e tag de memória. Quem precisa de mais fala com `system()` / `bodies()`.
+
+**Verificado:** 14 casos / 59 asserções em `Tests/test_physics.cpp` — caixa cai e assenta, raycast, mesh de colisão (winding CCW; mesh do Jolt é de uma face), character anda e para em parede, sync ECS, memória da tag volta a zero no shutdown, jobs passam pelo `JobSystem`. Preset `ci` com `-Werror`. **ASan e TSan limpos.**
+
 ## Próximo
 
 **F2 — Deferred PBR**, continuando de:
