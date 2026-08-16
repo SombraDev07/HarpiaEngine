@@ -6,6 +6,7 @@
 
 #include "Common.hlsli"
 #include "Brdf.hlsli"
+#include "Ibl.hlsli"
 
 [[vk::push_constant]] LightingPush g_push;
 
@@ -59,8 +60,21 @@ float4 main(PSInput input) : SV_Target0
     float3 color = shadeDirect(albedo, metallic, roughness, normal,
                                viewDirection, lightDirection, lightColor);
 
-    // Flat ambient stands in until image-based lighting arrives in step 4.
-    color += albedo * light.ambient.rgb;
+    // Image-based ambient. This is what stops a metal from rendering black:
+    // with no diffuse lobe, everything a metal shows comes from the
+    // environment.
+    //
+    // A pass that never registers an environment leaves the index at zero,
+    // which is a real slot holding some other buffer — the bounds check cannot
+    // catch that, so the guard is the index being in range and the LUT index
+    // read from those bytes being in range too. evaluateIbl does the second.
+    if (harpiaValidStorageBuffer(g_push.environmentBuffer)) {
+        const Environment environment = g_environments[g_push.environmentBuffer][0];
+        color += evaluateIbl(environment,
+                             environment.brdfLut,
+                             g_samplers[HARPIA_SAMPLER_LINEAR_REPEAT],
+                             albedo, metallic, roughness, normal, viewDirection);
+    }
 
     return float4(color, 1.0);
 }

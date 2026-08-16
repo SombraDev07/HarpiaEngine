@@ -26,6 +26,16 @@ struct FrameData {
     float2   invRenderSize;
 };
 
+// Mirrors GpuEnvironment. Every shared struct lives here so there is one place
+// to compare against RenderTypes.h.
+struct Environment {
+    float4 skyZenith;    // rgb radiance looking straight up, w intensity
+    float4 skyHorizon;
+    float4 groundColor;
+    uint   brdfLut;      // bindless index of the split-sum table
+    uint3  padding;
+};
+
 struct DirectionalLight {
     float4 direction;       // points from the light
     float4 colorIntensity;  // rgb colour, w intensity
@@ -58,6 +68,21 @@ struct MaterialData {
 #define HARPIA_SAMPLER_LINEAR_REPEAT 0
 #define HARPIA_SAMPLER_POINT_CLAMP   1
 
+// Mirrors VulkanBindless::kMax*, which create() refuses to run without. A
+// bindless index reaches a shader as a plain uint, from a push constant a call
+// site forgot to fill or from buffer bytes that mean something else entirely —
+// nothing distinguishes it from a real slot. Indexing past the descriptor array
+// is undefined behaviour, and on AMD the scalar unit faults on the descriptor
+// load: ring timeout, GPU reset, desktop session gone. The bound is what keeps
+// a stale index a visibly wrong pixel instead.
+#define HARPIA_MAX_TEXTURES        16384
+#define HARPIA_MAX_STORAGE_BUFFERS 4096
+#define HARPIA_MAX_SAMPLERS        256
+
+bool harpiaValidTexture(uint index)       { return index < HARPIA_MAX_TEXTURES; }
+bool harpiaValidStorageBuffer(uint index) { return index < HARPIA_MAX_STORAGE_BUFFERS; }
+bool harpiaValidSampler(uint index)       { return index < HARPIA_MAX_SAMPLERS; }
+
 // Binding 0: sampled images. Binding 1: storage buffers. Binding 2: samplers.
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
 [[vk::binding(2, 0)]] SamplerState      g_samplers[];
@@ -67,6 +92,7 @@ struct MaterialData {
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectData>   g_objects[];
 [[vk::binding(1, 0)]] StructuredBuffer<MaterialData>     g_materials[];
 [[vk::binding(1, 0)]] StructuredBuffer<DirectionalLight> g_lights[];
+[[vk::binding(1, 0)]] StructuredBuffer<Environment>      g_environments[];
 
 // Push constant blocks. HLSL allows only one per shader, so each shader
 // declares the variable itself:
@@ -89,7 +115,8 @@ struct LightingPush {
     uint normalTexture;
     uint materialTexture;
     uint depthTexture;
-    uint2 padding;
+    uint environmentBuffer;
+    uint padding;
 };
 
 // --- normal encoding --------------------------------------------------------

@@ -13,6 +13,7 @@
 #include "Platform/Window.h"
 #include "RHI/GBuffer.h"
 #include "RHI/GpuMesh.h"
+#include "RHI/IblResources.h"
 #include "RHI/MeshPrimitives.h"
 #include "RHI/RenderTypes.h"
 #include "RHI/Vulkan/VulkanDevice.h"
@@ -207,6 +208,7 @@ int main(int argc, char** argv)
     rhi::VulkanBuffer objectBuffer;
     rhi::VulkanBuffer materialBuffer;
     rhi::VulkanBuffer lightBuffer;
+    rhi::VulkanBuffer environmentBuffer;
 
     rhi::GpuFrameData        frameData;
     rhi::GpuDirectionalLight light;
@@ -214,7 +216,22 @@ int main(int argc, char** argv)
     light.colorIntensity = Vec4(1.0f, 0.96f, 0.9f, 4.0f);
     light.ambient        = Vec4(0.03f, 0.035f, 0.045f, 0.0f);
 
-    if (!makeBuffer(frameBuffer, &frameData, sizeof(frameData), "Frame")
+    // The BRDF table is generated once and read by every material forever.
+    rhi::IblResources ibl;
+    if (!ibl.create(device, renderer.bindless(), shaderDir)) {
+        std::fprintf(stderr, "[app] IBL resource creation failed\n");
+        JobSystem::get().shutdown();
+        return 1;
+    }
+
+    rhi::GpuEnvironment environment;
+    environment.skyZenith   = Vec4(0.16f, 0.28f, 0.55f, 1.0f);
+    environment.skyHorizon  = Vec4(0.52f, 0.58f, 0.66f, 0.0f);
+    environment.groundColor = Vec4(0.10f, 0.09f, 0.08f, 0.0f);
+    environment.brdfLut     = ibl.brdfLutIndex();
+
+    if (!makeBuffer(environmentBuffer, &environment, sizeof(environment), "Environment")
+        || !makeBuffer(frameBuffer, &frameData, sizeof(frameData), "Frame")
         || !makeBuffer(objectBuffer, objects.data(),
                        sizeof(rhi::GpuObjectData) * objects.size(), "Objects")
         || !makeBuffer(materialBuffer, materials.data(),
@@ -239,6 +256,8 @@ int main(int argc, char** argv)
     lightingPush.frameBuffer = gbufferPush.frameBuffer;
     lightingPush.lightBuffer =
         bindless.registerStorageBuffer(lightBuffer.handle(), 0, sizeof(light));
+    lightingPush.environmentBuffer =
+        bindless.registerStorageBuffer(environmentBuffer.handle(), 0, sizeof(environment));
 
     std::printf("[app] %u spheres, roughness across X, metallic across Y\n", kSphereCount);
 
@@ -422,6 +441,8 @@ int main(int argc, char** argv)
     objectBuffer.destroy();
     materialBuffer.destroy();
     lightBuffer.destroy();
+    environmentBuffer.destroy();
+    ibl.destroy();
     graph.destroy();
     uploader.destroy();
     gbufferPipeline.destroy();

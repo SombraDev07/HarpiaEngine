@@ -10,6 +10,7 @@ add_library(harpia_rhi STATIC
     GBuffer.cpp
     MeshPrimitives.cpp
     GpuTexture.cpp
+    IblResources.cpp
     RenderGraph/RenderGraph.cpp
     ThirdPartyImpl.cpp)
 
@@ -44,5 +45,6 @@ target_sources(harpia_rhi PUBLIC
         GBuffer.h
         MeshPrimitives.h
         GpuTexture.h
+        IblResources.h
         RenderTypes.h
         RenderGraph/RenderGraph.h)

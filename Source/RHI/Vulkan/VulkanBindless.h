@@ -26,6 +26,15 @@ class VulkanBindless {
 public:
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
 
+    // Array sizes. Shaders clamp every bindless index against these, so they
+    // are a contract and not a target: Common.hlsli mirrors the numbers and
+    // create() fails rather than silently handing out a smaller array than the
+    // shaders believe in. Vulkan 1.3 floors are far above all four.
+    static constexpr std::uint32_t kMaxSampledImages  = 16384;
+    static constexpr std::uint32_t kMaxStorageBuffers = 4096;
+    static constexpr std::uint32_t kMaxSamplers       = 256;
+    static constexpr std::uint32_t kMaxStorageImages  = 1024;
+
     VulkanBindless() = default;
     ~VulkanBindless();
 

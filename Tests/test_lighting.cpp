@@ -7,6 +7,7 @@
 #include "Core/Math/Math.h"
 #include "RHI/GBuffer.h"
 #include "RHI/GpuMesh.h"
+#include "RHI/IblResources.h"
 #include "RHI/RenderTypes.h"
 #include "RHI/Vulkan/VulkanDevice.h"
 #include "RHI/Vulkan/VulkanPipeline.h"
@@ -109,6 +110,20 @@ float half16ToFloat(std::uint16_t bits)
     return result;
 }
 
+// These tests measure the direct term against the CPU mirror, so the ambient
+// has to contribute nothing — the role `light.ambient = 0` played before IBL
+// landed. A black sky at zero intensity zeroes both halves of the split sum
+// while still exercising the real bindless path, which is where the bug that
+// wedged the GPU actually lived.
+rhi::GpuEnvironment blackEnvironment()
+{
+    rhi::GpuEnvironment environment;
+    environment.skyZenith   = Vec4(0.0f);
+    environment.skyHorizon  = Vec4(0.0f);
+    environment.groundColor = Vec4(0.0f);
+    return environment;
+}
+
 MeshAsset makeQuad()
 {
     MeshAsset mesh;
@@ -144,6 +159,9 @@ struct DeferredFixture {
     rhi::VulkanBuffer objectBuffer;
     rhi::VulkanBuffer materialBuffer;
     rhi::VulkanBuffer lightBuffer;
+    rhi::VulkanBuffer environmentBuffer;
+
+    rhi::IblResources ibl;
 
     rhi::GBufferPushConstants  gbufferPush;
     rhi::LightingPushConstants lightingPush;
@@ -193,12 +211,19 @@ struct DeferredFixture {
         if (!mesh.create(device, uploader, renderer.bindless(), asset, "LightingQuad")) {
             return;
         }
+
+        // The lighting shader samples the split-sum table unconditionally, so
+        // the table has to exist here even when the tests zero its contribution.
+        if (!ibl.create(device, renderer.bindless(), std::string(HARPIA_SHADER_DIR))) {
+            return;
+        }
         ready = true;
     }
 
     ~DeferredFixture()
     {
         if (ready) {
+            ibl.destroy();
             mesh.destroy();
             gbufferPipeline.destroy();
             lightingPipeline.destroy();
@@ -206,6 +231,7 @@ struct DeferredFixture {
             objectBuffer.destroy();
             materialBuffer.destroy();
             lightBuffer.destroy();
+            environmentBuffer.destroy();
             graph.destroy();
             uploader.destroy();
             renderer.destroy();
@@ -216,8 +242,11 @@ struct DeferredFixture {
     bool prepare(const rhi::GpuFrameData&         frame,
                  const rhi::GpuObjectData&        object,
                  const rhi::GpuMaterialData&      material,
-                 const rhi::GpuDirectionalLight&  light)
+                 const rhi::GpuDirectionalLight&  light,
+                 rhi::GpuEnvironment              environment = blackEnvironment())
     {
+        environment.brdfLut = ibl.brdfLutIndex();
+
         const auto make = [&](rhi::VulkanBuffer& buffer, const void* data,
                               VkDeviceSize size, const char* name) {
             rhi::BufferDesc desc;
@@ -231,7 +260,8 @@ struct DeferredFixture {
         if (!make(frameBuffer, &frame, sizeof(frame), "Frame")
             || !make(objectBuffer, &object, sizeof(object), "Objects")
             || !make(materialBuffer, &material, sizeof(material), "Materials")
-            || !make(lightBuffer, &light, sizeof(light), "Lights")) {
+            || !make(lightBuffer, &light, sizeof(light), "Lights")
+            || !make(environmentBuffer, &environment, sizeof(environment), "Environment")) {
             return false;
         }
 
@@ -247,8 +277,11 @@ struct DeferredFixture {
         lightingPush.frameBuffer = gbufferPush.frameBuffer;
         lightingPush.lightBuffer =
             bindless.registerStorageBuffer(lightBuffer.handle(), 0, sizeof(light));
+        lightingPush.environmentBuffer =
+            bindless.registerStorageBuffer(environmentBuffer.handle(), 0, sizeof(environment));
 
-        return lightingPush.lightBuffer != rhi::VulkanBindless::kInvalidIndex;
+        return lightingPush.lightBuffer != rhi::VulkanBindless::kInvalidIndex
+            && lightingPush.environmentBuffer != rhi::VulkanBindless::kInvalidIndex;
     }
 
     // Returns the HDR lighting result as floats.

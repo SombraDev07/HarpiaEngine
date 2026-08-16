@@ -37,6 +37,18 @@ struct GpuDirectionalLight {
     Vec4 ambient{0.03f, 0.03f, 0.03f, 0.0f};  // stands in until IBL lands in step 4
 };
 
+// The environment the IBL pass integrates against. Analytic sky for now; a
+// prefiltered cubemap replaces the radiance source without changing the split-
+// sum maths or the LUT.
+struct GpuEnvironment {
+    Vec4 skyZenith{0.20f, 0.35f, 0.65f, 1.0f};   // rgb radiance, w intensity
+    Vec4 skyHorizon{0.55f, 0.62f, 0.72f, 0.0f};
+    Vec4 groundColor{0.12f, 0.10f, 0.09f, 0.0f};
+
+    std::uint32_t brdfLut = 0xFFFFFFFFu;         // bindless index
+    std::uint32_t padding[3]{};
+};
+
 // One per drawable. prevModel is separate so a moving object produces motion
 // vectors even when the camera is still.
 struct GpuObjectData {
@@ -84,7 +96,8 @@ struct LightingPushConstants {
     std::uint32_t normalTexture   = 0;
     std::uint32_t materialTexture = 0;
     std::uint32_t depthTexture    = 0;
-    std::uint32_t padding[2]{};
+    std::uint32_t environmentBuffer = 0;
+    std::uint32_t padding          = 0;
 };
 
 static_assert(sizeof(LightingPushConstants) == 32, "must match Common.hlsli");
@@ -100,6 +113,7 @@ enum class SamplerSlot : std::uint32_t {
 // Catch a mirror drift at compile time rather than in a frame.
 static_assert(sizeof(GpuFrameData) == 224, "GpuFrameData must match Common.hlsli");
 static_assert(sizeof(GpuDirectionalLight) == 48, "GpuDirectionalLight must match Common.hlsli");
+static_assert(sizeof(GpuEnvironment) == 64, "GpuEnvironment must match Ibl.hlsli");
 static_assert(sizeof(GpuObjectData) == 208, "GpuObjectData must match Common.hlsli");
 static_assert(sizeof(GpuMaterialData) == 64, "GpuMaterialData must match Common.hlsli");
 static_assert(sizeof(GBufferPushConstants) == 32, "push constants must match Common.hlsli");

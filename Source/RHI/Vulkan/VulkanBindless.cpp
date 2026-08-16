@@ -2,19 +2,10 @@
 
 #include "RHI/Vulkan/VulkanDevice.h"
 
-#include <algorithm>
 #include <array>
+#include <cstdio>
 
 namespace harpia::rhi {
-namespace {
-
-// Targets, clamped against what the device actually allows.
-constexpr std::uint32_t kWantSampledImages  = 16384;
-constexpr std::uint32_t kWantStorageBuffers = 4096;
-constexpr std::uint32_t kWantSamplers       = 256;
-constexpr std::uint32_t kWantStorageImages  = 1024;
-
-} // namespace
 
 std::uint32_t VulkanBindless::IndexAllocator::allocate()
 {
@@ -52,13 +43,25 @@ bool VulkanBindless::create(const VulkanDevice& device)
 
     const VulkanDevice::Limits& limits = device.limits();
 
-    capacity_.sampledImages  = std::min(kWantSampledImages,
-                                        std::max(limits.maxSampledImages, 1u));
-    capacity_.storageBuffers = std::min(kWantStorageBuffers,
-                                        std::max(limits.maxStorageBuffers, 1u));
-    capacity_.samplers       = std::min(kWantSamplers,
-                                        std::max(limits.maxSamplers, 1u));
-    capacity_.storageImages  = kWantStorageImages;
+    // Shrinking to fit the device would leave the shaders clamping against a
+    // bound that no longer exists, which is the one failure this whole scheme
+    // is meant to rule out. Refuse instead.
+    if (limits.maxSampledImages < kMaxSampledImages
+        || limits.maxStorageBuffers < kMaxStorageBuffers
+        || limits.maxSamplers < kMaxSamplers) {
+        std::fprintf(stderr,
+                     "[bindless] device grants fewer descriptors than the shaders "
+                     "assume: images %u/%u, buffers %u/%u, samplers %u/%u\n",
+                     limits.maxSampledImages, kMaxSampledImages,
+                     limits.maxStorageBuffers, kMaxStorageBuffers,
+                     limits.maxSamplers, kMaxSamplers);
+        return false;
+    }
+
+    capacity_.sampledImages  = kMaxSampledImages;
+    capacity_.storageBuffers = kMaxStorageBuffers;
+    capacity_.samplers       = kMaxSamplers;
+    capacity_.storageImages  = kMaxStorageImages;
 
     sampledImages_.capacity  = capacity_.sampledImages;
     storageBuffers_.capacity = capacity_.storageBuffers;
