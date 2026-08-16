@@ -426,7 +426,31 @@ um teste vermelho em vez da sessão do usuário:
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ./build/ci/bin/harpia_tests -ts=gpu
 ```
 
-152 casos / 27.277 asserções · `-Werror`, ASan e TSan limpos · 0 erros de validação.
+**Import `.hdr` e projeção no cubo.** `HdrImageAsset` é tipo próprio e não um modo do
+`TextureAsset`: aquele expande tudo para RGBA8, que está certo para textura de material e é
+fatal para radiância — um sol é milhares de vezes mais brilhante que o céu ao lado, e
+quantizar isso em 255 faz a prefiltragem apagar exatamente a luz que faz IBL parecer
+iluminado.
+
+O equirretangular é projetado num cubo antes de qualquer filtragem. A densidade de texel de
+um retângulo lat/long é muito desigual — enche os polos de amostras que ninguém olha e passa
+fome no horizonte, onde tudo acontece. Em espaço de cubo um texel é um ângulo sólido
+aproximadamente constante. São seis draws, um por face, cada um numa view 2D de uma única
+camada; renderização em camadas num draw só exigiria multiview ou geometry shader.
+
+O cubo guarda half float porque `R16G16B16A16_SFLOAT` é o formato mais largo que o Vulkan
+**exige** que suporte filtragem linear. `R32G32B32A32_SFLOAT` não é, e projeção com
+filtragem nearest mostra o equirretangular em blocos.
+
+O teste codifica longitude como cosseno e seno, não como rampa — e isso não é detalhe. Uma
+rampa salta de 1 para 0 no antimeridiano, e a face 1 olha exatamente para essa costura: a
+primeira versão do teste falhou ali, reportando o meio de uma mistura entre os dois lados. O
+wrap está **correto**, porque um mapa real é contínuo nas bordas; só o source sintético não
+era. Codificar de forma periódica mantém o teste honesto sobre qual dos dois ele mede.
+
+Falta o prefiltro GGX (cadeia de mips por roughness) e a irradiância difusa.
+
+182 casos / 27.593 asserções · `-Werror`, ASan e TSan limpos · 0 erros de validação.
 
 ### Navegação — Recast/Detour direto (4.5) ✅
 
@@ -468,7 +492,8 @@ cmake --build --preset=ci --target harpia_navigation_tests
 **F2 — Deferred PBR**, continuando de:
 2. ~~GBuffer no render graph~~ ✅ (ver abaixo)
 3. ~~BRDF GGX + Smith + Fresnel, difuso Burley~~ ✅ (ver abaixo)
-4. **IBL split-sum** — tabela BRDF ✅, environment prefiltrado pendente ← aqui
+4. **IBL split-sum** — tabela BRDF ✅, `.hdr` ✅, projeção no cubo ✅,
+   prefiltro GGX e irradiância pendentes ← aqui
 5. Luzes direcional + pontuais com clustered culling
 6. ~~Tonemap ACES~~ ✅ (entrou junto do sample)
 
