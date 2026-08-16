@@ -385,12 +385,55 @@ fixture que ninguém mantém.
 
 151 casos / 26.487 asserções · `-Werror`, ASan, UBSan e TSan limpos.
 
+### IBL split-sum — a tabela BRDF 🟡
+
+| Entrega | Onde |
+|---|---|
+| `BrdfLut.frag.hlsl` — integração GGX por importance sampling, 1024 amostras | `Shaders/BrdfLut.frag.hlsl` |
+| `Ibl.hlsli` — `evaluateIbl`, céu analítico, irradiância em forma fechada | `Shaders/Ibl.hlsli` |
+| `IblResources` — LUT R16G16 256², gerada uma vez, slot bindless | `Source/RHI/IblResources.{h,cpp}` |
+| `GpuEnvironment` + `g_environments[]` | `Source/RHI/RenderTypes.h`, `Shaders/Common.hlsli` |
+
+Falta o **environment prefiltrado de verdade**: o rádiance ainda vem de um céu analítico, não
+de um cubemap com cadeia de mips. A matemática do split-sum e a LUT são idênticas nos dois
+casos — trocar a fonte de radiância não mexe em mais nada — por isso o passo 4 fica amarelo e
+não verde.
+
+**O bug que custou caro.** O `Lighting.frag.hlsl` passou a ler dois índices bindless novos, mas
+o `test_lighting.cpp` não foi atualizado junto: `environmentBuffer` ficou no default `0`, que
+era um slot real segurando o vertex buffer do quad. O shader leu bytes de vértice como
+`Environment`, tirou dali um `brdfLut` que era lixo e indexou `g_textures` com ele. Índice fora
+do array de descritores é UB no Vulkan; na AMD o SQC falta no load do descritor, e o resultado
+é `ring gfx_0.0.0 timeout`, reset do amdgpu e `gnome-shell` morto — sete vezes em dois dias, uma
+delas levando a máquina inteira junto.
+
+**As validation layers não pegam isso.** O teste rodava com `enableValidation = true`, checava
+`validationErrorCount() == 0` e passava. Um índice bindless OOB só existe como valor de
+registrador em runtime: só a GPU-Assisted Validation o enxerga. O invariante nº 7 tem esse ponto
+cego, e ele continua aberto até a GPU-AV entrar nos presets de teste.
+
+Por isso o clamp virou parte do contrato, não uma checagem avulsa: `harpiaValidTexture` /
+`harpiaValidStorageBuffer` / `harpiaValidSampler` em `Common.hlsli` espelham
+`VulkanBindless::kMax*`, e `create()` agora **falha** em vez de encolher o array quando o device
+oferece menos — encolher deixaria o shader clampando contra um limite que não existe mais, que é
+exatamente a falha que o esquema deveria excluir. `evaluateIbl` recebe o índice da LUT em vez de
+um `Texture2D` para o bounds check morar junto do uso, e não em cada call site que pode esquecê-lo.
+
+Teste de GPU novo ou alterado vale validar antes no rasterizador de software, onde errar custa
+um teste vermelho em vez da sessão do usuário:
+
+```bash
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ./build/ci/bin/harpia_tests -ts=gpu
+```
+
+152 casos / 27.277 asserções · `-Werror`, ASan e TSan limpos · 0 erros de validação.
+
 ## Próximo
 
 **F2 — Deferred PBR**, continuando de:
 2. ~~GBuffer no render graph~~ ✅ (ver abaixo)
 3. ~~BRDF GGX + Smith + Fresnel, difuso Burley~~ ✅ (ver abaixo)
-4. **IBL split-sum (BRDF LUT + prefiltered environment)** ← próximo
+4. **IBL split-sum** — tabela BRDF ✅, environment prefiltrado pendente ← aqui
 5. Luzes direcional + pontuais com clustered culling
 6. ~~Tonemap ACES~~ ✅ (entrou junto do sample)
 
