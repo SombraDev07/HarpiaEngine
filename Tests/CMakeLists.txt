@@ -19,7 +19,8 @@ add_executable(harpia_tests
     test_gbuffer.cpp
     test_lighting.cpp
     test_texture.cpp
-    test_ibl.cpp)
+    test_ibl.cpp
+    test_navigation.cpp)
 
 target_include_directories(harpia_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -32,8 +33,23 @@ target_link_libraries(harpia_tests
     PRIVATE Harpia::Core
             Harpia::RHI
             Harpia::Platform
+            Harpia::Navigation
             doctest::doctest
             harpia_warnings)
+
+# CPU-only binary so navigation can be verified without touching the GPU.
+add_executable(harpia_navigation_tests
+    main.cpp
+    test_navigation.cpp)
+target_include_directories(harpia_navigation_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(harpia_navigation_tests PRIVATE DOCTEST_CONFIG_DOUBLE_STRINGIFY)
+target_link_libraries(harpia_navigation_tests
+    PRIVATE Harpia::Core
+            Harpia::Navigation
+            doctest::doctest
+            harpia_warnings)
+add_test(NAME harpia_navigation COMMAND harpia_navigation_tests)
+set_tests_properties(harpia_navigation PROPERTIES TIMEOUT 120)
 
 # Split so leak detection stays strict where it can be. Engine code is held to
 # zero leaks; the gpu suite keeps every other sanitizer check but disables leak

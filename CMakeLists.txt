@@ -64,6 +64,7 @@ include(HarpiaDependencies)
 add_subdirectory(Source/Core)
 add_subdirectory(Source/Platform)
 add_subdirectory(Source/RHI)
+add_subdirectory(Source/Navigation)
 include(HarpiaShaders)
 
 harpia_declare_shaders(SOURCES
