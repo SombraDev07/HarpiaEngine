@@ -64,6 +64,7 @@ include(HarpiaDependencies)
 add_subdirectory(Source/Core)
 add_subdirectory(Source/Platform)
 add_subdirectory(Source/RHI)
+add_subdirectory(Source/Navigation)
 include(HarpiaShaders)
 
 harpia_declare_shaders(SOURCES
@@ -74,7 +75,8 @@ harpia_declare_shaders(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Fullscreen.vert.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Lighting.frag.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Tonemap.frag.hlsl
-    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/BrdfLut.frag.hlsl)
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/BrdfLut.frag.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/EquirectToCube.frag.hlsl)
 
 add_subdirectory(Samples/ClearScreen)
 add_subdirectory(Samples/Triangle)

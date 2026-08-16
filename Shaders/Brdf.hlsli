@@ -12,7 +12,9 @@
 #ifndef HARPIA_BRDF_HLSLI
 #define HARPIA_BRDF_HLSLI
 
-#define HARPIA_PI 3.14159265358979323846
+// HARPIA_PI moved to Common.hlsli when the cubemap passes needed it without
+// dragging in a BRDF they do not evaluate.
+#include "Common.hlsli"
 
 // GGX normal distribution. Describes how much of the microfacet surface is
 // oriented to reflect from the light to the eye.

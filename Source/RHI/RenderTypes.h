@@ -108,7 +108,18 @@ inline constexpr std::uint32_t kInvalidTextureIndex = 0xFFFFFFFFu;
 enum class SamplerSlot : std::uint32_t {
     LinearRepeat = 0,  // material textures
     PointClamp   = 1,  // GBuffer reads: no filtering across encoded channels
+    LinearClamp  = 2,  // equirectangular sources: latitude must not wrap
 };
+
+// Shared by the three cubemap passes. Mirrors CubePush in Common.hlsli.
+struct CubePushConstants {
+    std::uint32_t sourceTexture = 0;
+    std::uint32_t face          = 0;
+    float         roughness     = 0.0f;
+    std::uint32_t sampleCount   = 0;
+};
+
+static_assert(sizeof(CubePushConstants) == 16, "must match Common.hlsli");
 
 // Catch a mirror drift at compile time rather than in a frame.
 static_assert(sizeof(GpuFrameData) == 224, "GpuFrameData must match Common.hlsli");

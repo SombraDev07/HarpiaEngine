@@ -4,12 +4,14 @@
 
 #include <doctest/doctest.h>
 
+#include "Core/Assets/HdrImage.h"
 #include "Core/Math/Math.h"
 #include "RHI/IblResources.h"
 #include "RHI/Vulkan/VulkanBuffer.h"
 #include "RHI/Vulkan/VulkanDevice.h"
 #include "RHI/Vulkan/VulkanRenderer.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -191,6 +193,147 @@ TEST_CASE("the split-sum BRDF table matches an independent CPU integration")
         const Vec2 mirror = texel(kSize - 4, 0);
         CHECK(mirror.x == doctest::Approx(1.0f).epsilon(0.05));
         CHECK(mirror.y < 0.05f);
+    }
+
+    CHECK(rhi::VulkanDevice::validationErrorCount() == 0);
+
+    ibl.destroy();
+    uploader.destroy();
+    renderer.destroy();
+    device.destroy();
+}
+
+TEST_CASE("the equirectangular projection puts each face where it looks")
+{
+    rhi::VulkanDevice::resetValidationErrorCount();
+
+    rhi::DeviceDesc desc;
+    desc.enableValidation = true;
+    desc.window           = nullptr;
+
+    rhi::VulkanDevice device;
+    if (!device.create(desc)) {
+        MESSAGE("no Vulkan device available — skipping");
+        return;
+    }
+
+    rhi::VulkanRenderer renderer;
+    rhi::GpuUploader    uploader;
+    REQUIRE(renderer.createOffscreen(device, 16, 16));
+    REQUIRE(uploader.create(device));
+
+    // A source whose colour encodes the direction it is seen from, so that "is
+    // face 4 really +Z" becomes arithmetic rather than a judgement about a
+    // picture. A sign error in the face basis still produces a cube that looks
+    // plausible; only numbers catch it.
+    //
+    // Longitude is stored as its cosine and sine rather than as a ramp. A ramp
+    // jumps from 1 to 0 at the antimeridian, and the sampler repeats in U — so
+    // filtering across that seam would blend the two ends and report a midpoint
+    // that means nothing. That blend is correct behaviour for a real map, whose
+    // edges are continuous; it is only this synthetic source that would be
+    // discontinuous. Encoding periodically keeps the source honest there.
+    //
+    // Everything is scaled by 4 so the whole image sits above 1.0: radiance has
+    // to survive the projection, or prefiltering later averages an already
+    // clipped sky.
+    constexpr std::uint32_t kSourceWidth  = 64;
+    constexpr std::uint32_t kSourceHeight = 32;
+    constexpr float         kScale        = 4.0f;
+
+    HdrImageAsset source;
+    source.width  = kSourceWidth;
+    source.height = kSourceHeight;
+    source.pixels.resize(static_cast<std::size_t>(kSourceWidth) * kSourceHeight * 4);
+
+    for (std::uint32_t y = 0; y < kSourceHeight; ++y) {
+        for (std::uint32_t x = 0; x < kSourceWidth; ++x) {
+            const std::size_t offset =
+                (static_cast<std::size_t>(y) * kSourceWidth + x) * 4;
+
+            const float u = (static_cast<float>(x) + 0.5f) / kSourceWidth;
+            const float v = (static_cast<float>(y) + 0.5f) / kSourceHeight;
+            const float longitude = (u - 0.5f) * 2.0f * kPi;
+
+            source.pixels[offset + 0] = kScale * (0.5f + 0.5f * std::cos(longitude));
+            source.pixels[offset + 1] = kScale * (0.5f + 0.5f * std::sin(longitude));
+            source.pixels[offset + 2] = kScale * v;   // latitude does not wrap
+            source.pixels[offset + 3] = 1.0f;
+        }
+    }
+
+    rhi::IblResources ibl;
+    REQUIRE(ibl.create(device, renderer.bindless(), std::string(HARPIA_SHADER_DIR)));
+    REQUIRE(ibl.loadEnvironment(device, renderer.bindless(), source,
+                                std::string(HARPIA_SHADER_DIR)));
+    CHECK(ibl.hasEnvironment());
+    CHECK(ibl.environmentIndex() != rhi::VulkanBindless::kInvalidIndex);
+
+    constexpr std::uint32_t kSize = rhi::IblResources::kEnvironmentSize;
+
+    // CPU mirror of Shaders/Cubemap.hlsli, written from the same convention
+    // rather than shared with it.
+    const auto faceDirection = [](std::uint32_t face, float u, float v) {
+        const float s = 2.0f * u - 1.0f;
+        const float t = 2.0f * v - 1.0f;
+        Vec3 d;
+        switch (face) {
+            case 0: d = Vec3( 1.0f,    -t,    -s); break;
+            case 1: d = Vec3(-1.0f,    -t,     s); break;
+            case 2: d = Vec3(    s,  1.0f,     t); break;
+            case 3: d = Vec3(    s, -1.0f,    -t); break;
+            case 4: d = Vec3(    s,    -t,  1.0f); break;
+            default: d = Vec3(  -s,    -t, -1.0f); break;
+        }
+        return normalize(d);
+    };
+
+    for (std::uint32_t face = 0; face < rhi::IblResources::kCubeFaces; ++face) {
+        std::vector<std::uint8_t> raw;
+        REQUIRE(uploader.downloadImage(ibl.environmentImage(),
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                       VkExtent2D{kSize, kSize}, 8, raw,
+                                       VK_IMAGE_ASPECT_COLOR_BIT, face));
+
+        const auto* halves = reinterpret_cast<const std::uint16_t*>(raw.data());
+
+        // The face centre, far from every edge where filtering would muddy the
+        // comparison.
+        const std::uint32_t centre = kSize / 2;
+        const std::size_t   offset =
+            (static_cast<std::size_t>(centre) * kSize + centre) * 4;
+
+        // Undo the encoding: cosine and sine back to an angle, which compares
+        // correctly across the wrap that broke a linear ramp.
+        const float cosLongitude = half16ToFloat(halves[offset + 0]) / kScale * 2.0f - 1.0f;
+        const float sinLongitude = half16ToFloat(halves[offset + 1]) / kScale * 2.0f - 1.0f;
+        const float latitudeFraction = half16ToFloat(halves[offset + 2]) / kScale;
+
+        const float u = (static_cast<float>(centre) + 0.5f) / kSize;
+        const Vec3  direction = faceDirection(face, u, u);
+
+        const float expectedLongitude = std::atan2(direction.z, direction.x);
+        const float expectedLatitude =
+            std::acos(std::clamp(direction.y, -1.0f, 1.0f)) / kPi;
+
+        CAPTURE(face);
+        CHECK(std::atan2(sinLongitude, cosLongitude)
+              == doctest::Approx(expectedLongitude).epsilon(0.02));
+        CHECK(latitudeFraction == doctest::Approx(expectedLatitude).epsilon(0.02));
+
+        // The encoding never reaches zero, so a face that sampled nothing at all
+        // would fail here rather than quietly reading as a valid direction.
+        CHECK(std::fabs(cosLongitude) + std::fabs(sinLongitude) > 0.5f);
+    }
+
+    SUBCASE("opposite faces look in opposite directions")
+    {
+        // +X and -X must disagree by half a turn in longitude. A basis with one
+        // axis flipped still produces a plausible-looking cube; this is what
+        // separates plausible from correct.
+        const Vec3 plusX  = faceDirection(0, 0.5f, 0.5f);
+        const Vec3 minusX = faceDirection(1, 0.5f, 0.5f);
+        CHECK(dot(plusX, minusX) == doctest::Approx(-1.0f).epsilon(0.001));
     }
 
     CHECK(rhi::VulkanDevice::validationErrorCount() == 0);

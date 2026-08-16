@@ -94,6 +94,7 @@ private:
     // so a shader names a sampler by constant rather than binding one.
     VkSampler linearRepeat_ = VK_NULL_HANDLE;
     VkSampler pointClamp_   = VK_NULL_HANDLE;
+    VkSampler linearClamp_  = VK_NULL_HANDLE;
 
     std::uint32_t frameIndex_  = 0;
     std::uint64_t frameNumber_ = 0;

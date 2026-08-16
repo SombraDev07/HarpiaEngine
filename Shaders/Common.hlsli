@@ -62,11 +62,16 @@ struct MaterialData {
     uint   emissiveTexture;
 };
 
+#define HARPIA_PI 3.14159265358979323846
+
 #define HARPIA_INVALID_TEXTURE 0xFFFFFFFFu
 
 // Sampler slots the renderer registers at startup.
 #define HARPIA_SAMPLER_LINEAR_REPEAT 0
 #define HARPIA_SAMPLER_POINT_CLAMP   1
+// Repeat in U would be wrong for an equirectangular source: latitude does not
+// wrap, and filtering across V=0 bleeds one pole into the other.
+#define HARPIA_SAMPLER_LINEAR_CLAMP  2
 
 // Mirrors VulkanBindless::kMax*, which create() refuses to run without. A
 // bindless index reaches a shader as a plain uint, from a push constant a call
@@ -86,6 +91,11 @@ bool harpiaValidSampler(uint index)       { return index < HARPIA_MAX_SAMPLERS; 
 // Binding 0: sampled images. Binding 1: storage buffers. Binding 2: samplers.
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
 [[vk::binding(2, 0)]] SamplerState      g_samplers[];
+
+// The same binding as g_textures, read as cubes. A descriptor is a view, and a
+// view created with viewType CUBE is a cube here and nothing else — the aliasing
+// is the same pattern the buffer arrays below already use, not a trick.
+[[vk::binding(0, 0)]] TextureCube<float4> g_cubeTextures[];
 
 [[vk::binding(1, 0)]] StructuredBuffer<Vertex>       g_vertices[];
 [[vk::binding(1, 0)]] StructuredBuffer<FrameData>    g_frames[];
@@ -117,6 +127,16 @@ struct LightingPush {
     uint depthTexture;
     uint environmentBuffer;
     uint padding;
+};
+
+// Shared by every cubemap pass: equirect projection, GGX prefilter, irradiance.
+// One struct rather than three because they differ only in which fields they
+// read, and a pass that ignores `roughness` costs nothing by receiving it.
+struct CubePush {
+    uint  sourceTexture;   // equirect 2D for the projection, cube for the rest
+    uint  face;            // 0..5, which face this draw is rendering
+    float roughness;       // prefilter only
+    uint  sampleCount;     // prefilter only
 };
 
 // --- normal encoding --------------------------------------------------------

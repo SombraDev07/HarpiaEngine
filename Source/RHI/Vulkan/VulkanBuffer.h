@@ -89,13 +89,17 @@ public:
     // Reads an image back as tightly packed texels. This is how a golden image
     // is produced for one GBuffer channel; like download(), it stalls the queue
     // and never belongs in a frame path.
+    // baseArrayLayer selects one layer of an array or one face of a cube; a
+    // cube's six faces are six layers, and reading one back is how a cubemap
+    // pass gets checked against numbers instead of against a screenshot.
     [[nodiscard]] bool downloadImage(VkImage                    image,
                                      VkImageLayout              currentLayout,
                                      VkExtent2D                 extent,
                                      std::uint32_t              texelBytes,
                                      std::vector<std::uint8_t>& outTexels,
                                      VkImageAspectFlags         aspect
-                                         = VK_IMAGE_ASPECT_COLOR_BIT);
+                                         = VK_IMAGE_ASPECT_COLOR_BIT,
+                                     std::uint32_t              baseArrayLayer = 0);
 
 private:
     VulkanDevice* device_ = nullptr;

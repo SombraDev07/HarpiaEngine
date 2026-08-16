@@ -93,13 +93,29 @@ bool VulkanRenderer::createDefaultSamplers()
     point.maxAnisotropy = 1.0f;
     HARPIA_VK_CHECK(vkCreateSampler(device, &point, nullptr, &pointClamp_));
 
+    // An equirectangular source needs linear filtering with V clamped: latitude
+    // does not wrap, so repeating it filters the north pole into the south.
+    VkSamplerCreateInfo linearClamp{};
+    linearClamp.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    linearClamp.magFilter    = VK_FILTER_LINEAR;
+    linearClamp.minFilter    = VK_FILTER_LINEAR;
+    linearClamp.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    linearClamp.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;      // longitude wraps
+    linearClamp.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    linearClamp.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    linearClamp.maxLod       = VK_LOD_CLAMP_NONE;
+    linearClamp.maxAnisotropy = 1.0f;
+    HARPIA_VK_CHECK(vkCreateSampler(device, &linearClamp, nullptr, &linearClamp_));
+
     setDebugName(device, VK_OBJECT_TYPE_SAMPLER, linearRepeat_, "Sampler_LinearRepeat");
     setDebugName(device, VK_OBJECT_TYPE_SAMPLER, pointClamp_, "Sampler_PointClamp");
+    setDebugName(device, VK_OBJECT_TYPE_SAMPLER, linearClamp_, "Sampler_LinearClamp");
 
     // Slot order must match SamplerSlot in RenderTypes.h.
     const std::uint32_t linearSlot = bindless_.registerSampler(linearRepeat_);
     const std::uint32_t pointSlot  = bindless_.registerSampler(pointClamp_);
-    return linearSlot == 0 && pointSlot == 1;
+    const std::uint32_t clampSlot  = bindless_.registerSampler(linearClamp_);
+    return linearSlot == 0 && pointSlot == 1 && clampSlot == 2;
 }
 
 bool VulkanRenderer::createFrames()
@@ -213,6 +229,10 @@ void VulkanRenderer::destroy()
     if (linearRepeat_ != VK_NULL_HANDLE) {
         vkDestroySampler(device, linearRepeat_, nullptr);
         linearRepeat_ = VK_NULL_HANDLE;
+    }
+    if (linearClamp_ != VK_NULL_HANDLE) {
+        vkDestroySampler(device, linearClamp_, nullptr);
+        linearClamp_ = VK_NULL_HANDLE;
     }
     if (pointClamp_ != VK_NULL_HANDLE) {
         vkDestroySampler(device, pointClamp_, nullptr);
