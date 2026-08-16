@@ -35,7 +35,7 @@ Testes: cada agente cria `Tests/test_<subsistema>.cpp` e **só** edita o própri
 
 ---
 
-## Os quatro pontos de estrangulamento
+## Os cinco pontos de estrangulamento
 
 ### 1. O par espelhado — só o agente R toca
 
@@ -69,7 +69,15 @@ PROGRESS.md
 Anexe a **sua** seção `### <Subsistema> ✅` antes da seção `## Próximo`. Nunca edite seção de
 outro agente, nunca reescreva o histórico de ninguém.
 
-### 4. A GPU — cuidado que já custou caro
+### 4. O diretório de build — um por árvore
+
+Os presets escrevem em `build/<preset>`, relativo à árvore. Com uma árvore por agente isso
+já fica separado, e é a única razão pela qual fica: dois agentes compilando no mesmo
+`build/ci` produzem erros internos de compilador em código que não tem defeito.
+
+Nunca aponte um build para a árvore de outro agente.
+
+### 5. A GPU — cuidado que já custou caro
 
 Rodar teste de GPU nesta máquina pode travar a placa e derrubar a sessão gráfica inteira do
 Bruno. Já aconteceu sete vezes em dois dias, uma delas resetando a máquina. Se o seu subsistema
@@ -119,13 +127,36 @@ arquivo central. Dois agentes podem adicionar componentes sem colidir.
 
 ## Protocolo de trabalho
 
-### Branch
+### Uma árvore de trabalho por agente — não apenas uma branch
 
-Uma por agente, nunca commite direto na `main`:
+A primeira versão deste arquivo mandava cada agente criar uma branch. **Isso estava
+errado e custou caro.** Branches num único diretório são mutuamente exclusivas, não
+paralelas: quando um agente faz `git checkout`, os arquivos mudam debaixo de todos os
+outros. Em uma hora isso produziu três incidentes:
+
+- `internal compiler error: bus error` em arquivos que não tinham defeito nenhum — dois
+  builds no mesmo `build/ci`, com arquivos mudando sob o `mmap` do compilador
+- `ctest` com SEGFAULT que não reproduzia à mão — o binário sendo relinkado enquanto rodava
+- trabalho não commitado desaparecendo do disco na troca de branch de outro agente
+
+Nenhum desses sintomas aponta para a causa. É por isso que a regra existe.
+
+Cada agente trabalha na **sua própria árvore**, criada a partir do repositório principal:
 
 ```bash
-git checkout -b agent/<subsistema>
+git worktree add ../harpia-<subsistema> -b agent/<subsistema>
 ```
+
+Isso dá diretório e branch próprios compartilhando o mesmo `.git`, então os commits são
+visíveis entre agentes sem que ninguém mexa nos arquivos de ninguém. O `build/` nasce
+dentro da sua árvore, o que resolve a colisão de build pelo mesmo caminho.
+
+**Nunca** rode `git checkout <outra-branch>` numa árvore que não é sua. Se precisa do
+trabalho de outro agente, ele já está no `.git` — use `git log`, `git show`, ou faça merge
+da branch dele na sua.
+
+Se você começou a trabalhar na árvore principal por engano, não faça checkout para sair.
+Pare, avise o Bruno, e mova os arquivos para a sua árvore antes de trocar qualquer coisa.
 
 ### Antes de dizer que terminou
 

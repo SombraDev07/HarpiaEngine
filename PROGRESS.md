@@ -428,6 +428,28 @@ VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json ./build/ci/bin/harpi
 
 152 casos / 27.277 asserções · `-Werror`, ASan e TSan limpos · 0 erros de validação.
 
+### Navegação — Recast/Detour direto (4.5) ✅
+
+Navmesh, crowd e behavior tree sem gerar navmesh à mão. Recast rasteriza a
+superfície caminhável; Detour responde path e nearest; DetourCrowd faz o RVO.
+Behavior trees são Sequence/Selector/Action/Condition/Inverter. LOD de percepção
+é política de tick (Full / Reduced / Sleep), não um sensor.
+
+Recast v1.6.0 entra no fim de `cmake/HarpiaDependencies.cmake`, antes do
+doctest. Bake corre pelo `JobSystem` quando ele está de pé — nenhuma thread
+própria. Alocações Recast/Detour passam por `MemTag::Scene`. Geometria vem de
+`MeshAsset` em leitura; o arquivo do asset não é tocado.
+
+Componentes `NavAgent` e `Perception` registram-se no `World` no ponto de uso.
+
+Testes em `Tests/test_navigation.cpp` e no alvo CPU-only `harpia_navigation_tests`.
+13 casos / 55 asserções · `-Werror`, ASan e TSan limpos.
+
+```bash
+cmake --build --preset=ci --target harpia_navigation_tests
+./build/ci/bin/harpia_navigation_tests
+```
+
 ## Próximo
 
 **F2 — Deferred PBR**, continuando de:

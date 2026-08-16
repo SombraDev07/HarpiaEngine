@@ -83,6 +83,32 @@ if(HARPIA_ENABLE_TRACY)
     FetchContent_MakeAvailable(tracy)
 endif()
 
+# --- recast/detour ------------------------------------------------------------
+# Navigation 4.5: Recast bakes the navmesh, Detour queries it, DetourCrowd
+# does the RVO. We do not write a baker — that is the whole point of taking
+# the same library the Dagor uses.
+FetchContent_Declare(recastnavigation
+    GIT_REPOSITORY https://github.com/recastnavigation/recastnavigation.git
+    GIT_TAG        v1.6.0
+    GIT_SHALLOW    TRUE)
+set(RECASTNAVIGATION_DEMO OFF CACHE BOOL "" FORCE)
+set(RECASTNAVIGATION_TESTS OFF CACHE BOOL "" FORCE)
+set(RECASTNAVIGATION_EXAMPLES OFF CACHE BOOL "" FORCE)
+# v1.6.0 still asks for CMake 3.1; CMake 4 dropped that floor.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(recastnavigation)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+
+add_library(harpia_recast INTERFACE)
+target_link_libraries(harpia_recast INTERFACE Recast Detour DetourCrowd)
+FetchContent_GetProperties(recastnavigation SOURCE_DIR recastnavigation_SOURCE_DIR)
+if(recastnavigation_SOURCE_DIR)
+    target_include_directories(harpia_recast SYSTEM INTERFACE
+        ${recastnavigation_SOURCE_DIR}/Recast/Include
+        ${recastnavigation_SOURCE_DIR}/Detour/Include
+        ${recastnavigation_SOURCE_DIR}/DetourCrowd/Include)
+endif()
+
 # --- doctest ------------------------------------------------------------------
 # Fetched here rather than in Tests/ so every pinned tag is visible in one
 # place, but still only when tests are actually being built.
