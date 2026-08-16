@@ -109,6 +109,40 @@ if(recastnavigation_SOURCE_DIR)
         ${recastnavigation_SOURCE_DIR}/DetourCrowd/Include)
 endif()
 
+# --- jolt ---------------------------------------------------------------------
+# Physics 4.3: Jolt is the solver. We do not wrap it behind a backend
+# interface — that only pays when a second backend exists. GPU compute in
+# 5.6+ is unused here and would pull Vulkan into a layer that must not see it.
+FetchContent_Declare(JoltPhysics
+    GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+    GIT_TAG        v5.6.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  Build)
+
+set(ENABLE_ALL_WARNINGS OFF CACHE BOOL "" FORCE)
+set(OVERRIDE_CXX_FLAGS OFF CACHE BOOL "" FORCE)
+set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
+set(ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(ENABLE_OBJECT_STREAM OFF CACHE BOOL "" FORCE)
+set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
+set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
+set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF CACHE BOOL "" FORCE)
+set(CPP_RTTI_ENABLED ON CACHE BOOL "" FORCE)
+set(JPH_USE_DX12 OFF CACHE BOOL "" FORCE)
+set(JPH_USE_VK OFF CACHE BOOL "" FORCE)
+set(JPH_USE_MTL OFF CACHE BOOL "" FORCE)
+set(JPH_USE_CPU_COMPUTE OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(JoltPhysics)
+
+# Jolt headers trip -Wconversion / -Wsign-conversion; they are not ours to fix.
+# A SYSTEM wrapper is the same pattern as glm, stb and cgltf.
+add_library(harpia_jolt INTERFACE)
+target_link_libraries(harpia_jolt INTERFACE Jolt)
+FetchContent_GetProperties(JoltPhysics SOURCE_DIR JoltPhysics_SOURCE_DIR)
+if(JoltPhysics_SOURCE_DIR)
+    target_include_directories(harpia_jolt SYSTEM INTERFACE ${JoltPhysics_SOURCE_DIR})
+endif()
+
 # --- doctest ------------------------------------------------------------------
 # Fetched here rather than in Tests/ so every pinned tag is visible in one
 # place, but still only when tests are actually being built.

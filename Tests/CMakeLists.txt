@@ -20,7 +20,8 @@ add_executable(harpia_tests
     test_lighting.cpp
     test_texture.cpp
     test_ibl.cpp
-    test_navigation.cpp)
+    test_navigation.cpp
+    test_physics.cpp)
 
 target_include_directories(harpia_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -34,6 +35,7 @@ target_link_libraries(harpia_tests
             Harpia::RHI
             Harpia::Platform
             Harpia::Navigation
+            Harpia::Physics
             doctest::doctest
             harpia_warnings)
 
@@ -50,6 +52,22 @@ target_link_libraries(harpia_navigation_tests
             harpia_warnings)
 add_test(NAME harpia_navigation COMMAND harpia_navigation_tests)
 set_tests_properties(harpia_navigation PROPERTIES TIMEOUT 120)
+
+# Physics is CPU-only and must stay runnable when the RHI target is mid-edit
+# by another agent. Same doctest main, no Vulkan.
+add_executable(harpia_physics_tests
+    main.cpp
+    test_physics.cpp)
+
+target_include_directories(harpia_physics_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(harpia_physics_tests PRIVATE DOCTEST_CONFIG_DOUBLE_STRINGIFY)
+target_link_libraries(harpia_physics_tests
+    PRIVATE Harpia::Physics
+            doctest::doctest
+            harpia_warnings)
+
+add_test(NAME harpia_physics COMMAND harpia_physics_tests)
+set_tests_properties(harpia_physics PROPERTIES TIMEOUT 120)
 
 # Split so leak detection stays strict where it can be. Engine code is held to
 # zero leaks; the gpu suite keeps every other sanitizer check but disables leak
