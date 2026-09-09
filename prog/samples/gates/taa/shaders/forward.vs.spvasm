@@ -1,0 +1,158 @@
+; Forward VS: world + nrm + albedo + motion (current NDC - prev NDC) * 0.5.
+; Object slide on X from TaaCb; prev_view_proj for camera motion.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpExtension "SPV_EXT_descriptor_indexing"
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %VSMain "VSMain" %in_pos %in_nrm %i_ps %i_alb %i_orm %i_em %i_fz %position %v_world %v_nrm %v_alb %v_mot %pc %cb
+OpName %VSMain "VSMain"
+OpDecorate %in_pos Location 0
+OpDecorate %in_nrm Location 1
+OpDecorate %i_ps Location 2
+OpDecorate %i_alb Location 3
+OpDecorate %i_orm Location 4
+OpDecorate %i_em Location 5
+OpDecorate %i_fz Location 6
+OpDecorate %position BuiltIn Position
+OpDecorate %v_world Location 0
+OpDecorate %v_nrm Location 1
+OpDecorate %v_alb Location 2
+OpDecorate %v_mot Location 3
+OpDecorate %Push Block
+OpMemberDecorate %Push 0 Offset 0
+OpMemberDecorate %Push 0 ColMajor
+OpMemberDecorate %Push 0 MatrixStride 16
+OpMemberDecorate %Push 1 Offset 64
+OpMemberDecorate %Push 1 ColMajor
+OpMemberDecorate %Push 1 MatrixStride 16
+OpDecorate %Taa Block
+OpMemberDecorate %Taa 0 Offset 0
+OpMemberDecorate %Taa 0 ColMajor
+OpMemberDecorate %Taa 0 MatrixStride 16
+OpMemberDecorate %Taa 1 Offset 64
+OpMemberDecorate %Taa 2 Offset 72
+OpMemberDecorate %Taa 3 Offset 76
+OpMemberDecorate %Taa 4 Offset 80
+OpMemberDecorate %Taa 5 Offset 84
+OpMemberDecorate %Taa 6 Offset 88
+OpMemberDecorate %Taa 7 Offset 92
+OpMemberDecorate %Taa 8 Offset 96
+OpMemberDecorate %Taa 9 Offset 100
+OpMemberDecorate %Taa 10 Offset 104
+OpMemberDecorate %Taa 11 Offset 108
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+%uint = OpTypeInt 32 0
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u2 = OpConstant %uint 2
+%u3 = OpConstant %uint 3
+%f1 = OpConstant %float 1.0
+%f0 = OpConstant %float 0.0
+%f05 = OpConstant %float 0.5
+%feps = OpConstant %float 0.001
+
+%ptr_in_v3 = OpTypePointer Input %v3
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%ptr_out_v3 = OpTypePointer Output %v3
+%ptr_out_v2 = OpTypePointer Output %v2
+%in_pos = OpVariable %ptr_in_v3 Input
+%in_nrm = OpVariable %ptr_in_v3 Input
+%i_ps = OpVariable %ptr_in_v4 Input
+%i_alb = OpVariable %ptr_in_v4 Input
+%i_orm = OpVariable %ptr_in_v4 Input
+%i_em = OpVariable %ptr_in_v4 Input
+%i_fz = OpVariable %ptr_in_v4 Input
+%position = OpVariable %ptr_out_v4 Output
+%v_world = OpVariable %ptr_out_v3 Output
+%v_nrm = OpVariable %ptr_out_v3 Output
+%v_alb = OpVariable %ptr_out_v3 Output
+%v_mot = OpVariable %ptr_out_v2 Output
+
+%Push = OpTypeStruct %mat4 %mat4
+%ptr_push = OpTypePointer PushConstant %Push
+%pc = OpVariable %ptr_push PushConstant
+%ptr_pmat = OpTypePointer PushConstant %mat4
+
+%Taa = OpTypeStruct %mat4 %v2 %float %float %uint %uint %uint %uint %float %float %float %float
+%ptr_cb = OpTypePointer Uniform %Taa
+%cb = OpVariable %ptr_cb Uniform
+%ptr_umat = OpTypePointer Uniform %mat4
+%ptr_uf = OpTypePointer Uniform %float
+
+%VSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%pos = OpLoad %v3 %in_pos
+%nrm = OpLoad %v3 %in_nrm
+%ps = OpLoad %v4 %i_ps
+%alb4 = OpLoad %v4 %i_alb
+%_o = OpLoad %v4 %i_orm
+%_e = OpLoad %v4 %i_em
+%_f = OpLoad %v4 %i_fz
+%scale = OpCompositeExtract %float %ps 3
+%off = OpVectorShuffle %v3 %ps %ps 0 1 2
+%scaled = OpVectorTimesScalar %v3 %pos %scale
+%base = OpFAdd %v3 %scaled %off
+%pox = OpAccessChain %ptr_uf %cb %u2
+%ox = OpLoad %float %pox
+%ppx = OpAccessChain %ptr_uf %cb %u3
+%px = OpLoad %float %ppx
+%bx = OpCompositeExtract %float %base 0
+%by = OpCompositeExtract %float %base 1
+%bz = OpCompositeExtract %float %base 2
+%wx = OpFAdd %float %bx %ox
+%pwx = OpFAdd %float %bx %px
+%world3 = OpCompositeConstruct %v3 %wx %by %bz
+%prev3 = OpCompositeConstruct %v3 %pwx %by %bz
+%world4 = OpCompositeConstruct %v4 %world3 %f1
+%prev4 = OpCompositeConstruct %v4 %prev3 %f1
+%p_world = OpAccessChain %ptr_pmat %pc %u1
+%worldM = OpLoad %mat4 %p_world
+%p_vp = OpAccessChain %ptr_pmat %pc %u0
+%vp = OpLoad %mat4 %p_vp
+%wp = OpMatrixTimesVector %v4 %worldM %world4
+%clip = OpMatrixTimesVector %v4 %vp %wp
+%pwp = OpMatrixTimesVector %v4 %worldM %prev4
+%ppvp = OpAccessChain %ptr_umat %cb %u0
+%pvp = OpLoad %mat4 %ppvp
+%pclip = OpMatrixTimesVector %v4 %pvp %pwp
+OpStore %position %clip
+OpStore %v_world %world3
+%nrm4 = OpCompositeConstruct %v4 %nrm %f0
+%wn4 = OpMatrixTimesVector %v4 %worldM %nrm4
+%wn3 = OpVectorShuffle %v3 %wn4 %wn4 0 1 2
+%nn = OpExtInst %v3 %glsl Normalize %wn3
+OpStore %v_nrm %nn
+%alb = OpVectorShuffle %v3 %alb4 %alb4 0 1 2
+OpStore %v_alb %alb
+%cw = OpCompositeExtract %float %clip 3
+%cwm = OpExtInst %float %glsl FMax %cw %feps
+%pw = OpCompositeExtract %float %pclip 3
+%pwm = OpExtInst %float %glsl FMax %pw %feps
+%cx = OpCompositeExtract %float %clip 0
+%cy = OpCompositeExtract %float %clip 1
+%pcx = OpCompositeExtract %float %pclip 0
+%pcy = OpCompositeExtract %float %pclip 1
+%ndx = OpFDiv %float %cx %cwm
+%ndy = OpFDiv %float %cy %cwm
+%pdx = OpFDiv %float %pcx %pwm
+%pdy = OpFDiv %float %pcy %pwm
+%dx = OpFSub %float %ndx %pdx
+%dy = OpFSub %float %ndy %pdy
+%mx = OpFMul %float %dx %f05
+%my = OpFMul %float %dy %f05
+%mot = OpCompositeConstruct %v2 %mx %my
+OpStore %v_mot %mot
+OpReturn
+OpFunctionEnd

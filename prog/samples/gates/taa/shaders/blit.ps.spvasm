@@ -1,0 +1,92 @@
+; Tonemap TaaCb.color_idx (HDR history dest) to swapchain. Reinhard.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %heap %samp_c
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %Taa Block
+OpMemberDecorate %Taa 0 Offset 0
+OpMemberDecorate %Taa 0 ColMajor
+OpMemberDecorate %Taa 0 MatrixStride 16
+OpMemberDecorate %Taa 1 Offset 64
+OpMemberDecorate %Taa 2 Offset 72
+OpMemberDecorate %Taa 3 Offset 76
+OpMemberDecorate %Taa 4 Offset 80
+OpMemberDecorate %Taa 5 Offset 84
+OpMemberDecorate %Taa 6 Offset 88
+OpMemberDecorate %Taa 7 Offset 92
+OpMemberDecorate %Taa 8 Offset 96
+OpMemberDecorate %Taa 9 Offset 100
+OpMemberDecorate %Taa 10 Offset 104
+OpMemberDecorate %Taa 11 Offset 108
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %icol NonUniform
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Taa = OpTypeStruct %mat4 %v2 %float %float %uint %uint %uint %uint %float %float %float %float
+%ptr_cb = OpTypePointer Uniform %Taa
+%cb = OpVariable %ptr_cb Uniform
+%ptr_u = OpTypePointer Uniform %uint
+%ptr_v2 = OpTypePointer Uniform %v2
+
+%img = OpTypeImage %float 2D 0 0 0 1 Unknown
+%img_arr = OpTypeRuntimeArray %img
+%ptr_arr = OpTypePointer UniformConstant %img_arr
+%heap = OpVariable %ptr_arr UniformConstant
+%ptr_img = OpTypePointer UniformConstant %img
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
+%sampled = OpTypeSampledImage %img
+
+%u1 = OpConstant %uint 1
+%u4 = OpConstant %uint 4
+%f1 = OpConstant %float 1.0
+%v3_1 = OpConstantComposite %v3 %f1 %f1 %f1
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_v2 %cb %u1
+%inv = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %inv
+%pg0 = OpAccessChain %ptr_u %cb %u4
+%icol = OpLoad %uint %pg0
+%pa = OpAccessChain %ptr_img %heap %icol
+%ia = OpLoad %img %pa
+%s = OpLoad %samp_ty %samp_c
+%sm = OpSampledImage %sampled %ia %s
+%col = OpImageSampleImplicitLod %v4 %sm %uv
+%rgb = OpVectorShuffle %v3 %col %col 0 1 2
+%den = OpFAdd %v3 %rgb %v3_1
+%tm = OpFDiv %v3 %rgb %den
+%out4 = OpCompositeConstruct %v4 %tm %f1
+OpStore %out_color %out4
+OpReturn
+OpFunctionEnd

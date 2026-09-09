@@ -189,7 +189,7 @@ A próxima IA responde **por escrito** no PR / no commit message:
 1. **Nome:** o algoritmo no shader é o do paper que o nome cita? Se não, muda o nome ou não merges.
 2. **Amostra:** o lighting (ou o compose final) lê o recurso? Se o CPU escreve e o PS ignora → apaga.
 3. **Câmara:** FOV/aspect/near/far vêm da `Camera` do frame, não de constantes 60°/16:9?
-4. **Default-on:** a cena de referência (Sponza / pbr-grid) pode deixar isto ligado 90 frames sem GPUVM nem flicker insuportável?
+4. **Default-on:** a **Sponza** (cena de referência, roadmap §0.1) pode deixar isto ligado 90 frames sem GPUVM nem flicker insuportável? `pbr-grid` é o gate de material, não substitui a Sponza.
 5. **Gate:** `--frames 16` prova a *feature*, não só “0 erros de validation”.
 
 Se algum ponto é “não”, o pass não entra no graph.

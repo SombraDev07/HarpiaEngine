@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use harpia_app::{run, AppConfig, Sample};
 use harpia_rhi::{
     ComputePipeline, ComputePipelineDesc, Device, Format, FrameConstants, FrameInfo, Gpu,
-    GraphicsPipeline, GraphicsPipelineDesc, Texture, TextureDesc,
+    GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture, TextureDesc,
 };
 
 #[global_allocator]
@@ -24,6 +24,7 @@ impl Sample for BindlessGate {
                 vs_entry: "VSMain",
                 fs_entry: "PSMain",
                 bindless: true,
+                targets: PipelineTargets::default(),
             })
             .context("bindless graphics PSO")?,
         );
@@ -43,6 +44,8 @@ impl Sample for BindlessGate {
                 format: Format::Rgba8Unorm,
                 sampled: true,
                 storage: false,
+                color_attachment: false,
+                depth: false,
             })
             .context("cpu checker")?;
         gpu.upload_texture_mip(cpu, 0, &checker_mip0())?;
@@ -58,6 +61,8 @@ impl Sample for BindlessGate {
                 format: Format::Rgba8Unorm,
                 sampled: true,
                 storage: true,
+                color_attachment: false,
+                depth: false,
             })
             .context("uav")?;
         self.uav_tex = Some(uav);

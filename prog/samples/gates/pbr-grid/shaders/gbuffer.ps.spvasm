@@ -1,0 +1,77 @@
+; GBuffer PS — 5 MRT packing (roadmap §3). fuzz>0 ⇒ RT3 RGB = fuzzColor.
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %v_nrm %v_alb %v_orm %v_em %v_fz %frag %o0 %o1 %o2 %o3 %o4
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %v_nrm Location 0
+OpDecorate %v_alb Location 1
+OpDecorate %v_orm Location 2
+OpDecorate %v_em Location 3
+OpDecorate %v_fz Location 4
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %o0 Location 0
+OpDecorate %o1 Location 1
+OpDecorate %o2 Location 2
+OpDecorate %o3 Location 3
+OpDecorate %o4 Location 4
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%bool = OpTypeBool
+%f0 = OpConstant %float 0.0
+%f05 = OpConstant %float 0.5
+%f1 = OpConstant %float 1.0
+%feps = OpConstant %float 0.001
+%f05v = OpConstantComposite %v3 %f05 %f05 %f05
+
+%ptr_in_v3 = OpTypePointer Input %v3
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%ptr_out_f = OpTypePointer Output %float
+%v_nrm = OpVariable %ptr_in_v3 Input
+%v_alb = OpVariable %ptr_in_v4 Input
+%v_orm = OpVariable %ptr_in_v4 Input
+%v_em = OpVariable %ptr_in_v4 Input
+%v_fz = OpVariable %ptr_in_v4 Input
+%frag = OpVariable %ptr_in_v4 Input
+%o0 = OpVariable %ptr_out_v4 Output
+%o1 = OpVariable %ptr_out_v4 Output
+%o2 = OpVariable %ptr_out_v4 Output
+%o3 = OpVariable %ptr_out_v4 Output
+%o4 = OpVariable %ptr_out_f Output
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%nraw = OpLoad %v3 %v_nrm
+%alb = OpLoad %v4 %v_alb
+%orm = OpLoad %v4 %v_orm
+%em = OpLoad %v4 %v_em
+%fz = OpLoad %v4 %v_fz
+%fc = OpLoad %v4 %frag
+%n = OpExtInst %v3 %glsl Normalize %nraw
+%n01 = OpVectorTimesScalar %v3 %n %f05
+%nenc = OpFAdd %v3 %n01 %f05v
+%coat_r = OpCompositeExtract %float %alb 3
+%alb3 = OpVectorShuffle %v3 %alb %alb 0 1 2
+%rt0 = OpCompositeConstruct %v4 %alb3 %coat_r
+%fuzz = OpCompositeExtract %float %fz 0
+%rt1 = OpCompositeConstruct %v4 %nenc %fuzz
+%use_fuzz = OpFOrdGreaterThan %bool %fuzz %feps
+%fz3 = OpVectorShuffle %v3 %fz %fz 1 2 3
+%em3 = OpVectorShuffle %v3 %em %em 0 1 2
+%rt3rgb = OpSelect %v3 %use_fuzz %fz3 %em3
+%coat = OpCompositeExtract %float %em 3
+%rt3 = OpCompositeConstruct %v4 %rt3rgb %coat
+%z = OpCompositeExtract %float %fc 2
+OpStore %o0 %rt0
+OpStore %o1 %rt1
+OpStore %o2 %orm
+OpStore %o3 %rt3
+OpStore %o4 %z
+OpReturn
+OpFunctionEnd

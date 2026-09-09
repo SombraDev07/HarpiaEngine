@@ -48,9 +48,9 @@ tucano-rs/
       tucano-editor/
   thirdparty/             # FidelityFX, C/C++ vendor, LICENSE por pasta
   plugins/                # cdylib .so/.dll (ffx-spd, depois fsr)
-  samples/                # hello-triangle, pbr-grid, gates/*  — NÃO crates/
+  samples/                # hello-triangle, pbr-grid, sponza, gates/*  — NÃO crates/
   tools/                  # cook shaders/assets
-  assets/                 # defaults da engine (IBL, meshes de teste)
+  assets/                 # Sponza (glTF, cena de referência), IBL, meshes de teste
   docs/                   # os 3 markdowns de doutrina
   memory/                 # persistência da IA (INDEX, PROGRESS, DECISIONS, LANDMINES)
   AGENTS.md

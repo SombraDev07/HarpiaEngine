@@ -1,0 +1,19 @@
+[package]
+name = "gate-pbr-grid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Harpia phase 3 gate: deferred PBR sphere grid, --frames 90"
+
+[[bin]]
+name = "gate-pbr-grid"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+harpia-app.workspace = true
+harpia-math.workspace = true
+harpia-memory.workspace = true
+harpia-render.workspace = true
+harpia-rhi.workspace = true

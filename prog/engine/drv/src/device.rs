@@ -2,8 +2,8 @@ use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::null::NullGpu;
 use crate::types::{
-    Backend, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
-    Texture, TextureDesc,
+    Backend, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo,
+    GraphicsPipeline, PipelineTargets, Texture, TextureData, TextureDesc,
 };
 use crate::vulkan::VulkanGpu;
 use crate::Result;
@@ -42,8 +42,9 @@ pub struct GraphicsPipelineDesc<'a> {
     pub fs_spirv: &'a [u8],
     pub vs_entry: &'a str,
     pub fs_entry: &'a str,
-    /// Hello-triangle: false (empty layout). Bindless gate: true.
+    /// Hello-triangle: false (empty layout). Bindless / PBR: true.
     pub bindless: bool,
+    pub targets: PipelineTargets<'a>,
 }
 
 pub struct ComputePipelineDesc<'a> {
@@ -104,6 +105,8 @@ pub trait Device {
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture>;
     fn upload_texture_mip(&mut self, tex: Texture, mip: u32, rgba: &[u8]) -> Result<()>;
     fn bindless_index(&self, tex: Texture) -> Result<u32>;
+    /// Copy mip 0 back to the CPU. Waits for the device: capture, not hot path.
+    fn read_texture(&mut self, tex: Texture) -> Result<TextureData>;
     fn write_frame_constants(&mut self, c: FrameConstants) -> Result<()>;
     fn bind_graphics_bindless(&mut self) -> Result<()>;
     fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> Result<ComputePipeline>;
@@ -111,6 +114,29 @@ pub trait Device {
     fn bind_compute_bindless(&mut self) -> Result<()>;
     fn dispatch(&mut self, x: u32, y: u32, z: u32) -> Result<()>;
     fn storage_barrier(&mut self, tex: Texture) -> Result<()>;
+    fn write_frame_bytes(&mut self, data: &[u8]) -> Result<()>;
+    fn set_push_constants(&mut self, data: &[u8]) -> Result<()>;
+    fn set_viewport(&mut self, x: f32, y: f32, width: f32, height: f32) -> Result<()>;
+    fn begin_color_pass(
+        &mut self,
+        colors: &[Texture],
+        depth: Option<Texture>,
+        clears: &[[f32; 4]],
+        depth_clear: Option<f32>,
+    ) -> Result<()>;
+    fn end_color_pass(&mut self) -> Result<()>;
+    fn create_vertex_buffer(&mut self, bytes: &[u8]) -> Result<Buffer>;
+    fn create_index_buffer(&mut self, bytes: &[u8]) -> Result<Buffer>;
+    fn bind_vertex_buffer(&mut self, buf: Buffer, binding: u32) -> Result<()>;
+    fn bind_index_buffer(&mut self, buf: Buffer) -> Result<()>;
+    fn draw_indexed(
+        &mut self,
+        index_count: u32,
+        instance_count: u32,
+        first_index: u32,
+        vertex_offset: i32,
+        first_instance: u32,
+    ) -> Result<()>;
 }
 
 impl Device for Gpu {
@@ -165,6 +191,9 @@ impl Device for Gpu {
     fn bindless_index(&self, tex: Texture) -> Result<u32> {
         gpu!(self, bindless_index, tex)
     }
+    fn read_texture(&mut self, tex: Texture) -> Result<TextureData> {
+        gpu!(self, read_texture, tex)
+    }
     fn write_frame_constants(&mut self, c: FrameConstants) -> Result<()> {
         gpu!(self, write_frame_constants, c)
     }
@@ -185,5 +214,56 @@ impl Device for Gpu {
     }
     fn storage_barrier(&mut self, tex: Texture) -> Result<()> {
         gpu!(self, storage_barrier, tex)
+    }
+    fn write_frame_bytes(&mut self, data: &[u8]) -> Result<()> {
+        gpu!(self, write_frame_bytes, data)
+    }
+    fn set_push_constants(&mut self, data: &[u8]) -> Result<()> {
+        gpu!(self, set_push_constants, data)
+    }
+    fn set_viewport(&mut self, x: f32, y: f32, width: f32, height: f32) -> Result<()> {
+        gpu!(self, set_viewport, x, y, width, height)
+    }
+    fn begin_color_pass(
+        &mut self,
+        colors: &[Texture],
+        depth: Option<Texture>,
+        clears: &[[f32; 4]],
+        depth_clear: Option<f32>,
+    ) -> Result<()> {
+        gpu!(self, begin_color_pass, colors, depth, clears, depth_clear)
+    }
+    fn end_color_pass(&mut self) -> Result<()> {
+        gpu!(self, end_color_pass)
+    }
+    fn create_vertex_buffer(&mut self, bytes: &[u8]) -> Result<Buffer> {
+        gpu!(self, create_vertex_buffer, bytes)
+    }
+    fn create_index_buffer(&mut self, bytes: &[u8]) -> Result<Buffer> {
+        gpu!(self, create_index_buffer, bytes)
+    }
+    fn bind_vertex_buffer(&mut self, buf: Buffer, binding: u32) -> Result<()> {
+        gpu!(self, bind_vertex_buffer, buf, binding)
+    }
+    fn bind_index_buffer(&mut self, buf: Buffer) -> Result<()> {
+        gpu!(self, bind_index_buffer, buf)
+    }
+    fn draw_indexed(
+        &mut self,
+        index_count: u32,
+        instance_count: u32,
+        first_index: u32,
+        vertex_offset: i32,
+        first_instance: u32,
+    ) -> Result<()> {
+        gpu!(
+            self,
+            draw_indexed,
+            index_count,
+            instance_count,
+            first_index,
+            vertex_offset,
+            first_instance
+        )
     }
 }

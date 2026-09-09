@@ -1,7 +1,7 @@
 use crate::device::{ComputePipelineDesc, DeviceDesc, GraphicsPipelineDesc};
 use crate::types::{
-    ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline, Texture,
-    TextureDesc,
+    Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline, Texture,
+    TextureData, TextureDesc, FRAME_CBV_CHUNKS,
 };
 use crate::{RhiError, Result};
 
@@ -19,6 +19,9 @@ pub struct NullGpu {
     next_pipeline: u32,
     next_compute: u32,
     next_slot: u32,
+    next_buffer: u32,
+    /// Same budget as Vulkan, so a gate that overflows the ring fails on CPU too.
+    cbv_next: u32,
     textures: Vec<NullTex>,
 }
 
@@ -35,6 +38,8 @@ impl NullGpu {
             next_pipeline: 1,
             next_compute: 1,
             next_slot: 1,
+            next_buffer: 1,
+            cbv_next: 0,
             textures: vec![NullTex {
                 bindless_slot: 0,
                 mip_levels: 1,
@@ -48,6 +53,7 @@ impl NullGpu {
             return Err(RhiError::msg("begin_frame while a frame is open"));
         }
         self.in_frame = true;
+        self.cbv_next = 0;
         let skipped = self.extent.is_zero();
         Ok(FrameInfo {
             extent: self.extent,
@@ -159,6 +165,11 @@ impl NullGpu {
         Ok(())
     }
 
+    /// No pixels on the Null backend; capture is a Vulkan-only path.
+    pub fn read_texture(&mut self, _tex: Texture) -> Result<TextureData> {
+        Err(RhiError::msg("read_texture needs the Vulkan backend"))
+    }
+
     pub fn bindless_index(&self, tex: Texture) -> Result<u32> {
         Ok(self
             .textures
@@ -171,7 +182,7 @@ impl NullGpu {
         if !self.in_frame {
             return Err(RhiError::NotInFrame);
         }
-        Ok(())
+        self.take_cbv_chunk()
     }
 
     pub fn bind_graphics_bindless(&mut self) -> Result<()> {
@@ -211,6 +222,107 @@ impl NullGpu {
     pub fn storage_barrier(&mut self, _tex: Texture) -> Result<()> {
         if !self.in_frame {
             return Err(RhiError::NotInFrame);
+        }
+        Ok(())
+    }
+
+    pub fn write_frame_bytes(&mut self, _data: &[u8]) -> Result<()> {
+        if !self.in_frame {
+            return Err(RhiError::NotInFrame);
+        }
+        self.take_cbv_chunk()
+    }
+
+    fn take_cbv_chunk(&mut self) -> Result<()> {
+        if self.cbv_next >= FRAME_CBV_CHUNKS {
+            return Err(RhiError::msg(
+                "frame CBV ring exhausted: more write_frame_bytes than FRAME_CBV_CHUNKS",
+            ));
+        }
+        self.cbv_next += 1;
+        Ok(())
+    }
+
+    pub fn set_push_constants(&mut self, _data: &[u8]) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        Ok(())
+    }
+
+    pub fn set_viewport(&mut self, _x: f32, _y: f32, _width: f32, _height: f32) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        Ok(())
+    }
+
+    pub fn begin_color_pass(
+        &mut self,
+        colors: &[Texture],
+        depth: Option<Texture>,
+        _clears: &[[f32; 4]],
+        _depth_clear: Option<f32>,
+    ) -> Result<()> {
+        if !self.in_frame {
+            return Err(RhiError::NotInFrame);
+        }
+        if self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        if colors.is_empty() && depth.is_none() {
+            return Err(RhiError::msg(
+                "begin_color_pass needs a color RT or a depth target",
+            ));
+        }
+        self.in_pass = true;
+        Ok(())
+    }
+
+    pub fn end_color_pass(&mut self) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        self.in_pass = false;
+        Ok(())
+    }
+
+    pub fn create_vertex_buffer(&mut self, _bytes: &[u8]) -> Result<Buffer> {
+        let id = self.next_buffer;
+        self.next_buffer += 1;
+        Ok(Buffer { id })
+    }
+
+    pub fn create_index_buffer(&mut self, _bytes: &[u8]) -> Result<Buffer> {
+        let id = self.next_buffer;
+        self.next_buffer += 1;
+        Ok(Buffer { id })
+    }
+
+    pub fn bind_vertex_buffer(&mut self, _buf: Buffer, _binding: u32) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        Ok(())
+    }
+
+    pub fn bind_index_buffer(&mut self, _buf: Buffer) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        Ok(())
+    }
+
+    pub fn draw_indexed(
+        &mut self,
+        _index_count: u32,
+        _instance_count: u32,
+        _first_index: u32,
+        _vertex_offset: i32,
+        _first_instance: u32,
+    ) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
         }
         Ok(())
     }

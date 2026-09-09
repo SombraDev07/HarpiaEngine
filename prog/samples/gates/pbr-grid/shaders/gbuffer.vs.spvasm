@@ -1,0 +1,94 @@
+; GBuffer VS — instance sphere: pos+nrm + 5 vec4 attrs. Push: viewProj + world.
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %VSMain "VSMain" %in_pos %in_nrm %i_ps %i_alb %i_orm %i_em %i_fz %position %v_nrm %v_alb %v_orm %v_em %v_fz %pc
+OpName %VSMain "VSMain"
+OpDecorate %in_pos Location 0
+OpDecorate %in_nrm Location 1
+OpDecorate %i_ps Location 2
+OpDecorate %i_alb Location 3
+OpDecorate %i_orm Location 4
+OpDecorate %i_em Location 5
+OpDecorate %i_fz Location 6
+OpDecorate %position BuiltIn Position
+OpDecorate %v_nrm Location 0
+OpDecorate %v_alb Location 1
+OpDecorate %v_orm Location 2
+OpDecorate %v_em Location 3
+OpDecorate %v_fz Location 4
+OpDecorate %Push Block
+OpMemberDecorate %Push 0 Offset 0
+OpMemberDecorate %Push 0 ColMajor
+OpMemberDecorate %Push 0 MatrixStride 16
+OpMemberDecorate %Push 1 Offset 64
+OpMemberDecorate %Push 1 ColMajor
+OpMemberDecorate %Push 1 MatrixStride 16
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+%uint = OpTypeInt 32 0
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%f1 = OpConstant %float 1.0
+%f0 = OpConstant %float 0.0
+
+%ptr_in_v3 = OpTypePointer Input %v3
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%ptr_out_v3 = OpTypePointer Output %v3
+%in_pos = OpVariable %ptr_in_v3 Input
+%in_nrm = OpVariable %ptr_in_v3 Input
+%i_ps = OpVariable %ptr_in_v4 Input
+%i_alb = OpVariable %ptr_in_v4 Input
+%i_orm = OpVariable %ptr_in_v4 Input
+%i_em = OpVariable %ptr_in_v4 Input
+%i_fz = OpVariable %ptr_in_v4 Input
+%position = OpVariable %ptr_out_v4 Output
+%v_nrm = OpVariable %ptr_out_v3 Output
+%v_alb = OpVariable %ptr_out_v4 Output
+%v_orm = OpVariable %ptr_out_v4 Output
+%v_em = OpVariable %ptr_out_v4 Output
+%v_fz = OpVariable %ptr_out_v4 Output
+
+%Push = OpTypeStruct %mat4 %mat4
+%ptr_push = OpTypePointer PushConstant %Push
+%pc = OpVariable %ptr_push PushConstant
+%ptr_mat = OpTypePointer PushConstant %mat4
+
+%VSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%pos = OpLoad %v3 %in_pos
+%nrm = OpLoad %v3 %in_nrm
+%ps = OpLoad %v4 %i_ps
+%alb = OpLoad %v4 %i_alb
+%orm = OpLoad %v4 %i_orm
+%em = OpLoad %v4 %i_em
+%fz = OpLoad %v4 %i_fz
+%scale = OpCompositeExtract %float %ps 3
+%off = OpVectorShuffle %v3 %ps %ps 0 1 2
+%scaled = OpVectorTimesScalar %v3 %pos %scale
+%world3 = OpFAdd %v3 %scaled %off
+%world4 = OpCompositeConstruct %v4 %world3 %f1
+%p_world = OpAccessChain %ptr_mat %pc %u1
+%worldM = OpLoad %mat4 %p_world
+%p_vp = OpAccessChain %ptr_mat %pc %u0
+%vp = OpLoad %mat4 %p_vp
+%wp = OpMatrixTimesVector %v4 %worldM %world4
+%clip = OpMatrixTimesVector %v4 %vp %wp
+OpStore %position %clip
+%nrm4 = OpCompositeConstruct %v4 %nrm %f0
+%wn4 = OpMatrixTimesVector %v4 %worldM %nrm4
+%wn3 = OpVectorShuffle %v3 %wn4 %wn4 0 1 2
+%nn = OpExtInst %v3 %glsl Normalize %wn3
+OpStore %v_nrm %nn
+OpStore %v_alb %alb
+OpStore %v_orm %orm
+OpStore %v_em %em
+OpStore %v_fz %fz
+OpReturn
+OpFunctionEnd

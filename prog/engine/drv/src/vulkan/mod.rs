@@ -20,8 +20,8 @@ use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 
 use crate::device::{ComputePipelineDesc, DeviceDesc, GraphicsPipelineDesc};
 use crate::types::{
-    ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline, Texture,
-    TextureDesc,
+    Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
+    Texture, TextureData, TextureDesc, PUSH_CONSTANTS_SIZE,
 };
 use crate::{RhiError, Result, FRAMES_IN_FLIGHT};
 
@@ -64,12 +64,23 @@ pub struct VulkanGpu {
     compute_pipelines: Vec<vk::Pipeline>,
     bindless: Option<bindless::Bindless>,
     images: Vec<resources::GpuImage>,
+    buffers: Vec<resources::GpuBuffer>,
     frames: Vec<FrameSlot>,
     frame_index: u64,
     slot: usize,
     image_index: u32,
     in_frame: bool,
     in_pass: bool,
+    offscreen: bool,
+    /// Next free chunk of this frame's CBV ring.
+    cbv_next: u32,
+    /// Byte offset of the chunk the *next* draw must read.
+    cbv_offset: u32,
+    /// What set 0 currently points at, per bind point. `None` = not bound.
+    cbv_bound_gfx: Option<u32>,
+    cbv_bound_cs: Option<u32>,
+    color_pass_rt: Vec<Texture>,
+    color_pass_depth: Option<Texture>,
     pending_recreate: bool,
     zero_extent: bool,
     window_extent: Extent2D,
@@ -301,7 +312,10 @@ impl VulkanGpu {
         let alloc = allocator
             .as_mut()
             .ok_or_else(|| RhiError::msg("allocator missing"))?;
-        let heap = bindless::Bindless::create(&device, alloc)?;
+        let min_ubo_align = unsafe { instance.get_physical_device_properties(phys) }
+            .limits
+            .min_uniform_buffer_offset_alignment;
+        let heap = bindless::Bindless::create(&device, alloc, min_ubo_align)?;
         let mut dummy = bindless::create_dummy(&device, alloc)?;
         let packed = resources::pack_mip(1, 1, 4, &bindless::dummy_pixel())?;
         resources::write_staging(&heap.staging, &packed)?;
@@ -361,6 +375,7 @@ impl VulkanGpu {
         dummy.ready = true;
         dummy.mips_uploaded = 1;
         dummy.transfer_prepared = true;
+        dummy.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
         let mut images = Vec::new();
         images.push(dummy);
 
@@ -384,12 +399,20 @@ impl VulkanGpu {
             compute_pipelines: Vec::new(),
             bindless: Some(heap),
             images,
+            buffers: Vec::new(),
             frames,
             frame_index: 0,
             slot: 0,
             image_index: 0,
             in_frame: false,
             in_pass: false,
+            offscreen: false,
+            cbv_next: 0,
+            cbv_offset: 0,
+            cbv_bound_gfx: None,
+            cbv_bound_cs: None,
+            color_pass_rt: Vec::new(),
+            color_pass_depth: None,
             pending_recreate: false,
             zero_extent: false,
             window_extent,
@@ -457,6 +480,11 @@ impl VulkanGpu {
         self.image_index = image_index;
         self.in_frame = true;
         self.in_pass = false;
+        self.offscreen = false;
+        self.cbv_next = 0;
+        self.cbv_offset = 0;
+        self.cbv_bound_gfx = None;
+        self.cbv_bound_cs = None;
 
         let cmd = self.frames[slot].cmd;
         unsafe {
@@ -534,6 +562,7 @@ impl VulkanGpu {
         }
 
         self.in_pass = true;
+        self.offscreen = false;
         Ok(())
     }
 
@@ -567,6 +596,9 @@ impl VulkanGpu {
         if !self.in_pass {
             return Err(RhiError::PassMismatch);
         }
+        if self.cbv_bound_gfx.is_some() {
+            self.sync_cbv_graphics();
+        }
         unsafe {
             self.device.cmd_draw(
                 self.frames[self.slot].cmd,
@@ -580,7 +612,7 @@ impl VulkanGpu {
     }
 
     pub fn end_swapchain_pass(&mut self) -> Result<()> {
-        if !self.in_pass {
+        if !self.in_pass || self.offscreen {
             return Err(RhiError::PassMismatch);
         }
         let cmd = self.frames[self.slot].cmd;
@@ -675,60 +707,151 @@ impl VulkanGpu {
     }
 
     pub fn create_graphics_pipeline(&mut self, desc: &GraphicsPipelineDesc<'_>) -> Result<GraphicsPipeline> {
-        if desc.vs_spirv.is_empty() || desc.fs_spirv.is_empty() {
-            return Err(RhiError::msg("SPIR-V modules are empty"));
+        if desc.vs_spirv.is_empty() {
+            return Err(RhiError::msg("vertex SPIR-V is empty"));
+        }
+        if desc.targets.depth_only && !desc.targets.color_formats.is_empty() {
+            return Err(RhiError::msg("depth_only PSO must have empty color_formats"));
+        }
+        if !desc.targets.depth_only && desc.fs_spirv.is_empty() {
+            return Err(RhiError::msg("fragment SPIR-V is empty"));
         }
         let vs_words = ash::util::read_spv(&mut Cursor::new(desc.vs_spirv))?;
-        let fs_words = ash::util::read_spv(&mut Cursor::new(desc.fs_spirv))?;
         let vs_mod = unsafe {
             self.device.create_shader_module(
                 &vk::ShaderModuleCreateInfo::default().code(&vs_words),
                 None,
             )?
         };
-        let fs_mod = unsafe {
-            self.device.create_shader_module(
-                &vk::ShaderModuleCreateInfo::default().code(&fs_words),
-                None,
-            )?
+        let fs_mod = if desc.fs_spirv.is_empty() {
+            None
+        } else {
+            let fs_words = ash::util::read_spv(&mut Cursor::new(desc.fs_spirv))?;
+            Some(unsafe {
+                self.device.create_shader_module(
+                    &vk::ShaderModuleCreateInfo::default().code(&fs_words),
+                    None,
+                )?
+            })
         };
 
         let vs_entry = CString::new(desc.vs_entry).map_err(|_| RhiError::BadCString)?;
         let fs_entry = CString::new(desc.fs_entry).map_err(|_| RhiError::BadCString)?;
-        let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vs_mod)
-                .name(vs_entry.as_c_str()),
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(fs_mod)
-                .name(fs_entry.as_c_str()),
-        ];
+        let mut stages = vec![vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vs_mod)
+            .name(vs_entry.as_c_str())];
+        if let Some(fs) = fs_mod {
+            stages.push(
+                vk::PipelineShaderStageCreateInfo::default()
+                    .stage(vk::ShaderStageFlags::FRAGMENT)
+                    .module(fs)
+                    .name(fs_entry.as_c_str()),
+            );
+        }
 
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        let vertex_input;
+        let mut binding_descs = Vec::new();
+        let mut attr_descs = Vec::new();
+        if desc.targets.vertex_stride > 0 {
+            binding_descs.push(vk::VertexInputBindingDescription {
+                binding: 0,
+                stride: desc.targets.vertex_stride,
+                input_rate: vk::VertexInputRate::VERTEX,
+            });
+            attr_descs.push(vk::VertexInputAttributeDescription {
+                location: 0,
+                binding: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: 0,
+            });
+            attr_descs.push(vk::VertexInputAttributeDescription {
+                location: 1,
+                binding: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: 12,
+            });
+            if desc.targets.instance_stride == 0 && desc.targets.vertex_stride >= 32 {
+                attr_descs.push(vk::VertexInputAttributeDescription {
+                    location: 2,
+                    binding: 0,
+                    format: vk::Format::R32G32_SFLOAT,
+                    offset: 24,
+                });
+            }
+        }
+        if desc.targets.instance_stride > 0 {
+            binding_descs.push(vk::VertexInputBindingDescription {
+                binding: 1,
+                stride: desc.targets.instance_stride,
+                input_rate: vk::VertexInputRate::INSTANCE,
+            });
+            let n = desc.targets.instance_stride / 16;
+            for i in 0..n {
+                attr_descs.push(vk::VertexInputAttributeDescription {
+                    location: 2 + i,
+                    binding: 1,
+                    format: vk::Format::R32G32B32A32_SFLOAT,
+                    offset: i * 16,
+                });
+            }
+        }
+        vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&binding_descs)
+            .vertex_attribute_descriptions(&attr_descs);
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
+        let cull = if desc.targets.cull_back {
+            vk::CullModeFlags::BACK
+        } else {
+            vk::CullModeFlags::NONE
+        };
         let raster = vk::PipelineRasterizationStateCreateInfo::default()
             .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
+            .cull_mode(cull)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .depth_bias_enable(desc.targets.depth_bias)
+            .depth_bias_constant_factor(if desc.targets.depth_bias { 1.25 } else { 0.0 })
+            .depth_bias_clamp(0.0)
+            .depth_bias_slope_factor(if desc.targets.depth_bias { 1.75 } else { 0.0 })
             .line_width(1.0);
         let msaa = vk::PipelineMultisampleStateCreateInfo::default()
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(desc.targets.depth_test)
+            .depth_write_enable(desc.targets.depth_test)
+            .depth_compare_op(vk::CompareOp::LESS)
+            .min_depth_bounds(0.0)
+            .max_depth_bounds(1.0);
         let blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA);
-        let blend = vk::PipelineColorBlendStateCreateInfo::default()
-            .attachments(std::slice::from_ref(&blend_attachment));
+        let color_vk: Vec<vk::Format> = if desc.targets.depth_only {
+            Vec::new()
+        } else if desc.targets.color_formats.is_empty() {
+            vec![self.swapchain.format.format]
+        } else {
+            desc.targets
+                .color_formats
+                .iter()
+                .copied()
+                .map(resources::vk_format)
+                .collect::<Result<Vec<_>>>()?
+        };
+        let blend_attachments = vec![blend_attachment; color_vk.len()];
+        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-        let color_format = self.swapchain.format.format;
+        let depth_vk = match desc.targets.depth_format {
+            Some(f) => resources::vk_format(f)?,
+            None => vk::Format::UNDEFINED,
+        };
         let mut rendering = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(std::slice::from_ref(&color_format));
+            .color_attachment_formats(&color_vk)
+            .depth_attachment_format(depth_vk);
 
         let ci = vk::GraphicsPipelineCreateInfo::default()
             .push_next(&mut rendering)
@@ -738,6 +861,7 @@ impl VulkanGpu {
             .viewport_state(&viewport_state)
             .rasterization_state(&raster)
             .multisample_state(&msaa)
+            .depth_stencil_state(&depth_stencil)
             .color_blend_state(&blend)
             .dynamic_state(&dynamic)
             .layout(if desc.bindless {
@@ -755,7 +879,9 @@ impl VulkanGpu {
         };
         unsafe {
             self.device.destroy_shader_module(vs_mod, None);
-            self.device.destroy_shader_module(fs_mod, None);
+            if let Some(fs) = fs_mod {
+                self.device.destroy_shader_module(fs, None);
+            }
         }
         let pipelines = created.map_err(|(_p, e)| RhiError::from_vk(e))?;
         let pso = pipelines[0];
@@ -887,6 +1013,7 @@ impl VulkanGpu {
             heap.write_sampled(&self.device, slot, view, vk::ImageLayout::GENERAL);
             heap.write_storage(&self.device, storage);
             img.ready = true;
+            img.layout = vk::ImageLayout::GENERAL;
         }
         let id = self.images.len() as u32;
         self.images.push(img);
@@ -903,7 +1030,8 @@ impl VulkanGpu {
                 return Err(RhiError::msg("mip out of range"));
             }
             let (w, h) = resources::mip_extent(img.width, img.height, mip);
-            (w, h, img.image, 4u32)
+            let bpp = resources::bytes_per_pixel(img.engine_format)?;
+            (w, h, img.image, bpp)
         };
         let packed = resources::pack_mip(w, h, bpp, rgba)?;
         let heap = self
@@ -994,8 +1122,118 @@ impl VulkanGpu {
         );
         if let Some(img) = self.images.get_mut(tex.id as usize) {
             img.ready = true;
+            img.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
         }
         Ok(())
+    }
+
+    /// Copy mip 0 of a texture back to the CPU. Capture / debug path: it waits
+    /// for the device, so never call it inside a hot frame.
+    pub fn read_texture(&mut self, tex: Texture) -> Result<TextureData> {
+        if self.in_frame {
+            return Err(RhiError::msg("read_texture during a frame"));
+        }
+        let (image, width, height, format, layout) = {
+            let img = self
+                .images
+                .get(tex.id as usize)
+                .ok_or_else(|| RhiError::msg("invalid texture"))?;
+            (
+                img.image,
+                img.width,
+                img.height,
+                img.engine_format,
+                img.layout,
+            )
+        };
+        let bpp = resources::bytes_per_pixel(format)?;
+        let aspect = resources::aspect_for(format);
+        let size = resources::row_pitch_bytes(width, bpp) as u64 * height as u64;
+
+        unsafe {
+            self.device.device_wait_idle()?;
+        }
+        let alloc = self
+            .allocator
+            .as_mut()
+            .ok_or_else(|| RhiError::msg("allocator missing"))?;
+        let readback = resources::create_buffer(
+            &self.device,
+            alloc,
+            size,
+            vk::BufferUsageFlags::TRANSFER_DST,
+            gpu_allocator::MemoryLocation::GpuToCpu,
+            "readback",
+        )?;
+        let buffer = readback.buffer;
+
+        // UNDEFINED means nothing was ever written; a barrier from it would
+        // discard the contents, so treat it as an error instead of a black PNG.
+        if layout == vk::ImageLayout::UNDEFINED {
+            let alloc = self
+                .allocator
+                .as_mut()
+                .ok_or_else(|| RhiError::msg("allocator missing"))?;
+            resources::destroy_buffer(&self.device, alloc, readback);
+            return Err(RhiError::msg("texture has never been written"));
+        }
+
+        let result = self.submit_now(|device, cmd| {
+            unsafe {
+                resources::image_barrier_aspect(
+                    device,
+                    cmd,
+                    image,
+                    layout,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    vk::AccessFlags::empty(),
+                    vk::AccessFlags::TRANSFER_READ,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    vk::PipelineStageFlags::TRANSFER,
+                    aspect,
+                );
+                resources::cmd_copy_to_buffer(
+                    device, cmd, image, buffer, width, height, bpp, aspect,
+                );
+                resources::image_barrier_aspect(
+                    device,
+                    cmd,
+                    image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    layout,
+                    vk::AccessFlags::TRANSFER_READ,
+                    vk::AccessFlags::empty(),
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    aspect,
+                );
+            }
+            Ok(())
+        });
+
+        let bytes = result.and_then(|()| {
+            let ptr = readback
+                .allocation
+                .mapped_ptr()
+                .ok_or_else(|| RhiError::msg("readback is not mapped"))?
+                .as_ptr()
+                .cast::<u8>();
+            let padded = unsafe { std::slice::from_raw_parts(ptr, size as usize) };
+            Ok(resources::unpack_rows(padded, width, height, bpp))
+        });
+
+        let alloc = self
+            .allocator
+            .as_mut()
+            .ok_or_else(|| RhiError::msg("allocator missing"))?;
+        resources::destroy_buffer(&self.device, alloc, readback);
+
+        Ok(TextureData {
+            width,
+            height,
+            format,
+            bytes: bytes?,
+        })
     }
 
     pub fn bindless_index(&self, tex: Texture) -> Result<u32> {
@@ -1010,21 +1248,75 @@ impl VulkanGpu {
         if !self.in_frame {
             return Err(RhiError::NotInFrame);
         }
+        let offset = self.alloc_cbv_chunk()?;
         self.bindless
             .as_ref()
             .ok_or_else(|| RhiError::msg("bindless missing"))?
-            .write_constants(self.slot, c)
+            .write_constants(self.slot, offset, c)
+    }
+
+    /// Take a fresh chunk of the frame ring. Every draw / dispatch recorded
+    /// after this reads *this* chunk — that is what makes per-draw constants work.
+    pub fn write_frame_bytes(&mut self, data: &[u8]) -> Result<()> {
+        if !self.in_frame {
+            return Err(RhiError::NotInFrame);
+        }
+        let offset = self.alloc_cbv_chunk()?;
+        self.bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless missing"))?
+            .write_bytes(self.slot, offset, data)
+    }
+
+    fn alloc_cbv_chunk(&mut self) -> Result<u32> {
+        let offset = bindless::Bindless::chunk_offset(self.cbv_next)?;
+        self.cbv_next += 1;
+        self.cbv_offset = offset;
+        Ok(offset)
+    }
+
+    /// Set 0 still points at the chunk bound earlier; re-point it at the last one written.
+    fn sync_cbv_graphics(&mut self) {
+        if self.cbv_bound_gfx == Some(self.cbv_offset) {
+            return;
+        }
+        if let Some(heap) = self.bindless.as_ref() {
+            heap.bind_graphics_cbv(
+                &self.device,
+                self.frames[self.slot].cmd,
+                self.slot,
+                self.cbv_offset,
+            );
+            self.cbv_bound_gfx = Some(self.cbv_offset);
+        }
+    }
+
+    fn sync_cbv_compute(&mut self) {
+        if self.cbv_bound_cs == Some(self.cbv_offset) {
+            return;
+        }
+        if let Some(heap) = self.bindless.as_ref() {
+            heap.bind_compute_cbv(
+                &self.device,
+                self.frames[self.slot].cmd,
+                self.slot,
+                self.cbv_offset,
+            );
+            self.cbv_bound_cs = Some(self.cbv_offset);
+        }
     }
 
     pub fn bind_graphics_bindless(&mut self) -> Result<()> {
         if !self.in_pass {
             return Err(RhiError::PassMismatch);
         }
+        let cbv = self.cbv_offset;
         let heap = self
             .bindless
             .as_ref()
             .ok_or_else(|| RhiError::msg("bindless missing"))?;
-        heap.bind_graphics(&self.device, self.frames[self.slot].cmd, self.slot);
+        heap.bind_graphics(&self.device, self.frames[self.slot].cmd, self.slot, cbv);
+        self.cbv_bound_gfx = Some(cbv);
         Ok(())
     }
 
@@ -1089,17 +1381,22 @@ impl VulkanGpu {
         if !self.in_frame || self.in_pass {
             return Err(RhiError::PassMismatch);
         }
+        let cbv = self.cbv_offset;
         let heap = self
             .bindless
             .as_ref()
             .ok_or_else(|| RhiError::msg("bindless missing"))?;
-        heap.bind_compute(&self.device, self.frames[self.slot].cmd, self.slot);
+        heap.bind_compute(&self.device, self.frames[self.slot].cmd, self.slot, cbv);
+        self.cbv_bound_cs = Some(cbv);
         Ok(())
     }
 
     pub fn dispatch(&mut self, x: u32, y: u32, z: u32) -> Result<()> {
         if !self.in_frame || self.in_pass {
             return Err(RhiError::PassMismatch);
+        }
+        if self.cbv_bound_cs.is_some() {
+            self.sync_cbv_compute();
         }
         unsafe {
             self.device
@@ -1128,6 +1425,427 @@ impl VulkanGpu {
                 vk::AccessFlags::SHADER_READ,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 resources::shader_read_stages(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn set_push_constants(&mut self, data: &[u8]) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        let layout = self
+            .bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless layout missing"))?
+            .pipeline_layout;
+        let mut tmp = [0u8; PUSH_CONSTANTS_SIZE as usize];
+        let n = data.len().min(tmp.len());
+        tmp[..n].copy_from_slice(&data[..n]);
+        unsafe {
+            self.device.cmd_push_constants(
+                self.frames[self.slot].cmd,
+                layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                &tmp,
+            );
+        }
+        Ok(())
+    }
+
+    pub fn begin_color_pass(
+        &mut self,
+        colors: &[Texture],
+        depth: Option<Texture>,
+        clears: &[[f32; 4]],
+        depth_clear: Option<f32>,
+    ) -> Result<()> {
+        if !self.in_frame {
+            return Err(RhiError::NotInFrame);
+        }
+        if self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        if colors.is_empty() && depth.is_none() {
+            return Err(RhiError::msg(
+                "begin_color_pass needs a color RT or a depth target",
+            ));
+        }
+        let cmd = self.frames[self.slot].cmd;
+        let mut attachments = Vec::with_capacity(colors.len());
+        let mut extent = vk::Extent2D {
+            width: 1,
+            height: 1,
+        };
+        if colors.is_empty() {
+            if let Some(dtex) = depth {
+                let img = self
+                    .images
+                    .get(dtex.id as usize)
+                    .ok_or_else(|| RhiError::msg("invalid depth texture"))?;
+                extent = vk::Extent2D {
+                    width: img.width,
+                    height: img.height,
+                };
+            }
+        }
+        for (i, tex) in colors.iter().enumerate() {
+            let img = self
+                .images
+                .get(tex.id as usize)
+                .ok_or_else(|| RhiError::msg("invalid color texture"))?;
+            if i == 0 {
+                extent = vk::Extent2D {
+                    width: img.width,
+                    height: img.height,
+                };
+            }
+            let old = img.layout;
+            let image = img.image;
+            let view = img.sampled_view;
+            unsafe {
+                resources::image_barrier(
+                    &self.device,
+                    cmd,
+                    image,
+                    old,
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    if old == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL {
+                        vk::AccessFlags::SHADER_READ
+                    } else {
+                        vk::AccessFlags::empty()
+                    },
+                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    if old == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL {
+                        resources::shader_read_stages()
+                    } else {
+                        vk::PipelineStageFlags::TOP_OF_PIPE
+                    },
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                );
+            }
+            if let Some(img) = self.images.get_mut(tex.id as usize) {
+                img.layout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL;
+            }
+            let clear = clears.get(i).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+            attachments.push(
+                vk::RenderingAttachmentInfo::default()
+                    .image_view(view)
+                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .clear_value(vk::ClearValue {
+                        color: vk::ClearColorValue { float32: clear },
+                    }),
+            );
+        }
+
+        let mut depth_attachment = vk::RenderingAttachmentInfo::default();
+        if let Some(dtex) = depth {
+            let img = self
+                .images
+                .get(dtex.id as usize)
+                .ok_or_else(|| RhiError::msg("invalid depth texture"))?;
+            let old = img.layout;
+            let image = img.image;
+            let view = img.sampled_view;
+            let aspect = resources::aspect_for(img.engine_format);
+            unsafe {
+                resources::image_barrier_aspect(
+                    &self.device,
+                    cmd,
+                    image,
+                    old,
+                    vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    if old == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                        || old == vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                    {
+                        vk::AccessFlags::SHADER_READ
+                    } else {
+                        vk::AccessFlags::empty()
+                    },
+                    vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
+                    if old == vk::ImageLayout::UNDEFINED {
+                        vk::PipelineStageFlags::TOP_OF_PIPE
+                    } else {
+                        resources::shader_read_stages()
+                    },
+                    vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                    aspect,
+                );
+            }
+            if let Some(img) = self.images.get_mut(dtex.id as usize) {
+                img.layout = vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            }
+            let z = depth_clear.unwrap_or(1.0);
+            depth_attachment = vk::RenderingAttachmentInfo::default()
+                .image_view(view)
+                .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue {
+                        depth: z,
+                        stencil: 0,
+                    },
+                });
+        }
+
+        unsafe {
+            let mut rendering = vk::RenderingInfo::default()
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent,
+                })
+                .layer_count(1)
+                .color_attachments(&attachments);
+            if depth.is_some() {
+                rendering = rendering.depth_attachment(&depth_attachment);
+            }
+            self.device.cmd_begin_rendering(cmd, &rendering);
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: extent.width as f32,
+                height: extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            };
+            let scissor = vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent,
+            };
+            self.device.cmd_set_viewport(cmd, 0, &[viewport]);
+            self.device.cmd_set_scissor(cmd, 0, &[scissor]);
+        }
+
+        self.color_pass_rt = colors.to_vec();
+        self.color_pass_depth = depth;
+        self.in_pass = true;
+        self.offscreen = true;
+        Ok(())
+    }
+
+    pub fn set_viewport(&mut self, x: f32, y: f32, width: f32, height: f32) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        let cmd = self.frames[self.slot].cmd;
+        let viewport = vk::Viewport {
+            x,
+            y,
+            width,
+            height,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+        let scissor = vk::Rect2D {
+            offset: vk::Offset2D {
+                x: x.max(0.0) as i32,
+                y: y.max(0.0) as i32,
+            },
+            extent: vk::Extent2D {
+                width: width.max(1.0) as u32,
+                height: height.max(1.0) as u32,
+            },
+        };
+        unsafe {
+            self.device.cmd_set_viewport(cmd, 0, &[viewport]);
+            self.device.cmd_set_scissor(cmd, 0, &[scissor]);
+        }
+        Ok(())
+    }
+
+    pub fn end_color_pass(&mut self) -> Result<()> {
+        if !self.in_pass || !self.offscreen {
+            return Err(RhiError::PassMismatch);
+        }
+        let cmd = self.frames[self.slot].cmd;
+        unsafe {
+            self.device.cmd_end_rendering(cmd);
+        }
+        let colors = std::mem::take(&mut self.color_pass_rt);
+        let depth = self.color_pass_depth.take();
+        for tex in colors {
+            let img = self
+                .images
+                .get(tex.id as usize)
+                .ok_or_else(|| RhiError::msg("invalid color texture"))?;
+            let image = img.image;
+            let view = img.sampled_view;
+            let slot = img.bindless_slot;
+            let sampled = img.sampled;
+            unsafe {
+                resources::image_barrier(
+                    &self.device,
+                    cmd,
+                    image,
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    vk::AccessFlags::SHADER_READ,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    resources::shader_read_stages(),
+                );
+            }
+            if let Some(img) = self.images.get_mut(tex.id as usize) {
+                img.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                img.ready = true;
+            }
+            if sampled {
+                let heap = self
+                    .bindless
+                    .as_ref()
+                    .ok_or_else(|| RhiError::msg("bindless missing"))?;
+                heap.write_sampled(
+                    &self.device,
+                    slot,
+                    view,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                );
+            }
+        }
+        if let Some(dtex) = depth {
+            let img = self
+                .images
+                .get(dtex.id as usize)
+                .ok_or_else(|| RhiError::msg("invalid depth texture"))?;
+            let image = img.image;
+            let view = img.sampled_view;
+            let slot = img.bindless_slot;
+            let sampled = img.sampled;
+            let aspect = resources::aspect_for(img.engine_format);
+            let new_layout = if sampled {
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+            } else {
+                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+            };
+            if sampled {
+                unsafe {
+                    resources::image_barrier_aspect(
+                        &self.device,
+                        cmd,
+                        image,
+                        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        new_layout,
+                        vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                        vk::AccessFlags::SHADER_READ,
+                        vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                            | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                        resources::shader_read_stages(),
+                        aspect,
+                    );
+                }
+                let heap = self
+                    .bindless
+                    .as_ref()
+                    .ok_or_else(|| RhiError::msg("bindless missing"))?;
+                heap.write_sampled(&self.device, slot, view, new_layout);
+            }
+            if let Some(img) = self.images.get_mut(dtex.id as usize) {
+                img.layout = new_layout;
+            }
+        }
+        self.in_pass = false;
+        self.offscreen = false;
+        Ok(())
+    }
+
+    pub fn create_vertex_buffer(&mut self, bytes: &[u8]) -> Result<Buffer> {
+        self.create_host_buffer(bytes, vk::BufferUsageFlags::VERTEX_BUFFER, "vb")
+    }
+
+    pub fn create_index_buffer(&mut self, bytes: &[u8]) -> Result<Buffer> {
+        self.create_host_buffer(bytes, vk::BufferUsageFlags::INDEX_BUFFER, "ib")
+    }
+
+    fn create_host_buffer(
+        &mut self,
+        bytes: &[u8],
+        usage: vk::BufferUsageFlags,
+        name: &str,
+    ) -> Result<Buffer> {
+        let alloc = self
+            .allocator
+            .as_mut()
+            .ok_or_else(|| RhiError::msg("allocator missing"))?;
+        let buf = resources::create_buffer(
+            &self.device,
+            alloc,
+            bytes.len().max(1) as u64,
+            usage,
+            gpu_allocator::MemoryLocation::CpuToGpu,
+            name,
+        )?;
+        resources::write_staging(&buf, bytes)?;
+        let id = self.buffers.len() as u32;
+        self.buffers.push(buf);
+        Ok(Buffer { id })
+    }
+
+    pub fn bind_vertex_buffer(&mut self, buf: Buffer, binding: u32) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        let gpu = self
+            .buffers
+            .get(buf.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid vertex buffer"))?;
+        unsafe {
+            self.device.cmd_bind_vertex_buffers(
+                self.frames[self.slot].cmd,
+                binding,
+                &[gpu.buffer],
+                &[0],
+            );
+        }
+        Ok(())
+    }
+
+    pub fn bind_index_buffer(&mut self, buf: Buffer) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        let gpu = self
+            .buffers
+            .get(buf.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid index buffer"))?;
+        unsafe {
+            self.device.cmd_bind_index_buffer(
+                self.frames[self.slot].cmd,
+                gpu.buffer,
+                0,
+                vk::IndexType::UINT32,
+            );
+        }
+        Ok(())
+    }
+
+    pub fn draw_indexed(
+        &mut self,
+        index_count: u32,
+        instance_count: u32,
+        first_index: u32,
+        vertex_offset: i32,
+        first_instance: u32,
+    ) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        if self.cbv_bound_gfx.is_some() {
+            self.sync_cbv_graphics();
+        }
+        unsafe {
+            self.device.cmd_draw_indexed(
+                self.frames[self.slot].cmd,
+                index_count,
+                instance_count,
+                first_index,
+                vertex_offset,
+                first_instance,
             );
         }
         Ok(())
@@ -1173,6 +1891,9 @@ impl Drop for VulkanGpu {
             }
             self.device.destroy_pipeline_layout(self.empty_layout, None);
             if let Some(alloc) = self.allocator.as_mut() {
+                for buf in self.buffers.drain(..) {
+                    resources::destroy_buffer(&self.device, alloc, buf);
+                }
                 for img in self.images.drain(..) {
                     resources::destroy_image(&self.device, alloc, img);
                 }

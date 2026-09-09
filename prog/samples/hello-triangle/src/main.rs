@@ -18,6 +18,7 @@ impl Sample for Triangle {
                 vs_entry: "VSMain",
                 fs_entry: "PSMain",
                 bindless: false,
+                targets: harpia_rhi::PipelineTargets::default(),
             })
             .context("hello-triangle PSO")?;
         self.pipeline = Some(pipeline);

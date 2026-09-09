@@ -1,0 +1,90 @@
+; Copy scene RT (LightingCb.gbuf0) to swapchain. invExtent at member 16.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %heap %samp_c
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %Lighting Block
+OpMemberDecorate %Lighting 0 Offset 0
+OpMemberDecorate %Lighting 0 ColMajor
+OpMemberDecorate %Lighting 0 MatrixStride 16
+OpMemberDecorate %Lighting 1 Offset 64
+OpMemberDecorate %Lighting 2 Offset 80
+OpMemberDecorate %Lighting 3 Offset 96
+OpMemberDecorate %Lighting 4 Offset 112
+OpMemberDecorate %Lighting 5 Offset 116
+OpMemberDecorate %Lighting 6 Offset 120
+OpMemberDecorate %Lighting 7 Offset 124
+OpMemberDecorate %Lighting 8 Offset 128
+OpMemberDecorate %Lighting 9 Offset 132
+OpMemberDecorate %Lighting 10 Offset 136
+OpMemberDecorate %Lighting 11 Offset 140
+OpMemberDecorate %Lighting 12 Offset 144
+OpMemberDecorate %Lighting 13 Offset 148
+OpMemberDecorate %Lighting 14 Offset 152
+OpMemberDecorate %Lighting 15 Offset 156
+OpMemberDecorate %Lighting 16 Offset 160
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %ig0 NonUniform
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Lighting = OpTypeStruct %mat4 %v4 %v4 %v4 %uint %uint %uint %uint %uint %uint %uint %uint %float %float %float %float %v2
+%ptr_cb = OpTypePointer Uniform %Lighting
+%cb = OpVariable %ptr_cb Uniform
+%ptr_u = OpTypePointer Uniform %uint
+%ptr_v2 = OpTypePointer Uniform %v2
+
+%img = OpTypeImage %float 2D 0 0 0 1 Unknown
+%img_arr = OpTypeRuntimeArray %img
+%ptr_arr = OpTypePointer UniformConstant %img_arr
+%heap = OpVariable %ptr_arr UniformConstant
+%ptr_img = OpTypePointer UniformConstant %img
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
+%sampled = OpTypeSampledImage %img
+
+%u4 = OpConstant %uint 4
+%u16 = OpConstant %uint 16
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_v2 %cb %u16
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%pg0 = OpAccessChain %ptr_u %cb %u4
+%ig0 = OpLoad %uint %pg0
+%pa = OpAccessChain %ptr_img %heap %ig0
+%ia = OpLoad %img %pa
+%s = OpLoad %samp_ty %samp_c
+%sm = OpSampledImage %sampled %ia %s
+%col = OpImageSampleImplicitLod %v4 %sm %uv
+OpStore %out_color %col
+OpReturn
+OpFunctionEnd

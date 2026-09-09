@@ -1,0 +1,207 @@
+; TAA: history + 3×3 neighbourhood clamp. Motion in UV. First frame copies current.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %heap %samp_c
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %Taa Block
+OpMemberDecorate %Taa 0 Offset 0
+OpMemberDecorate %Taa 0 ColMajor
+OpMemberDecorate %Taa 0 MatrixStride 16
+OpMemberDecorate %Taa 1 Offset 64
+OpMemberDecorate %Taa 2 Offset 72
+OpMemberDecorate %Taa 3 Offset 76
+OpMemberDecorate %Taa 4 Offset 80
+OpMemberDecorate %Taa 5 Offset 84
+OpMemberDecorate %Taa 6 Offset 88
+OpMemberDecorate %Taa 7 Offset 92
+OpMemberDecorate %Taa 8 Offset 96
+OpMemberDecorate %Taa 9 Offset 100
+OpMemberDecorate %Taa 10 Offset 104
+OpMemberDecorate %Taa 11 Offset 108
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %icol NonUniform
+OpDecorate %ihist NonUniform
+OpDecorate %imot NonUniform
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Taa = OpTypeStruct %mat4 %v2 %float %float %uint %uint %uint %uint %float %float %float %float
+%ptr_cb = OpTypePointer Uniform %Taa
+%cb = OpVariable %ptr_cb Uniform
+%ptr_u = OpTypePointer Uniform %uint
+%ptr_f = OpTypePointer Uniform %float
+%ptr_v2 = OpTypePointer Uniform %v2
+
+%img = OpTypeImage %float 2D 0 0 0 1 Unknown
+%img_arr = OpTypeRuntimeArray %img
+%ptr_arr = OpTypePointer UniformConstant %img_arr
+%heap = OpVariable %ptr_arr UniformConstant
+%ptr_img = OpTypePointer UniformConstant %img
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
+%sampled = OpTypeSampledImage %img
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u4 = OpConstant %uint 4
+%u5 = OpConstant %uint 5
+%u6 = OpConstant %uint 6
+%u7 = OpConstant %uint 7
+%u8 = OpConstant %uint 8
+
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%fn1 = OpConstant %float -1.0
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_v2 %cb %u1
+%inv = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %inv
+
+%pcidx = OpAccessChain %ptr_u %cb %u4
+%icol = OpLoad %uint %pcidx
+%phidx = OpAccessChain %ptr_u %cb %u5
+%ihist = OpLoad %uint %phidx
+%pmidx = OpAccessChain %ptr_u %cb %u6
+%imot = OpLoad %uint %pmidx
+%pv = OpAccessChain %ptr_u %cb %u7
+%valid = OpLoad %uint %pv
+%pb = OpAccessChain %ptr_f %cb %u8
+%blend = OpLoad %float %pb
+
+%s = OpLoad %samp_ty %samp_c
+%pa = OpAccessChain %ptr_img %heap %icol
+%ia = OpLoad %img %pa
+%sma = OpSampledImage %sampled %ia %s
+%curr = OpImageSampleImplicitLod %v4 %sma %uv
+
+%has = OpINotEqual %bool %valid %u0
+OpSelectionMerge %after None
+OpBranchConditional %has %do_taa %skip
+
+%skip = OpLabel
+OpBranch %after
+
+%do_taa = OpLabel
+%sma2 = OpSampledImage %sampled %ia %s
+%pm = OpAccessChain %ptr_img %heap %imot
+%im = OpLoad %img %pm
+%smm = OpSampledImage %sampled %im %s
+%mot4 = OpImageSampleImplicitLod %v4 %smm %uv
+%mot = OpVectorShuffle %v2 %mot4 %mot4 0 1
+%huv = OpFSub %v2 %uv %mot
+%hx = OpCompositeExtract %float %huv 0
+%hy = OpCompositeExtract %float %huv 1
+%in0 = OpFOrdGreaterThanEqual %bool %hx %f0
+%in1 = OpFOrdGreaterThanEqual %bool %hy %f0
+%in2 = OpFOrdLessThanEqual %bool %hx %f1
+%in3 = OpFOrdLessThanEqual %bool %hy %f1
+%b0 = OpLogicalAnd %bool %in0 %in1
+%b1 = OpLogicalAnd %bool %in2 %in3
+%inside = OpLogicalAnd %bool %b0 %b1
+
+%ph = OpAccessChain %ptr_img %heap %ihist
+%ih = OpLoad %img %ph
+%smh = OpSampledImage %sampled %ih %s
+%hist = OpImageSampleImplicitLod %v4 %smh %huv
+
+%ix = OpCompositeExtract %float %inv 0
+%iy = OpCompositeExtract %float %inv 1
+%dxn = OpFMul %float %fn1 %ix
+%dxp = OpFMul %float %f1 %ix
+%dyn = OpFMul %float %fn1 %iy
+%dyp = OpFMul %float %f1 %iy
+
+%ux = OpCompositeExtract %float %uv 0
+%uy = OpCompositeExtract %float %uv 1
+
+%s00x = OpFAdd %float %ux %dxn
+%s00y = OpFAdd %float %uy %dyn
+%s00 = OpCompositeConstruct %v2 %s00x %s00y
+%c00 = OpImageSampleImplicitLod %v4 %sma2 %s00
+%s10x = OpFAdd %float %ux %f0
+%s10y = OpFAdd %float %uy %dyn
+%s10 = OpCompositeConstruct %v2 %s10x %s10y
+%c10 = OpImageSampleImplicitLod %v4 %sma2 %s10
+%s20x = OpFAdd %float %ux %dxp
+%s20y = OpFAdd %float %uy %dyn
+%s20 = OpCompositeConstruct %v2 %s20x %s20y
+%c20 = OpImageSampleImplicitLod %v4 %sma2 %s20
+%s01x = OpFAdd %float %ux %dxn
+%s01y = OpFAdd %float %uy %f0
+%s01 = OpCompositeConstruct %v2 %s01x %s01y
+%c01 = OpImageSampleImplicitLod %v4 %sma2 %s01
+%s21x = OpFAdd %float %ux %dxp
+%s21y = OpFAdd %float %uy %f0
+%s21 = OpCompositeConstruct %v2 %s21x %s21y
+%c21 = OpImageSampleImplicitLod %v4 %sma2 %s21
+%s02x = OpFAdd %float %ux %dxn
+%s02y = OpFAdd %float %uy %dyp
+%s02 = OpCompositeConstruct %v2 %s02x %s02y
+%c02 = OpImageSampleImplicitLod %v4 %sma2 %s02
+%s12x = OpFAdd %float %ux %f0
+%s12y = OpFAdd %float %uy %dyp
+%s12 = OpCompositeConstruct %v2 %s12x %s12y
+%c12 = OpImageSampleImplicitLod %v4 %sma2 %s12
+%s22x = OpFAdd %float %ux %dxp
+%s22y = OpFAdd %float %uy %dyp
+%s22 = OpCompositeConstruct %v2 %s22x %s22y
+%c22 = OpImageSampleImplicitLod %v4 %sma2 %s22
+
+%n0 = OpExtInst %v4 %glsl FMin %curr %c00
+%n1 = OpExtInst %v4 %glsl FMin %n0 %c10
+%n2 = OpExtInst %v4 %glsl FMin %n1 %c20
+%n3 = OpExtInst %v4 %glsl FMin %n2 %c01
+%n4 = OpExtInst %v4 %glsl FMin %n3 %c21
+%n5 = OpExtInst %v4 %glsl FMin %n4 %c02
+%n6 = OpExtInst %v4 %glsl FMin %n5 %c12
+%nmin = OpExtInst %v4 %glsl FMin %n6 %c22
+%x0 = OpExtInst %v4 %glsl FMax %curr %c00
+%x1 = OpExtInst %v4 %glsl FMax %x0 %c10
+%x2 = OpExtInst %v4 %glsl FMax %x1 %c20
+%x3 = OpExtInst %v4 %glsl FMax %x2 %c01
+%x4 = OpExtInst %v4 %glsl FMax %x3 %c21
+%x5 = OpExtInst %v4 %glsl FMax %x4 %c02
+%x6 = OpExtInst %v4 %glsl FMax %x5 %c12
+%nmax = OpExtInst %v4 %glsl FMax %x6 %c22
+%clamped = OpExtInst %v4 %glsl FClamp %hist %nmin %nmax
+%bv = OpCompositeConstruct %v4 %blend %blend %blend %blend
+%mixed = OpExtInst %v4 %glsl FMix %curr %clamped %bv
+%taa = OpSelect %v4 %inside %mixed %curr
+OpBranch %after
+
+%after = OpLabel
+%outv = OpPhi %v4 %curr %skip %taa %do_taa
+OpStore %out_color %outv
+OpReturn
+OpFunctionEnd

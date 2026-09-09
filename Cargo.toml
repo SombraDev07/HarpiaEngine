@@ -5,10 +5,15 @@ members = [
     "prog/engine/memory",
     "prog/engine/math",
     "prog/engine/drv",
+    "prog/engine/render",
     "prog/engine/plugin",
     "prog/engine/app",
     "prog/samples/hello-triangle",
     "prog/samples/gates/bindless",
+    "prog/samples/gates/pbr-grid",
+    "prog/samples/gates/csm",
+    "prog/samples/gates/taa",
+    "prog/samples/sponza",
 ]
 
 [workspace.package]
@@ -22,6 +27,7 @@ harpia-core = { path = "prog/engine/core" }
 harpia-memory = { path = "prog/engine/memory" }
 harpia-math = { path = "prog/engine/math" }
 harpia-rhi = { path = "prog/engine/drv" }
+harpia-render = { path = "prog/engine/render" }
 harpia-plugin = { path = "prog/engine/plugin" }
 harpia-app = { path = "prog/engine/app" }
 
@@ -39,3 +45,5 @@ gpu-allocator = { version = "0.27", default-features = false, features = ["vulka
 raw-window-handle = "0.6"
 winit = "0.30"
 bitflags = "2"
+gltf = { version = "1.4", features = ["import"] }
+image = "0.25"

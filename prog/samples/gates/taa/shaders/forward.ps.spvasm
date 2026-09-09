@@ -1,0 +1,61 @@
+; Forward PS: Lambert + motion RT1. Sun is fixed (TAA gate, not PBR).
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %in_world %in_nrm %in_alb %in_mot %out_hdr %out_mot
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %in_world Location 0
+OpDecorate %in_nrm Location 1
+OpDecorate %in_alb Location 2
+OpDecorate %in_mot Location 3
+OpDecorate %out_hdr Location 0
+OpDecorate %out_mot Location 1
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+
+%ptr_in_v3 = OpTypePointer Input %v3
+%ptr_in_v2 = OpTypePointer Input %v2
+%ptr_out_v4 = OpTypePointer Output %v4
+%ptr_out_v2 = OpTypePointer Output %v2
+%in_world = OpVariable %ptr_in_v3 Input
+%in_nrm = OpVariable %ptr_in_v3 Input
+%in_alb = OpVariable %ptr_in_v3 Input
+%in_mot = OpVariable %ptr_in_v2 Input
+%out_hdr = OpVariable %ptr_out_v4 Output
+%out_mot = OpVariable %ptr_out_v2 Output
+
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%famb = OpConstant %float 0.16
+%lx = OpConstant %float 0.42
+%ly = OpConstant %float 0.82
+%lz = OpConstant %float 0.32
+%L = OpConstantComposite %v3 %lx %ly %lz
+%sc = OpConstant %float 3.2
+%v3_amb = OpConstantComposite %v3 %famb %famb %famb
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%_w = OpLoad %v3 %in_world
+%nrm = OpLoad %v3 %in_nrm
+%alb = OpLoad %v3 %in_alb
+%mot = OpLoad %v2 %in_mot
+%nn = OpExtInst %v3 %glsl Normalize %nrm
+%Ln = OpExtInst %v3 %glsl Normalize %L
+%ndot = OpDot %float %nn %Ln
+%ndotl = OpExtInst %float %glsl FMax %ndot %f0
+%sunl = OpVectorTimesScalar %v3 %alb %sc
+%sunl2 = OpVectorTimesScalar %v3 %sunl %ndotl
+%amb = OpFMul %v3 %alb %v3_amb
+%rgb = OpFAdd %v3 %amb %sunl2
+%hdr = OpCompositeConstruct %v4 %rgb %f1
+OpStore %out_hdr %hdr
+OpStore %out_mot %mot
+OpReturn
+OpFunctionEnd

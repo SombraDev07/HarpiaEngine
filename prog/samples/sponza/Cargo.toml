@@ -1,0 +1,20 @@
+[package]
+name = "sponza"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Harpia reference scene: Khronos/Crytek Sponza, --frames 90"
+
+[[bin]]
+name = "sponza"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+harpia-app.workspace = true
+harpia-math.workspace = true
+harpia-memory.workspace = true
+harpia-render.workspace = true
+harpia-rhi.workspace = true

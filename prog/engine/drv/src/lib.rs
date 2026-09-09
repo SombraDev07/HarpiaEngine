@@ -15,8 +15,9 @@ pub use device::{
 };
 pub use error::RhiError;
 pub use types::{
-    Backend, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
-    PrimitiveTopology, Texture, TextureDesc,
+    Backend, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
+    PipelineTargets, PrimitiveTopology, Texture, TextureData, TextureDesc, FRAME_CBV_CHUNKS,
+    FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE,
 };
 
 pub type Result<T, E = RhiError> = std::result::Result<T, E>;
@@ -50,6 +51,7 @@ mod tests {
                 vs_entry: "VSMain",
                 fs_entry: "PSMain",
                 bindless: false,
+                targets: PipelineTargets::default(),
             })
             .unwrap();
         gpu.set_pipeline(&pso).unwrap();
@@ -78,6 +80,8 @@ mod tests {
                 format: Format::Rgba8Unorm,
                 sampled: true,
                 storage: false,
+                color_attachment: false,
+                depth: false,
             })
             .unwrap();
         gpu.upload_texture_mip(tex, 0, &[0u8; 64]).unwrap();
@@ -92,6 +96,87 @@ mod tests {
         .unwrap();
         gpu.bind_compute_bindless().unwrap();
         gpu.dispatch(1, 1, 1).unwrap();
+        gpu.end_frame().unwrap();
+    }
+
+    #[test]
+    fn null_mrt_and_indexed_draw() {
+        let mut gpu = create(&DeviceDesc {
+            backend: Backend::Null,
+            validation: false,
+            app_name: "test",
+            width: 64,
+            height: 64,
+            window: None,
+        })
+        .unwrap();
+        let rt = gpu
+            .create_texture(&TextureDesc {
+                width: 64,
+                height: 64,
+                mip_levels: 1,
+                format: Format::Rgba8Unorm,
+                sampled: true,
+                storage: false,
+                color_attachment: true,
+                depth: false,
+            })
+            .unwrap();
+        let depth = gpu
+            .create_texture(&TextureDesc {
+                width: 64,
+                height: 64,
+                mip_levels: 1,
+                format: Format::D32Float,
+                sampled: false,
+                storage: false,
+                color_attachment: false,
+                depth: true,
+            })
+            .unwrap();
+        let vb = gpu.create_vertex_buffer(&[0u8; 24]).unwrap();
+        let ib = gpu.create_index_buffer(&[0u8, 0, 0, 0]).unwrap();
+        let _ = gpu.begin_frame().unwrap();
+        gpu.write_frame_bytes(&[0u8; 16]).unwrap();
+        gpu.begin_color_pass(&[rt], Some(depth), &[[0.0; 4]], Some(1.0))
+            .unwrap();
+        gpu.bind_vertex_buffer(vb, 0).unwrap();
+        gpu.bind_index_buffer(ib).unwrap();
+        gpu.set_push_constants(&[0u8; 128]).unwrap();
+        gpu.draw_indexed(3, 1, 0, 0, 0).unwrap();
+        gpu.end_color_pass().unwrap();
+        gpu.end_frame().unwrap();
+    }
+
+    #[test]
+    fn null_depth_only_pass_and_viewport() {
+        let mut gpu = create(&DeviceDesc {
+            backend: Backend::Null,
+            validation: false,
+            app_name: "test",
+            width: 64,
+            height: 64,
+            window: None,
+        })
+        .unwrap();
+        let atlas = gpu
+            .create_texture(&TextureDesc {
+                width: 64,
+                height: 64,
+                mip_levels: 1,
+                format: Format::D32Float,
+                sampled: true,
+                storage: false,
+                color_attachment: false,
+                depth: true,
+            })
+            .unwrap();
+        let _ = gpu.begin_frame().unwrap();
+        gpu.begin_color_pass(&[], Some(atlas), &[], Some(1.0))
+            .unwrap();
+        gpu.set_viewport(0.0, 0.0, 32.0, 32.0).unwrap();
+        gpu.set_viewport(32.0, 0.0, 32.0, 32.0).unwrap();
+        gpu.end_color_pass().unwrap();
         gpu.end_frame().unwrap();
     }
 }

@@ -1,0 +1,49 @@
+; Fullscreen triangle covering NDC. Blit PS uses FragCoord.
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %VSMain "VSMain" %vid %position
+OpName %VSMain "VSMain"
+OpDecorate %vid BuiltIn VertexIndex
+OpDecorate %position BuiltIn Position
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v4 = OpTypeVector %float 4
+%ptr_in_u = OpTypePointer Input %uint
+%ptr_out_v4 = OpTypePointer Output %v4
+%vid = OpVariable %ptr_in_u Input
+%position = OpVariable %ptr_out_v4 Output
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u2 = OpConstant %uint 2
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%fn1 = OpConstant %float -1.0
+%f3 = OpConstant %float 3.0
+%p0 = OpConstantComposite %v4 %fn1 %fn1 %f0 %f1
+%p1 = OpConstantComposite %v4 %f3 %fn1 %f0 %f1
+%p2 = OpConstantComposite %v4 %fn1 %f3 %f0 %f1
+
+%VSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%id = OpLoad %uint %vid
+OpSelectionMerge %merge None
+OpSwitch %id %def 0 %c0 1 %c1 2 %c2
+%c0 = OpLabel
+OpStore %position %p0
+OpBranch %merge
+%c1 = OpLabel
+OpStore %position %p1
+OpBranch %merge
+%c2 = OpLabel
+OpStore %position %p2
+OpBranch %merge
+%def = OpLabel
+OpStore %position %p0
+OpBranch %merge
+%merge = OpLabel
+OpReturn
+OpFunctionEnd

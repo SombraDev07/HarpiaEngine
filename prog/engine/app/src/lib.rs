@@ -1,13 +1,16 @@
 //! Window + frame loop. Platform `cfg` stays in `harpia-rhi`.
 //! Default `--frames` is never unbounded (AMD/RADV).
 
+mod capture;
+
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use harpia_rhi::{
-    create, Backend, Device, DeviceDesc, FrameInfo, Gpu, WindowHandles,
+    create, Backend, Device, DeviceDesc, FrameInfo, Gpu, Texture, WindowHandles,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::application::ApplicationHandler;
@@ -26,6 +29,9 @@ pub struct AppConfig {
     /// `None` = `--interactive` (until the window closes). Default is 90 — never unbounded by omission.
     pub max_frames: Option<NonZeroU32>,
     pub resize_at: Vec<(u32, u32, u32)>,
+    /// `--capture <prefix>`: after the last frame, dump the sample's
+    /// [`Sample::capture_targets`] as `<prefix>.<name>.png`.
+    pub capture: Option<PathBuf>,
 }
 
 impl Default for AppConfig {
@@ -38,6 +44,7 @@ impl Default for AppConfig {
             validation: true,
             max_frames: NonZeroU32::new(90),
             resize_at: vec![(30, 800, 600), (60, 1280, 720)],
+            capture: None,
         }
     }
 }
@@ -81,9 +88,14 @@ impl AppConfig {
                 "--title" => {
                     cfg.title = it.next().context("`--title`")?;
                 }
+                "--capture" => {
+                    cfg.capture = Some(PathBuf::from(
+                        it.next().context("`--capture` needs a path prefix")?,
+                    ));
+                }
                 "--help" | "-h" => {
                     eprintln!(
-                        "harpia sample\n  --frames N        default 90 (gate; window closes)\n  --interactive, -i keep the window open until you close it (AMD: not for overnight)\n  --backend vulkan|null\n  --validation 1|0  (default 1)\n  --width --height --title"
+                        "harpia sample\n  --frames N        default 90 (gate; window closes)\n  --interactive, -i keep the window open until you close it (AMD: not for overnight)\n  --backend vulkan|null\n  --validation 1|0  (default 1)\n  --capture PREFIX  PNG of each capture target after the last frame\n  --width --height --title"
                     );
                     std::process::exit(0);
                 }
@@ -97,6 +109,10 @@ impl AppConfig {
 pub trait Sample {
     fn init(&mut self, gpu: &mut Gpu) -> Result<()>;
     fn frame(&mut self, gpu: &mut Gpu, info: FrameInfo) -> Result<()>;
+    /// Render targets `--capture` should write out. Empty = nothing to dump.
+    fn capture_targets(&self) -> Vec<(&'static str, Texture)> {
+        Vec::new()
+    }
 }
 
 pub fn run(config: AppConfig, sample: impl Sample) -> Result<ExitCode> {
@@ -251,6 +267,12 @@ impl<S: Sample> WinitApp<S> {
 
         if let Some(max) = self.config.max_frames {
             if self.frames_done >= max.get() {
+                if let Some(prefix) = self.config.capture.clone() {
+                    let targets = self.sample.capture_targets();
+                    let gpu = self.gpu.as_mut().context("gpu")?;
+                    capture::capture_all(gpu, &prefix, &targets)?;
+                }
+                let gpu = self.gpu.as_mut().context("gpu")?;
                 let errors = gpu.validation_error_count();
                 if errors > 0 {
                     anyhow::bail!("validation errors: {errors}");

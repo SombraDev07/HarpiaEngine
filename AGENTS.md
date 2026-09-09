@@ -28,9 +28,10 @@ Não clones a checklist do Tucano C++. Clona o **6**: PBR + IBL + fog + clima + 
 - Occupancy entra no lighting no mesmo PR em que o volume nasce, ou não nasce.
 - Um clipmap. Nenhum sistema chamado VSM até ser variance ou virtual-paged com o nome certo.
 - Hello-triangle corre **sem nenhum plugin**. SPD só na fase bloom. FSR só depois de TAA verde.
+- **Sponza** (glTF) é a cena de referência para PBR / luz / sombra (`docs/Rust-Rewrite-Roadmap.md` §0.1). `pbr-grid` é o gate de material; não a substitui.
 - FidelityFX vive em `prog/3rdPartyLibs/<nome>/` + LICENSE. Wrapper em `prog/plugins/` (cdylib). Plugin não chama `vkCmd*`.
 - Código em `prog/` (ver árvore abaixo). Notas da IA em `memory/`. Doutrina em `docs/`.
-- Início de sessão: lê `memory/`. Fim: actualiza `PROGRESS.md` / `DECISIONS.md` / `LANDMINES.md`. Sem isto a sessão não fechou. Código não vai para `memory/`.
+- Início de sessão: lê `memory/` (INDEX primeiro — tem o quadro de fases). Fim: actualiza `PROGRESS.md` / `DECISIONS.md` / `LANDMINES.md` **e** os checks em `docs/Rust-Rewrite-Roadmap.md` §15 se uma fase fechou. Sem isto a sessão não fechou. Código não vai para `memory/`.
 
 ## Árvore (`prog/`)
 

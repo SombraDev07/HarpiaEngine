@@ -55,6 +55,79 @@ Fechadas. Não reabrir sem motivo escrito aqui.
 
 ## D6 — Shaders
 
-- Fonte de verdade: HLSL (`prog/samples/hello-triangle/shaders/triangle.hlsl`).
-- Cook: DXC `-spirv -fspv-target-env=vulkan1.3`. Fallback de assembleia: `spirv-as` sobre `.spvasm` equivalente, só até haver DXC no host.
+- Fonte de verdade: HLSL ao lado do sample (`triangle.hlsl`, `bindless.hlsl`).
+- Cook: DXC `-spirv -fspv-target-env=vulkan1.3` quando existir. Fallback: `spirv-as` ou `prog/tools/assemble_spvasm.py` sobre `.spvasm`.
+- Este host **não tem DXC**. Não assumir `dxc` no PATH. SPIR-V 1.4+ lista UBO/heap no `OpEntryPoint`.
+- `PushConstant` no assembler é storage class **9** (não 8 = Generic). `GLSL.std.450 FMix` exige operandos do mesmo tipo que o resultado (splat o `metallic` para `vec3`).
 - `harpia-shaders` como crate de cook: fase posterior. SPD/FSR: FidelityFX em `prog/3rdPartyLibs/`, não reescritos.
+
+## D8 — Git
+
+- Remote: `https://github.com/SombraDev07/HarpiaEngine.git`, ramo `main`.
+- Não vender `TucanoEngine/`. Não commitar as cópias `Rust-Rewrite-*.md` na raiz (`.gitignore`; canónico é `docs/`).
+- Sem `git config` no repo. Identidade de commit = conta GitHub via env, se o host não tiver user.email.
+
+## D9 — GBuffer packing / fuzzColor / HDR fase 3
+
+- Packing = tabela do roadmap §3. Normal guardado como `n*0.5+0.5` (não octahedral verdadeiro).
+- Se `fuzz > 0.001`, RT3 RGB = `fuzzColor` e o lighting **não** soma emissive. Senão RT3 RGB = emissive. O campo existe e chega ao pixel.
+- Push constants 128 B: `viewProj` + `world`. UBO set 0 = `LightingCb` (1024 B reservados; `gate-bindless` continua a escrever só os primeiros 16 bytes).
+- Sampler wrap em set 2 binding 0; clamp-to-edge em binding 1 (IBL / GBuffer).
+- Fase 3 tonemapa no PS de lighting para o swapchain. **Sem** RT HDR persistente até o bloom (SPD) precisar. Formato `R16G16B16A16_FLOAT` já existe no RHI.
+- MaterialGPU + grelha procedural; sem parser glTF **na fase 3**. Sponza entra na fase 4 (D10).
+
+## D10 — Sponza é a cena de referência
+
+- **Sponza (glTF Khronos / Crytek, CC-BY)** é a cena onde se testa PBR, gráficos, luz e sombras — e o que vier (clima, GI, viewport do editor).
+- `pbr-grid` continua o gate de packing/BRDF. Não substitui a Sponza.
+- Sample: `prog/samples/sponza`, `--frames 90`. Assets: `assets/sponza/` (LFS, submodule ou fetch). Crate `gltf` + `image`. **Não** Intel New Sponza no MVP.
+- Fase 4: exit = gates `csm`/`taa` **e** Sponza 90 frames. Sem isto a sombra só foi vista num cubo.
+
+## D11 — Fase 4: CSM honesto, TAA, Sponza albedo
+
+- CSM: 4 cascades, atlas 2048 2×2, frustum da **câmara real**, practical splits λ=0.75, snap do centro da esfera nos eixos right/up da luz, PCF Vogel 8, `atlas_size` no CB. `LightingCb.cascade_count == 0` ⇒ `pbr-grid` continua sem sombras.
+- TAA: motion = ΔNDC da câmara **e** slide X do objecto; history ping-pong HDR; neighbourhood clamp 3×3. Sem jitter Halton (isso é para Hi-Z/GTAO).
+- Sponza MVP: glTF + albedo sRGB + Lambert + CSM. **Não** é o packing/IBL do `pbr-grid` no atrium — isso é polish. Fetch: `prog/tools/fetch_sponza.py` (jsDelivr; `assets/sponza/glTF/` gitignored).
+- RHI: `begin_color_pass` com 0 cores + depth (atlas); `PipelineTargets.depth_only` (empty colors ≠ swapchain); `set_viewport`; depth bias; UV em location 2 só se `instance_stride == 0` e stride ≥ 32.
+- Staging bindless: 64 MiB (Sponza 2k–4k + pitch 256).
+
+## D12 — Clip space é Vulkan, num único sítio
+
+- `harpia_math::perspective_vk` é a **única** projeção de câmara. Nega a linha Y do
+  `Mat4::perspective_rh` (que já dá depth `[0,1]`).
+- Winding do mundo: CCW visto de fora. `FRONT_FACE_COUNTER_CLOCKWISE` + cull-back.
+  As malhas do `harpia-render` seguem isso (teste `winding_faces_outwards`).
+- As matrizes de luz do CSM ficam sem flip, por causa do mapeamento do atlas
+  (`uv.y = ndc.y*0.5+0.5`). Está em `LANDMINES.md`; mudar uma exige mudar a outra.
+- Casters de sombra: **sem culling** (`cull_back: false`). Geometria de uma face só
+  (os panos da Sponza) tem de projetar sombra; acne é trabalho do depth bias.
+
+## D13 — CBV do frame é um anel dinâmico
+
+- Set 0 binding 0 = `UNIFORM_BUFFER_DYNAMIC`. Um anel por slot de frame:
+  `FRAME_CBV_CHUNKS` (512) × `FRAME_UBO_SIZE` (1024 B).
+- Contrato: cada `write_frame_bytes` toma um chunk novo; **todos os draws e dispatches
+  gravados a seguir leem esse chunk**. O RHI re-aponta o set 0 sozinho quando o chunk
+  muda (só o set 0, sets 1–4 ficam).
+- É isto que permite material por primitiva sem push constants (os 128 B já estão
+  cheios com `viewProj` + `world`).
+- Estourar o anel é erro, não silêncio. O backend Null tem o mesmo orçamento.
+
+## D14 — Sponza: albedo partilhado, mips, cutout, tonemap
+
+- Uma textura por imagem glTF (dedup por `source().index()`), mip chain completa
+  gerada em espaço linear no `harpia-render`.
+- `alphaMode: MASK` do glTF chega ao PS via `LightingCb::alpha_cutoff` (por draw) e
+  faz `OpKill`. `doubleSided` usa um segundo PSO sem culling; as primitivas ficam
+  ordenadas (uma face primeiro) para não trocar de PSO por draw.
+- O PS da Sponza fecha com Lambert `/π`, ACES fitted (`exposure` do CB) e **encode
+  sRGB**: o swapchain é `B8G8R8A8_UNORM`, ninguém mais faz o gamma.
+
+## D15 — Captura é readback, não screenshot
+
+- `--capture <prefixo>` no `harpia-app`: depois do último frame lê de volta cada
+  textura de `Sample::capture_targets()` e grava PNG. Cores, HDR (`Rgba16Float`),
+  motion (`Rg16Float`) e profundidade (`D32Float`, normalizada com min/max no log).
+- `Device::read_texture` espera o device — é caminho de captura/debug, nunca frame
+  quente. Todas as imagens nascem com `TRANSFER_SRC`.
+- Nenhum gate volta a ser julgado por screenshot da janela.

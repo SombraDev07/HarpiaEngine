@@ -15,6 +15,8 @@ pub const ROW_PITCH_ALIGN: u32 = 256;
 pub fn bytes_per_pixel(format: Format) -> Result<u32> {
     match format {
         Format::Rgba8Unorm | Format::Rgba8Srgb | Format::Bgra8Unorm | Format::Bgra8Srgb => Ok(4),
+        Format::R32Float | Format::D32Float | Format::Rg16Float => Ok(4),
+        Format::Rgba16Float => Ok(8),
         Format::Unknown(_) => Err(RhiError::msg("unknown texture format")),
     }
 }
@@ -25,7 +27,19 @@ pub fn vk_format(format: Format) -> Result<vk::Format> {
         Format::Rgba8Srgb => Ok(vk::Format::R8G8B8A8_SRGB),
         Format::Bgra8Unorm => Ok(vk::Format::B8G8R8A8_UNORM),
         Format::Bgra8Srgb => Ok(vk::Format::B8G8R8A8_SRGB),
+        Format::Rgba16Float => Ok(vk::Format::R16G16B16A16_SFLOAT),
+        Format::R32Float => Ok(vk::Format::R32_SFLOAT),
+        Format::Rg16Float => Ok(vk::Format::R16G16_SFLOAT),
+        Format::D32Float => Ok(vk::Format::D32_SFLOAT),
         Format::Unknown(_) => Err(RhiError::msg("unknown texture format")),
+    }
+}
+
+pub fn aspect_for(format: Format) -> vk::ImageAspectFlags {
+    if matches!(format, Format::D32Float) {
+        vk::ImageAspectFlags::DEPTH
+    } else {
+        vk::ImageAspectFlags::COLOR
     }
 }
 
@@ -50,12 +64,18 @@ pub struct GpuImage {
     pub mip_levels: u32,
     #[allow(dead_code)]
     pub format: vk::Format,
+    pub engine_format: Format,
     pub bindless_slot: u32,
     pub sampled: bool,
     pub storage: bool,
     pub mips_uploaded: u32,
     pub ready: bool,
     pub transfer_prepared: bool,
+    pub layout: vk::ImageLayout,
+    #[allow(dead_code)]
+    pub color_attachment: bool,
+    #[allow(dead_code)]
+    pub depth: bool,
 }
 
 pub fn create_buffer(
@@ -107,13 +127,33 @@ pub fn create_image(
     }
     let mip_levels = desc.mip_levels.max(1);
     let format = vk_format(desc.format)?;
-    let mut usage = vk::ImageUsageFlags::TRANSFER_DST;
+    let mut usage = vk::ImageUsageFlags::empty();
+    if desc.sampled || desc.color_attachment || desc.depth {
+        // sampled GBuffer / IBL still need TRANSFER_DST for CPU upload
+    }
+    // TRANSFER_SRC on everything: capture (`read_texture`) must work on any
+    // target, including the shadow atlas, without a second texture desc flag.
+    usage |= vk::ImageUsageFlags::TRANSFER_SRC;
+    if !desc.depth {
+        usage |= vk::ImageUsageFlags::TRANSFER_DST;
+    }
     if desc.sampled {
         usage |= vk::ImageUsageFlags::SAMPLED;
     }
     if desc.storage {
         usage |= vk::ImageUsageFlags::STORAGE;
     }
+    if desc.color_attachment {
+        usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
+    }
+    if desc.depth {
+        usage |= vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
+    }
+    if usage.is_empty() {
+        usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST;
+    }
+
+    let aspect = aspect_for(desc.format);
 
     let ci = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
@@ -150,7 +190,7 @@ pub fn create_image(
                 .view_type(vk::ImageViewType::TYPE_2D)
                 .format(format)
                 .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    aspect_mask: aspect,
                     base_mip_level: 0,
                     level_count: mip_levels,
                     base_array_layer: 0,
@@ -190,12 +230,16 @@ pub fn create_image(
         height: desc.height,
         mip_levels,
         format,
+        engine_format: desc.format,
         bindless_slot,
         sampled: desc.sampled,
         storage: desc.storage,
         mips_uploaded: 0,
         ready: false,
         transfer_prepared: false,
+        layout: vk::ImageLayout::UNDEFINED,
+        color_attachment: desc.color_attachment,
+        depth: desc.depth,
     })
 }
 
@@ -291,6 +335,57 @@ pub unsafe fn cmd_copy_mip(
     }
 }
 
+pub unsafe fn cmd_copy_to_buffer(
+    device: &Device,
+    cmd: vk::CommandBuffer,
+    image: vk::Image,
+    buffer: vk::Buffer,
+    width: u32,
+    height: u32,
+    bpp: u32,
+    aspect: vk::ImageAspectFlags,
+) {
+    let pitch = row_pitch_bytes(width, bpp);
+    let region = vk::BufferImageCopy {
+        buffer_offset: 0,
+        buffer_row_length: pitch / bpp,
+        buffer_image_height: 0,
+        image_subresource: vk::ImageSubresourceLayers {
+            aspect_mask: aspect,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        },
+        image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+        image_extent: vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        },
+    };
+    unsafe {
+        device.cmd_copy_image_to_buffer(
+            cmd,
+            image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            buffer,
+            std::slice::from_ref(&region),
+        );
+    }
+}
+
+/// Drop the 256-byte row padding that `cmd_copy_to_buffer` writes.
+pub fn unpack_rows(padded: &[u8], width: u32, height: u32, bpp: u32) -> Vec<u8> {
+    let pitch = row_pitch_bytes(width, bpp) as usize;
+    let row = width as usize * bpp as usize;
+    let mut out = Vec::with_capacity(row * height as usize);
+    for y in 0..height as usize {
+        let s = y * pitch;
+        out.extend_from_slice(&padded[s..s + row]);
+    }
+    out
+}
+
 pub unsafe fn image_barrier(
     device: &Device,
     cmd: vk::CommandBuffer,
@@ -302,6 +397,34 @@ pub unsafe fn image_barrier(
     src_stage: vk::PipelineStageFlags,
     dst_stage: vk::PipelineStageFlags,
 ) {
+    unsafe {
+        image_barrier_aspect(
+            device,
+            cmd,
+            image,
+            old_layout,
+            new_layout,
+            src_access,
+            dst_access,
+            src_stage,
+            dst_stage,
+            vk::ImageAspectFlags::COLOR,
+        );
+    }
+}
+
+pub unsafe fn image_barrier_aspect(
+    device: &Device,
+    cmd: vk::CommandBuffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    src_access: vk::AccessFlags,
+    dst_access: vk::AccessFlags,
+    src_stage: vk::PipelineStageFlags,
+    dst_stage: vk::PipelineStageFlags,
+    aspect: vk::ImageAspectFlags,
+) {
     let barrier = vk::ImageMemoryBarrier::default()
         .src_access_mask(src_access)
         .dst_access_mask(dst_access)
@@ -311,7 +434,7 @@ pub unsafe fn image_barrier(
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .image(image)
         .subresource_range(vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
+            aspect_mask: aspect,
             base_mip_level: 0,
             level_count: vk::REMAINING_MIP_LEVELS,
             base_array_layer: 0,

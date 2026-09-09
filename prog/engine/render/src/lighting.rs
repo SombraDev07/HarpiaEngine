@@ -1,0 +1,129 @@
+//! Per-frame lighting CBV. Written after `begin_frame`. Push constants hold viewProj+world.
+//! Shadow fields are appended: `cascade_count == 0` skips CSM (pbr-grid).
+
+use harpia_math::{Mat4, Vec2, Vec4};
+
+use crate::csm::Csm;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LightingCb {
+    pub inv_view_proj: Mat4,
+    pub camera_pos: Vec4,
+    pub sun_dir: Vec4,
+    pub sun_color: Vec4,
+    pub gbuf0: u32,
+    pub gbuf1: u32,
+    pub gbuf2: u32,
+    pub gbuf3: u32,
+    pub gbuf4: u32,
+    pub irradiance: u32,
+    pub prefiltered: u32,
+    pub brdf_lut: u32,
+    pub ibl_scale: f32,
+    pub ibl_max_mip: f32,
+    pub exposure: f32,
+    /// glTF `MASK` cutoff for the primitive being drawn. 0 = opaque.
+    pub alpha_cutoff: f32,
+    pub inv_extent: Vec2,
+    pub _pad1: Vec2,
+    pub view: Mat4,
+    pub shadow_idx: u32,
+    pub atlas_size: f32,
+    pub cascade_count: u32,
+    pub _pad2: u32,
+    pub splits: Vec4,
+    pub cascades: [Mat4; 4],
+}
+
+impl Default for LightingCb {
+    fn default() -> Self {
+        Self {
+            inv_view_proj: Mat4::IDENTITY,
+            camera_pos: Vec4::ZERO,
+            sun_dir: Vec4::Y,
+            sun_color: Vec4::ONE,
+            gbuf0: 0,
+            gbuf1: 0,
+            gbuf2: 0,
+            gbuf3: 0,
+            gbuf4: 0,
+            irradiance: 0,
+            prefiltered: 0,
+            brdf_lut: 0,
+            ibl_scale: 1.0,
+            ibl_max_mip: 0.0,
+            exposure: 1.0,
+            alpha_cutoff: 0.0,
+            inv_extent: Vec2::ONE,
+            _pad1: Vec2::ZERO,
+            view: Mat4::IDENTITY,
+            shadow_idx: 0,
+            atlas_size: 1.0,
+            cascade_count: 0,
+            _pad2: 0,
+            splits: Vec4::ZERO,
+            cascades: [Mat4::IDENTITY; 4],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PushConstants {
+    pub view_proj: Mat4,
+    pub world: Mat4,
+}
+
+impl PushConstants {
+    pub fn new(view_proj: Mat4) -> Self {
+        Self {
+            view_proj,
+            world: Mat4::IDENTITY,
+        }
+    }
+
+    pub fn with_world(view_proj: Mat4, world: Mat4) -> Self {
+        Self { view_proj, world }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        as_bytes(self)
+    }
+}
+
+impl LightingCb {
+    pub fn as_bytes(&self) -> &[u8] {
+        as_bytes(self)
+    }
+
+    pub fn apply_csm(&mut self, csm: &Csm, shadow_idx: u32) {
+        self.shadow_idx = shadow_idx;
+        self.atlas_size = csm.atlas_size as f32;
+        self.cascade_count = 4;
+        self.splits = csm.splits;
+        self.cascades = csm.view_proj;
+    }
+}
+
+fn as_bytes<T>(v: &T) -> &[u8] {
+    unsafe { std::slice::from_raw_parts((v as *const T).cast::<u8>(), std::mem::size_of::<T>()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_is_128_and_cb_fits_ubo() {
+        assert_eq!(std::mem::size_of::<PushConstants>(), 128);
+        assert!(std::mem::size_of::<LightingCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
+        assert_eq!(std::mem::size_of::<LightingCb>(), 528);
+        assert_eq!(std::mem::offset_of!(LightingCb, exposure), 152);
+        assert_eq!(std::mem::offset_of!(LightingCb, alpha_cutoff), 156);
+        assert_eq!(std::mem::offset_of!(LightingCb, view), 176);
+        assert_eq!(std::mem::offset_of!(LightingCb, shadow_idx), 240);
+        assert_eq!(std::mem::offset_of!(LightingCb, splits), 256);
+        assert_eq!(std::mem::offset_of!(LightingCb, cascades), 272);
+    }
+}

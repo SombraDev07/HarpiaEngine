@@ -1,7 +1,9 @@
 # Tucano → Rust — Roadmap técnico para replicar ou superar
 
-**Para quem:** a próxima IA (ou pessoa) que vai **reescrever a engine do zero em Rust**.  
-**Fonte de verdade C++:** `/home/bruno/Projects/TucanoEngine` — este documento descreve *como a engine funciona hoje*, o *contrato GPU*, as *minas*, e uma *ordem de construção* com critérios de saída.  
+> **Harpia (este repo):** o produto é Harpia, crates `harpia-*`, código em `prog/`. Este texto descreve o *contrato* da referência C++ e a **ordem das fases**. Estado vivo (checks): tabela §15 + `memory/PROGRESS.md`. A barra (`docs/Rust-Rewrite-Quality-Bar.md`) ganha se discordar da checklist C++.
+
+**Para quem:** a próxima IA (ou pessoa) que constrói a engine.  
+**Fonte de verdade C++:** `TucanoEngine/` (gitignored; no host costuma estar ao lado do repo) — *como funciona hoje*, contrato GPU, minas, ordem. **Não portes o C++.**  
 **Não é** o roadmap Vulkan/Linux (`docs/Vulkan-Linux-Roadmap.md`). Esse é histórico de port. Este é o **manual de reconstrução**.  
 **Barra de qualidade (obrigatória):** `docs/Rust-Rewrite-Quality-Bar.md` — se este roadmap e a barra discordarem, **a barra ganha**. Não clones a checklist; clona o 6.
 
@@ -17,6 +19,35 @@ Idioma: português para o plano; **identificadores, structs, shaders e crates em
 4. **Cada fase tem um binário de gate** (equivalente a `Samples/Gates/`). Sem gate verde, não avanças. Sempre `--frames N` em GPU AMD/RADV.
 5. **Lê os ficheiros-fonte listados** no fim de cada sistema. Este texto resume; o HLSL é a spec.
 6. **Superar ≠ mais passes.** Superar = menos mentiras no pixel: CSM honesto, TAA, um clipmap, occupancy no lighting *ou* apagada, nenhum sistema chamado VSM até ser variance.
+7. **Sponza é a cena de referência** para PBR, gráficos, luz e sombras (e o que vier a seguir). Ver §0.1. Os gates mínimos (`pbr-grid`, `csm`, `taa`, …) **não** a substituem.
+
+---
+
+## 0.1 Cena de referência — Sponza
+
+**Harpia testa o pixel em Sponza.** `pbr-grid` prova o packing/BRDF (dieléctrico, metal, roughness, clearcoat, fuzz). Sponza prova o mesmo contrato **num interior real**: materiais com mapas, sol + IBL, contacto de sombra na arquitectura, câmara com FOV/aspect verdadeiros, e mais tarde fog/GI/editor viewport.
+
+| Papel | Cena | O que prova |
+|---|---|---|
+| Gate de material | `pbr-grid` (grelha procedural) | Packing §3, BRDF, IBL, `fuzzColor`. Já **verde** (fase 3). |
+| Cena de referência | **Sponza (glTF)** | PBR com texturas, lighting (sol + IBL), shadows (CSM na geometria da sala), graphics integration. `--frames 90`. |
+| Gates de feature | `csm`, `taa`, `fog`, … | Um binário pequeno por algoritmo. Sponza não é o substituto destes. |
+
+**Qual Sponza:** [Khronos glTF-Sample-Assets — Sponza](https://github.com/KhronosGroup/glTF-Sample-Assets) (Crytek, CC-BY), via crate `gltf`. **Não** Intel New Sponza no MVP (outro peso; stress opcional só depois do editor).
+
+**Onde vive:** `assets/sponza/` na raiz do repo (LICENSE + glTF + texturas). **Não** commitar centenas de MB às cegas: submodule, Git LFS, ou script de fetch. Código do loader em `prog/` quando a fase o exigir (`gltf` + `image`, já na lista permitida). Sample: `prog/samples/sponza` (`cargo run -p sponza -- --frames 90`). Default nunca unbounded.
+
+**Quando entra (não muda a ordem das fases):**
+
+| Fase | Sponza |
+|---|---|
+| 3 PBR | Gate = `pbr-grid`. Sponza **não** era o exit. |
+| 4 CSM + TAA | Depois dos gates `csm`/`taa` verdes: **Sponza** é o teste de olho — sol, IBL, CSM no atrium, TAA em movimento. Aspect ratio mudado → sombra continua a bater no contacto **na Sponza**, não só num cubo. |
+| 5 Clima | Fog/rain default-on na Sponza 16–90 frames, ou o pass não entra. |
+| 7 GI | IBL já está; probes/SSR/occupancy só se o lighting da Sponza os amostrar. |
+| 8 Editor | Viewport da Sponza (`present_format()`), não um quad magenta. |
+
+Sem Sponza a correr `--frames N` com validation 0, o sistema **não** está “visto em produção” — só o gate unitário.
 
 ---
 
@@ -400,6 +431,7 @@ tucano/
   bins/
     hello-triangle
     pbr-grid
+    sponza               # cena de referência (glTF) — PBR / luz / sombra
     gates/*              # um bin por feature, --frames 16
 ```
 
@@ -411,88 +443,104 @@ Regra: `tucano-render` depende de `tucano-rhi` + `tucano-scene`. **Não** depend
 
 Cada fase: código + **um binário que corre N frames e sai 0**. Sem pixel-identical vs C++. “Reconhecível” chega.
 
-### Fase 0 — Contrato (3–7 dias)
+**Onde a Harpia está** (actualizar aqui + `memory/PROGRESS.md` no mesmo PR que fecha a fase):
 
-- Traits `Device`, `CommandList`, `Texture`, `Buffer`, `SwapChain`.
-- Backend Null (CPU stub) para testes sem GPU.
-- Window + loop `--frames`.
-- **Exit:** `hello-triangle` Null compile; doc do bindless layout escrita *antes* do primeiro shader.
+| Fase | Nome | Gate | Estado |
+|---|---|---|---|
+| 0 | Contrato | Null + doc bindless | **feito** (2026-09) |
+| 1 | Triângulo GPU | `hello-triangle --frames 90` | **feito** (RADV, validation 0) |
+| 2 | Bindless + upload | `gate-bindless` 16 frames | **feito** (RADV, validation 0) |
+| 3 | Deferred PBR | `pbr-grid` 90 frames | **feito** (RADV, validation 0) |
+| 4 | Sombras + TAA | `csm` + `taa` 16; **Sponza** 90 (integração) | **próximo** |
+| 5 | Clima | `fog` `clouds` `water` `rain` | — |
+| 6 | Terreno + veg + mundo | `terrain` `heightquery` `veg` `instances` | — |
+| 7 | GI + post extra | `ssr` `probes` (+ occupancy honesta ou 0 bytes) | — |
+| 8 | Editor | docking + viewport `--frames 8` | — |
+| 9 | Opcional | mesh shaders / RT / OIT / física | depois do editor |
 
-### Fase 1 — Triângulo GPU (1–2 sem)
+### Fase 0 — Contrato — [x] feito
 
-- Swapchain, dynamic rendering ou render pass único, VS+PS, validation 0.
-- Resize: surface estável, `old_swapchain`.
-- **Exit:** janela, triângulo, 0 erros validation, `--frames 90`.
+- [x] Traits `Device`, textura, swapchain (não um `CommandList` C++ separado; o record vive no `Device` entre `begin_frame`/`end_frame`).
+- [x] Backend Null (CPU stub) para testes sem GPU.
+- [x] Window + loop `--frames`.
+- [x] **Exit:** `hello-triangle` Null compile; `docs/Bindless-Descriptor-Layout.md` escrito *antes* do primeiro shader.
 
-### Fase 2 — Bindless + upload (2 sem)
+### Fase 1 — Triângulo GPU — [x] feito
 
-- Heap sampled 8192, slot 0 dummy 1×1 com barrier VS+PS+CS.
-- `bindless_index` na textura. Shader amostra `heap[idx]`.
-- Upload mips completos. VMA ou wgpu allocator.
-- **Exit:** triângulo texturizado; compute UAV simples.
+- [x] Swapchain, dynamic rendering, VS+PS, validation 0.
+- [x] Resize: surface estável, `old_swapchain`.
+- [x] **Exit:** janela, triângulo, 0 erros validation, `--frames 90`. Binário: `prog/samples/hello-triangle`.
 
-### Fase 3 — Deferred PBR (2–4 sem)
+### Fase 2 — Bindless + upload — [x] feito
 
-- 5 MRTs + depth. GBuffer packing **idêntico** à tabela §3, **com `fuzzColor` a chegar ao lighting** (ou o campo não existe).
-- Lighting fullscreen: 1 sol + IBL split-sum + tonemap.
-- Multi-scatter nas luzes **directas** (`getEnergyCompensation` também no sol/points — o C++ só aplica no IBL).
-- Material GPU + glTF mínimo (sem Sponza ainda).
-- **Exit:** `pbr-grid` 90 frames, validation 0. Sem clima, sem sombras.
+- [x] Heap sampled 8192, slot 0 dummy 1×1 com barrier VS+PS+CS.
+- [x] `bindless_index` na textura. Shader amostra `heap[idx]`.
+- [x] Upload mips completos (`gpu-allocator`, pitch 256).
+- [x] **Exit:** triângulo texturizado + compute UAV. Binário: `prog/samples/gates/bindless` (`cargo run -p gate-bindless`).
 
-### Fase 4 — Sombras + TAA (2–3 sem)
+### Fase 3 — Deferred PBR — [x] feito
 
-Barra: `docs/Rust-Rewrite-Quality-Bar.md` §4.1 e §4.8.
+- [x] 5 MRTs + depth. GBuffer packing **idêntico** à tabela §3, **com `fuzzColor` a chegar ao lighting** (RT3 RGB = fuzzColor se fuzz>0, senão emissive).
+- [x] Lighting fullscreen: 1 sol + IBL split-sum + tonemap ACES (no mesmo PS, sem HDR RT persistente nesta fase).
+- [x] Multi-scatter nas luzes **directas** (`getEnergyCompensation` também no sol).
+- [x] Material GPU + grelha procedural estilo glTF (sem ficheiro nesta fase). Sponza = cena de referência a partir da fase 4 (§0.1).
+- [x] **Exit:** `cargo run -p gate-pbr-grid -- --frames 90`, validation 0. Sem clima, sem sombras.
 
-- CSM 4 cascades atlas 2×2 com **frustum da câmara real** (FOV, aspect, near/far). Snap de texels. PCF Poisson/Vogel. Texel derivado do atlas — **não** `1/2048` hardcoded, **não** FOV 60°/16:9.
-- Motion vectors (object + camera) + **TAA** (history + neighbourhood clamp). O C++ não tem; sem isto o resto treme.
-- Depois, se o gate CSM+TAA estiver verde: PCSS. Octa só se houver point lights de teste.
-- **Não** portes VSM, ESM, nem contact nesta fase. Toroidal = optimização do CSM verdadeiro, depois.
-- **Exit:** gates `csm` e `taa` 16 frames. Aspect ratio mudado → sombra continua a bater no contacto.
+### Fase 4 — Sombras + TAA — [x] feito
 
-### Fase 5 — Clima (3–4 sem)
+Barra: `docs/Rust-Rewrite-Quality-Bar.md` §4.1 e §4.8. Cena de olho: **Sponza** (§0.1). Linux/RADV, 2026-09.
+
+- [x] CSM 4 cascades atlas 2×2 com **frustum da câmara real** (FOV, aspect, near/far). Snap de texels no eixo da luz. PCF Vogel 8. Texel = `1/atlasSize` no CB — **não** `1/2048` hardcoded, **não** FOV 60°/16:9.
+- [x] Motion vectors (object X slide + câmara) + **TAA** (history + neighbourhood clamp 3×3).
+- [x] Loader glTF mínimo (`gltf` crate) + `cargo run -p sponza -- --frames 90`: albedo maps + sol + CSM no atrium. Fetch: `prog/tools/fetch_sponza.py`. ORM/IBL no Sponza fica para polish — o gate BRDF continua `pbr-grid`.
+- [ ] Depois: PCSS. Octa só se houver point lights de teste.
+- [x] **Não** portar VSM, ESM, nem contact nesta fase.
+- [x] **Exit:** `gate-csm` e `gate-taa` 16 frames (resize 6/12). **Mais** `cargo run -p sponza -- --frames 90`, validation 0. Aspect mudado nos três.
+
+### Fase 5 — Clima — [ ] próximo
 
 Ordem: fog compute → clouds (sem driveRain) → water → **rain por último** (é o mais perigoso).
 
-- Fog: froxels, 3D GENERAL.
-- Clouds: noise cache em disco.
-- Water: point-sample depth no SSR.
-- Rain: GBuffer wet + post; cones sem HDR SRV; `--frames 16` only.
-- **Exit:** gates `fog` `clouds` `water` `rain`.
+- [ ] Fog: froxels, 3D GENERAL.
+- [ ] Clouds: noise cache em disco.
+- [ ] Water: point-sample depth no SSR.
+- [ ] Rain: GBuffer wet + post; cones sem HDR SRV; `--frames 16` only.
+- [ ] **Exit:** gates `fog` `clouds` `water` `rain`. Default-on na **Sponza** (`--frames` curto) ou o pass não entra.
 
-### Fase 6 — Terreno + vegetação + mundo (3–5 sem)
+### Fase 6 — Terreno + vegetação + mundo — [ ]
 
-- Só `ClipmapTerrain` SV_VertexID.
-- HeightQuery GPU vs CPU.
-- Veg cull + indirect (buffers soltos, sem arrays HLSL).
-- Instance cull 2500 cubos → 1 indirect.
-- Streaming: CPU first; GPU cull sem `waitIdle` no frame.
-- **Exit:** gates `terrain` `heightquery` `veg` `instances`. VT/feedback a seguir.
+- [ ] Só `ClipmapTerrain` SV_VertexID.
+- [ ] HeightQuery GPU vs CPU.
+- [ ] Veg cull + indirect (buffers soltos, sem arrays HLSL).
+- [ ] Instance cull 2500 cubos → 1 indirect.
+- [ ] Streaming: CPU first; GPU cull sem `waitIdle` no frame.
+- [ ] **Exit:** gates `terrain` `heightquery` `veg` `instances`. VT/feedback a seguir.
 
-### Fase 7 — GI + post extra (2–3 sem)
+### Fase 7 — GI + post extra — [ ]
 
 Barra: occupancy **no lighting neste PR** ou o volume não nasce. SSGI de 8 taps **não** é o exit.
 
-- GTAO, bloom, auto-exposure (já no path default Tucano). TAA já veio da fase 4.
-- SSR, probes (seed CPU + captura) no miss do SSR.
-- Occupancy 32³ amostrada no lighting **ou omitida**. Meio volume órfão é recusado.
-- WorldSDF JFA só se o compose/lighting ler o atlas.
-- SSGI/DDGI: **fora do exit**. Só depois, com gate de bounce (caixas coloridas), não bleed de vizinhos.
-- **Exit:** gates `ssr` `probes`. Occupancy: gate `occupancy` (pixel muda com o volume) **ou** zero bytes GPU.
+- [ ] GTAO, bloom, auto-exposure (já no path default Tucano). TAA já veio da fase 4.
+- [ ] SSR, probes (seed CPU + captura) no miss do SSR.
+- [ ] Occupancy 32³ amostrada no lighting **ou omitida**. Meio volume órfão é recusado.
+- [ ] WorldSDF JFA só se o compose/lighting ler o atlas.
+- [ ] SSGI/DDGI: **fora do exit**. Só depois, com gate de bounce (caixas coloridas), não bleed de vizinhos.
+- [ ] **Exit:** gates `ssr` `probes`. Occupancy: gate `occupancy` (pixel muda com o volume) **ou** zero bytes GPU. Tudo o que sobreviver tem de ser visível na **Sponza** (§0.1), não só no cubo do gate.
 
-### Fase 8 — Editor (2–4 sem)
+### Fase 8 — Editor — [ ]
 
-- egui/imgui pool **separado**.
-- Viewport = RT offscreen `present_format` + ImGui image, free de descriptors atrasado.
-- Outliner / Inspector gerados por reflection (o C++ usa `TUCANO_FIELD` — em Rust: `bevy_reflect` ou macros próprias).
-- File dialog: rfd / native; não bloquear o GPU loop sem fence.
-- **Exit:** `--frames 8` docking + viewport 3D. Sem crash resize.
+- [ ] egui/imgui pool **separado**.
+- [ ] Viewport = RT offscreen `present_format` + ImGui image, free de descriptors atrasado.
+- [ ] Outliner / Inspector gerados por reflection (o C++ usa `TUCANO_FIELD` — em Rust: `bevy_reflect` ou macros próprias).
+- [ ] File dialog: rfd / native; não bloquear o GPU loop sem fence.
+- [ ] **Exit:** `--frames 8` docking + viewport 3D. Sem crash resize.
 
-### Fase 9 — Opcional (depois do editor)
+### Fase 9 — Opcional (depois do editor) — [ ]
 
-- Mesh shaders se a GPU tiver a extensão; fallback VS obrigatório.
-- Ray query shadows/reflections; senão SSR/CSM continuam.
-- OIT linked-list no mesmo backend.
-- Physics + ECS + Lua/Rhai se o produto precisar — **não** bloqueiam o renderer.
+- [ ] Mesh shaders se a GPU tiver a extensão; fallback VS obrigatório.
+- [ ] Ray query shadows/reflections; senão SSR/CSM continuam.
+- [ ] OIT linked-list no mesmo backend.
+- [ ] Physics + ECS + Lua/Rhai se o produto precisar — **não** bloqueiam o renderer.
 
 ---
 
@@ -568,7 +616,7 @@ Teste de honestidade antes de mergear um pass: o nome bate com o paper? O lighti
 
 ## 18. Prompt curto para a próxima IA
 
-> Reescreve Tucano em Rust seguindo `docs/Rust-Rewrite-Roadmap.md` e `docs/Rust-Rewrite-Quality-Bar.md`. A barra ganha se discordarem. Não clones a checklist do C++. Clona o 6: PBR, IBL, fog, clima, bindless. Recusa o 4: VSM que não é variance, occupancy órfão, segundo clipmap, CSM com FOV 60°/16:9, SSGI de 8 taps como GI. Obrigatório cedo: CSM com frustum da câmara real + TAA com motion vectors. Occupancy entra no lighting no mesmo PR em que o volume nasce, ou não nasce. Não comeces por mesh shaders nem DXR. Fase N só depois do exit da N−1. Rain em dois passes; nunca `--frames` unbounded em AMD. RHI trait, engine sem tipos wgpu/ash. Superar = menos mentiras no pixel, não mais passes.
+> Constrói **Harpia** (não um `tucano-rs`) seguindo `docs/Rust-Rewrite-Roadmap.md` §15 e `docs/Rust-Rewrite-Quality-Bar.md`. Lê `memory/` primeiro. A barra ganha se discordarem. Não clones a checklist do C++. Clona o 6: PBR, IBL, fog, clima, bindless. Recusa o 4: VSM que não é variance, occupancy órfão, segundo clipmap, CSM com FOV 60°/16:9, SSGI de 8 taps como GI. Obrigatório cedo: CSM com frustum da câmara real + TAA com motion vectors. Occupancy entra no lighting no mesmo PR em que o volume nasce, ou não nasce. Não comeces por mesh shaders nem DXR. Fase N só depois do exit da N−1. Rain em dois passes; nunca `--frames` unbounded em AMD. `vk::*` só em `prog/engine/drv`. Superar = menos mentiras no pixel, não mais passes.
 
 ---
 
