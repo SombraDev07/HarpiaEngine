@@ -1,0 +1,17 @@
+[package]
+name = "hello-triangle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Harpia phase 1 gate: Vulkan triangle, --frames 90, validation 0, resize"
+
+[[bin]]
+name = "hello-triangle"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+harpia-app.workspace = true
+harpia-memory.workspace = true
+harpia-rhi.workspace = true

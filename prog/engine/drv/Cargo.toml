@@ -1,0 +1,16 @@
+[package]
+name = "harpia-rhi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "RHI trait + Null + Vulkan. The only crate that may use vk::*."
+
+[dependencies]
+ash.workspace = true
+ash-window.workspace = true
+gpu-allocator.workspace = true
+raw-window-handle.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+harpia-core.workspace = true

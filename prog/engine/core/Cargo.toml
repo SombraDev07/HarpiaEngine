@@ -1,0 +1,10 @@
+[package]
+name = "harpia-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Shared types, ids, and engine identity. No GPU."
+
+[dependencies]
+thiserror.workspace = true

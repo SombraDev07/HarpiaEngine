@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+.DS_Store
+*.pdb
+.idea/
+.vscode/
+.cursor/
+*.swp
+capture_*.txt
+*.spv.bak
+
+# C++ reference engine — do not vendor into Harpia
+TucanoEngine/

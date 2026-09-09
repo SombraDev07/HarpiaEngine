@@ -1,0 +1,12 @@
+[package]
+name = "harpia-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Plugin ABI + loader. Plugins must not call vkCmd*."
+
+[dependencies]
+libloading.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "prog/engine/core",
+    "prog/engine/memory",
+    "prog/engine/math",
+    "prog/engine/drv",
+    "prog/engine/plugin",
+    "prog/engine/app",
+    "prog/samples/hello-triangle",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+harpia-core = { path = "prog/engine/core" }
+harpia-memory = { path = "prog/engine/memory" }
+harpia-math = { path = "prog/engine/math" }
+harpia-rhi = { path = "prog/engine/drv" }
+harpia-plugin = { path = "prog/engine/plugin" }
+harpia-app = { path = "prog/engine/app" }
+
+glam = "0.29"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+libloading = "0.8"
+mimalloc = "0.1"
+bumpalo = "3"
+ash = "0.38"
+ash-window = "0.13"
+gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
+raw-window-handle = "0.6"
+winit = "0.30"
+bitflags = "2"

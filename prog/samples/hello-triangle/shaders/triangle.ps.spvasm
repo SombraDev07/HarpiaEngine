@@ -1,0 +1,31 @@
+; SPIR-V
+; Equivalent of triangle.hlsl PSMain — no descriptors
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %in_color %out_color
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %in_color Location 0
+OpDecorate %out_color Location 0
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%ptr_in = OpTypePointer Input %v3
+%ptr_out = OpTypePointer Output %v4
+%in_color = OpVariable %ptr_in Input
+%out_color = OpVariable %ptr_out Output
+%f1 = OpConstant %float 1.0
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%c = OpLoad %v3 %in_color
+%r = OpCompositeExtract %float %c 0
+%g = OpCompositeExtract %float %c 1
+%b = OpCompositeExtract %float %c 2
+%rgba = OpCompositeConstruct %v4 %r %g %b %f1
+OpStore %out_color %rgba
+OpReturn
+OpFunctionEnd
