@@ -1,6 +1,15 @@
-use crate::device::{DeviceDesc, GraphicsPipelineDesc};
-use crate::types::{Extent2D, Format, FrameInfo, GraphicsPipeline};
+use crate::device::{ComputePipelineDesc, DeviceDesc, GraphicsPipelineDesc};
+use crate::types::{
+    ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline, Texture,
+    TextureDesc,
+};
 use crate::{RhiError, Result};
+
+struct NullTex {
+    bindless_slot: u32,
+    mip_levels: u32,
+    uploaded: u32,
+}
 
 pub struct NullGpu {
     extent: Extent2D,
@@ -8,6 +17,9 @@ pub struct NullGpu {
     in_pass: bool,
     frame_index: u64,
     next_pipeline: u32,
+    next_compute: u32,
+    next_slot: u32,
+    textures: Vec<NullTex>,
 }
 
 impl NullGpu {
@@ -21,6 +33,13 @@ impl NullGpu {
             in_pass: false,
             frame_index: 0,
             next_pipeline: 1,
+            next_compute: 1,
+            next_slot: 1,
+            textures: vec![NullTex {
+                bindless_slot: 0,
+                mip_levels: 1,
+                uploaded: 1,
+            }],
         }
     }
 
@@ -114,5 +133,85 @@ impl NullGpu {
 
     pub fn validation_error_count(&self) -> u32 {
         0
+    }
+
+    pub fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture> {
+        let slot = self.next_slot;
+        self.next_slot += 1;
+        let id = self.textures.len() as u32;
+        self.textures.push(NullTex {
+            bindless_slot: slot,
+            mip_levels: desc.mip_levels.max(1),
+            uploaded: 0,
+        });
+        Ok(Texture { id })
+    }
+
+    pub fn upload_texture_mip(&mut self, tex: Texture, mip: u32, _rgba: &[u8]) -> Result<()> {
+        let t = self
+            .textures
+            .get_mut(tex.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid texture"))?;
+        if mip >= t.mip_levels {
+            return Err(RhiError::msg("mip out of range"));
+        }
+        t.uploaded = t.uploaded.saturating_add(1).min(t.mip_levels);
+        Ok(())
+    }
+
+    pub fn bindless_index(&self, tex: Texture) -> Result<u32> {
+        Ok(self
+            .textures
+            .get(tex.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid texture"))?
+            .bindless_slot)
+    }
+
+    pub fn write_frame_constants(&mut self, _c: FrameConstants) -> Result<()> {
+        if !self.in_frame {
+            return Err(RhiError::NotInFrame);
+        }
+        Ok(())
+    }
+
+    pub fn bind_graphics_bindless(&mut self) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        Ok(())
+    }
+
+    pub fn create_compute_pipeline(&mut self, _desc: &ComputePipelineDesc<'_>) -> Result<ComputePipeline> {
+        let id = self.next_compute;
+        self.next_compute += 1;
+        Ok(ComputePipeline { id })
+    }
+
+    pub fn set_compute_pipeline(&mut self, _pipeline: &ComputePipeline) -> Result<()> {
+        if !self.in_frame || self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        Ok(())
+    }
+
+    pub fn bind_compute_bindless(&mut self) -> Result<()> {
+        if !self.in_frame || self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        Ok(())
+    }
+
+    pub fn dispatch(&mut self, _x: u32, _y: u32, _z: u32) -> Result<()> {
+        if !self.in_frame || self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        Ok(())
+    }
+
+    pub fn storage_barrier(&mut self, _tex: Texture) -> Result<()> {
+        if !self.in_frame {
+            return Err(RhiError::NotInFrame);
+        }
+        Ok(())
     }
 }

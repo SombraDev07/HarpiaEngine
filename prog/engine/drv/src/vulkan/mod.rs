@@ -1,7 +1,9 @@
 //! Vulkan 1.3 backend. All `vk::*` / `vkCmd*` live under this module.
 
+mod bindless;
 mod debug;
 mod layers;
+mod resources;
 mod swapchain;
 mod window;
 
@@ -16,8 +18,11 @@ use ash::vk;
 use ash::{Device, Entry, Instance};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 
-use crate::device::{DeviceDesc, GraphicsPipelineDesc};
-use crate::types::{Extent2D, Format, FrameInfo, GraphicsPipeline};
+use crate::device::{ComputePipelineDesc, DeviceDesc, GraphicsPipelineDesc};
+use crate::types::{
+    ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline, Texture,
+    TextureDesc,
+};
 use crate::{RhiError, Result, FRAMES_IN_FLIGHT};
 
 const FRAME_TIMEOUT_NS: u64 = 2_000_000_000;
@@ -53,8 +58,12 @@ pub struct VulkanGpu {
     #[allow(dead_code)]
     allocator: Option<Allocator>,
     cmd_pool: vk::CommandPool,
+    upload_cmd: vk::CommandBuffer,
     empty_layout: vk::PipelineLayout,
     pipelines: Vec<vk::Pipeline>,
+    compute_pipelines: Vec<vk::Pipeline>,
+    bindless: Option<bindless::Bindless>,
+    images: Vec<resources::GpuImage>,
     frames: Vec<FrameSlot>,
     frame_index: u64,
     slot: usize,
@@ -165,25 +174,55 @@ impl VulkanGpu {
             .push_next(&mut avail13)
             .push_next(&mut avail12);
         unsafe { instance.get_physical_device_features2(phys, &mut avail) };
+        let storage_write_without_format = avail.features.shader_storage_image_write_without_format;
+        let _ = avail;
         if avail13.dynamic_rendering == vk::FALSE {
             return Err(RhiError::msg("GPU lacks dynamic rendering (Vulkan 1.3)"));
+        }
+        require_true(avail12.descriptor_indexing, "descriptorIndexing")?;
+        require_true(avail12.descriptor_binding_partially_bound, "descriptorBindingPartiallyBound")?;
+        require_true(
+            avail12.descriptor_binding_sampled_image_update_after_bind,
+            "descriptorBindingSampledImageUpdateAfterBind",
+        )?;
+        require_true(
+            avail12.descriptor_binding_variable_descriptor_count,
+            "descriptorBindingVariableDescriptorCount",
+        )?;
+        require_true(avail12.runtime_descriptor_array, "runtimeDescriptorArray")?;
+        require_true(
+            avail12.shader_sampled_image_array_non_uniform_indexing,
+            "shaderSampledImageArrayNonUniformIndexing",
+        )?;
+
+        let mut props12 = vk::PhysicalDeviceVulkan12Properties::default();
+        let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut props12);
+        unsafe { instance.get_physical_device_properties2(phys, &mut props2) };
+        let _ = props2;
+        let max_uab_sampled = props12.max_descriptor_set_update_after_bind_sampled_images;
+        if max_uab_sampled < harpia_core::BINDLESS_HEAP_SIZE {
+            return Err(RhiError::msg(format!(
+                "GPU maxDescriptorSetUpdateAfterBindSampledImages is {max_uab_sampled} (need {})",
+                harpia_core::BINDLESS_HEAP_SIZE
+            )));
         }
 
         let mut vk13 = vk::PhysicalDeviceVulkan13Features::default().dynamic_rendering(true);
         let mut vk12 = vk::PhysicalDeviceVulkan12Features::default()
-            .descriptor_indexing(avail12.descriptor_indexing == vk::TRUE)
-            .descriptor_binding_partially_bound(avail12.descriptor_binding_partially_bound == vk::TRUE)
-            .descriptor_binding_sampled_image_update_after_bind(
-                avail12.descriptor_binding_sampled_image_update_after_bind == vk::TRUE,
-            )
-            .descriptor_binding_variable_descriptor_count(
-                avail12.descriptor_binding_variable_descriptor_count == vk::TRUE,
-            )
-            .runtime_descriptor_array(avail12.runtime_descriptor_array == vk::TRUE)
-            .shader_sampled_image_array_non_uniform_indexing(
-                avail12.shader_sampled_image_array_non_uniform_indexing == vk::TRUE,
-            );
+            .descriptor_indexing(true)
+            .descriptor_binding_partially_bound(true)
+            .descriptor_binding_sampled_image_update_after_bind(true)
+            .descriptor_binding_variable_descriptor_count(true)
+            .runtime_descriptor_array(true)
+            .shader_sampled_image_array_non_uniform_indexing(true);
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
+            .features(
+                vk::PhysicalDeviceFeatures::default()
+                    .shader_sampled_image_array_dynamic_indexing(true)
+                    .shader_storage_image_write_without_format(
+                        storage_write_without_format == vk::TRUE,
+                    ),
+            )
             .push_next(&mut vk13)
             .push_next(&mut vk12);
 
@@ -201,20 +240,14 @@ impl VulkanGpu {
         let graphics_queue = unsafe { device.get_device_queue(graphics_family, 0) };
         let swapchain_fn = khr::swapchain::Device::new(&instance, &device);
 
-        let allocator = match Allocator::new(&AllocatorCreateDesc {
+        let mut allocator = Some(Allocator::new(&AllocatorCreateDesc {
             instance: instance.clone(),
             device: device.clone(),
             physical_device: phys,
             debug_settings: Default::default(),
             buffer_device_address: false,
             allocation_sizes: Default::default(),
-        }) {
-            Ok(a) => Some(a),
-            Err(e) => {
-                tracing::warn!("gpu-allocator init failed (ok until phase 2): {e}");
-                None
-            }
-        };
+        })?);
 
         let swapchain = unsafe {
             swapchain::create(
@@ -237,7 +270,7 @@ impl VulkanGpu {
         let alloc_ci = vk::CommandBufferAllocateInfo::default()
             .command_pool(cmd_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(FRAMES_IN_FLIGHT);
+            .command_buffer_count(FRAMES_IN_FLIGHT + 1);
         let cmds = unsafe { device.allocate_command_buffers(&alloc_ci)? };
 
         let mut frames = Vec::with_capacity(FRAMES_IN_FLIGHT as usize);
@@ -259,10 +292,77 @@ impl VulkanGpu {
                 render_finished,
             });
         }
+        let upload_cmd = cmds[FRAMES_IN_FLIGHT as usize];
 
         let empty_layout = unsafe {
             device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default(), None)?
         };
+
+        let alloc = allocator
+            .as_mut()
+            .ok_or_else(|| RhiError::msg("allocator missing"))?;
+        let heap = bindless::Bindless::create(&device, alloc)?;
+        let mut dummy = bindless::create_dummy(&device, alloc)?;
+        let packed = resources::pack_mip(1, 1, 4, &bindless::dummy_pixel())?;
+        resources::write_staging(&heap.staging, &packed)?;
+        unsafe {
+            device.reset_command_buffer(upload_cmd, vk::CommandBufferResetFlags::empty())?;
+            device.begin_command_buffer(
+                upload_cmd,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+            resources::image_barrier(
+                &device,
+                upload_cmd,
+                dummy.image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+            );
+            resources::cmd_copy_mip(
+                &device,
+                upload_cmd,
+                heap.staging.buffer,
+                dummy.image,
+                0,
+                1,
+                1,
+                4,
+            );
+            resources::image_barrier(
+                &device,
+                upload_cmd,
+                dummy.image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::TRANSFER,
+                resources::shader_read_stages(),
+            );
+            device.end_command_buffer(upload_cmd)?;
+            device.queue_submit(
+                graphics_queue,
+                &[vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&upload_cmd))],
+                vk::Fence::null(),
+            )?;
+            device.queue_wait_idle(graphics_queue)?;
+        }
+        heap.write_sampled(
+            &device,
+            harpia_core::BINDLESS_NULL_SLOT,
+            dummy.sampled_view,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        );
+        dummy.ready = true;
+        dummy.mips_uploaded = 1;
+        dummy.transfer_prepared = true;
+        let mut images = Vec::new();
+        images.push(dummy);
 
         Ok(Self {
             entry,
@@ -278,8 +378,12 @@ impl VulkanGpu {
             swapchain,
             allocator,
             cmd_pool,
+            upload_cmd,
             empty_layout,
             pipelines: Vec::new(),
+            compute_pipelines: Vec::new(),
+            bindless: Some(heap),
+            images,
             frames,
             frame_index: 0,
             slot: 0,
@@ -384,7 +488,7 @@ impl VulkanGpu {
         let extent = self.swapchain.extent;
 
         unsafe {
-            image_barrier(
+            resources::image_barrier(
                 &self.device,
                 cmd,
                 image,
@@ -483,7 +587,7 @@ impl VulkanGpu {
         let image = self.swapchain.images[self.image_index as usize];
         unsafe {
             self.device.cmd_end_rendering(cmd);
-            image_barrier(
+            resources::image_barrier(
                 &self.device,
                 cmd,
                 image,
@@ -636,7 +740,14 @@ impl VulkanGpu {
             .multisample_state(&msaa)
             .color_blend_state(&blend)
             .dynamic_state(&dynamic)
-            .layout(self.empty_layout);
+            .layout(if desc.bindless {
+                self.bindless
+                    .as_ref()
+                    .ok_or_else(|| RhiError::msg("bindless layout missing"))?
+                    .pipeline_layout
+            } else {
+                self.empty_layout
+            });
 
         let created = unsafe {
             self.device
@@ -721,6 +832,333 @@ impl VulkanGpu {
             }
         }
     }
+
+    pub fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture> {
+        let slot = self
+            .bindless
+            .as_mut()
+            .ok_or_else(|| RhiError::msg("bindless missing"))?
+            .alloc_slot()?;
+        let mut img = {
+            let alloc = self
+                .allocator
+                .as_mut()
+                .ok_or_else(|| RhiError::msg("allocator missing"))?;
+            resources::create_image(&self.device, alloc, desc, slot)?
+        };
+        if desc.storage {
+            let image = img.image;
+            let cmd = self.upload_cmd;
+            unsafe {
+                self.device
+                    .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
+                self.device.begin_command_buffer(
+                    cmd,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )?;
+                resources::image_barrier(
+                    &self.device,
+                    cmd,
+                    image,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::GENERAL,
+                    vk::AccessFlags::empty(),
+                    vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    resources::shader_read_stages() | vk::PipelineStageFlags::COMPUTE_SHADER,
+                );
+                self.device.end_command_buffer(cmd)?;
+                self.device.queue_submit(
+                    self.graphics_queue,
+                    &[vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd))],
+                    vk::Fence::null(),
+                )?;
+                self.device.queue_wait_idle(self.graphics_queue)?;
+            }
+            let view = img.sampled_view;
+            let storage = img
+                .storage_view
+                .ok_or_else(|| RhiError::msg("storage view missing"))?;
+            let heap = self
+                .bindless
+                .as_ref()
+                .ok_or_else(|| RhiError::msg("bindless missing"))?;
+            heap.write_sampled(&self.device, slot, view, vk::ImageLayout::GENERAL);
+            heap.write_storage(&self.device, storage);
+            img.ready = true;
+        }
+        let id = self.images.len() as u32;
+        self.images.push(img);
+        Ok(Texture { id })
+    }
+
+    pub fn upload_texture_mip(&mut self, tex: Texture, mip: u32, rgba: &[u8]) -> Result<()> {
+        let (w, h, image, bpp) = {
+            let img = self
+                .images
+                .get(tex.id as usize)
+                .ok_or_else(|| RhiError::msg("invalid texture"))?;
+            if mip >= img.mip_levels {
+                return Err(RhiError::msg("mip out of range"));
+            }
+            let (w, h) = resources::mip_extent(img.width, img.height, mip);
+            (w, h, img.image, 4u32)
+        };
+        let packed = resources::pack_mip(w, h, bpp, rgba)?;
+        let heap = self
+            .bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless missing"))?;
+        resources::write_staging(&heap.staging, &packed)?;
+        let staging = heap.staging.buffer;
+        let prepared = self
+            .images
+            .get(tex.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid texture"))?
+            .transfer_prepared;
+        let record = |device: &ash::Device, cmd: vk::CommandBuffer| unsafe {
+            if !prepared {
+                resources::image_barrier(
+                    device,
+                    cmd,
+                    image,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::AccessFlags::empty(),
+                    vk::AccessFlags::TRANSFER_WRITE,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                );
+            }
+            resources::cmd_copy_mip(device, cmd, staging, image, mip, w, h, bpp);
+        };
+        if self.in_frame {
+            record(&self.device, self.frames[self.slot].cmd);
+        } else {
+            self.submit_now(|device, cmd| {
+                record(device, cmd);
+                Ok(())
+            })?;
+        }
+        let img = self
+            .images
+            .get_mut(tex.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid texture"))?;
+        img.mips_uploaded += 1;
+        img.transfer_prepared = true;
+        if img.mips_uploaded >= img.mip_levels && img.sampled && !img.storage {
+            self.finalize_sampled(tex)?;
+        }
+        Ok(())
+    }
+
+    fn finalize_sampled(&mut self, tex: Texture) -> Result<()> {
+        let img = self
+            .images
+            .get(tex.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid texture"))?;
+        let image = img.image;
+        let view = img.sampled_view;
+        let slot = img.bindless_slot;
+        let barrier = |device: &ash::Device, cmd: vk::CommandBuffer| unsafe {
+            resources::image_barrier(
+                device,
+                cmd,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::TRANSFER,
+                resources::shader_read_stages(),
+            );
+        };
+        if self.in_frame {
+            barrier(&self.device, self.frames[self.slot].cmd);
+        } else {
+            self.submit_now(|device, cmd| {
+                barrier(device, cmd);
+                Ok(())
+            })?;
+        }
+        let heap = self
+            .bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless missing"))?;
+        heap.write_sampled(
+            &self.device,
+            slot,
+            view,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        );
+        if let Some(img) = self.images.get_mut(tex.id as usize) {
+            img.ready = true;
+        }
+        Ok(())
+    }
+
+    pub fn bindless_index(&self, tex: Texture) -> Result<u32> {
+        Ok(self
+            .images
+            .get(tex.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid texture"))?
+            .bindless_slot)
+    }
+
+    pub fn write_frame_constants(&mut self, c: FrameConstants) -> Result<()> {
+        if !self.in_frame {
+            return Err(RhiError::NotInFrame);
+        }
+        self.bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless missing"))?
+            .write_constants(self.slot, c)
+    }
+
+    pub fn bind_graphics_bindless(&mut self) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        let heap = self
+            .bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless missing"))?;
+        heap.bind_graphics(&self.device, self.frames[self.slot].cmd, self.slot);
+        Ok(())
+    }
+
+    pub fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> Result<ComputePipeline> {
+        if desc.cs_spirv.is_empty() {
+            return Err(RhiError::msg("SPIR-V module is empty"));
+        }
+        let words = ash::util::read_spv(&mut Cursor::new(desc.cs_spirv))?;
+        let module = unsafe {
+            self.device.create_shader_module(
+                &vk::ShaderModuleCreateInfo::default().code(&words),
+                None,
+            )?
+        };
+        let entry = CString::new(desc.cs_entry).map_err(|_| RhiError::BadCString)?;
+        let layout = self
+            .bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless layout missing"))?
+            .pipeline_layout;
+        let stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(module)
+            .name(entry.as_c_str());
+        let ci = vk::ComputePipelineCreateInfo::default()
+            .stage(stage)
+            .layout(layout);
+        let created = unsafe {
+            self.device
+                .create_compute_pipelines(vk::PipelineCache::null(), &[ci], None)
+        };
+        unsafe {
+            self.device.destroy_shader_module(module, None);
+        }
+        let pipelines = created.map_err(|(_p, e)| RhiError::from_vk(e))?;
+        let id = self.compute_pipelines.len() as u32;
+        self.compute_pipelines.push(pipelines[0]);
+        Ok(ComputePipeline { id })
+    }
+
+    pub fn set_compute_pipeline(&mut self, pipeline: &ComputePipeline) -> Result<()> {
+        if !self.in_frame || self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        let pso = self
+            .compute_pipelines
+            .get(pipeline.id as usize)
+            .copied()
+            .filter(|p| *p != vk::Pipeline::null())
+            .ok_or_else(|| RhiError::msg("invalid compute pipeline"))?;
+        unsafe {
+            self.device.cmd_bind_pipeline(
+                self.frames[self.slot].cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                pso,
+            );
+        }
+        Ok(())
+    }
+
+    pub fn bind_compute_bindless(&mut self) -> Result<()> {
+        if !self.in_frame || self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        let heap = self
+            .bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless missing"))?;
+        heap.bind_compute(&self.device, self.frames[self.slot].cmd, self.slot);
+        Ok(())
+    }
+
+    pub fn dispatch(&mut self, x: u32, y: u32, z: u32) -> Result<()> {
+        if !self.in_frame || self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        unsafe {
+            self.device
+                .cmd_dispatch(self.frames[self.slot].cmd, x, y, z);
+        }
+        Ok(())
+    }
+
+    pub fn storage_barrier(&mut self, tex: Texture) -> Result<()> {
+        if !self.in_frame {
+            return Err(RhiError::NotInFrame);
+        }
+        let image = self
+            .images
+            .get(tex.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid texture"))?
+            .image;
+        unsafe {
+            resources::image_barrier(
+                &self.device,
+                self.frames[self.slot].cmd,
+                image,
+                vk::ImageLayout::GENERAL,
+                vk::ImageLayout::GENERAL,
+                vk::AccessFlags::SHADER_WRITE,
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                resources::shader_read_stages(),
+            );
+        }
+        Ok(())
+    }
+
+    fn submit_now(
+        &mut self,
+        record: impl FnOnce(&ash::Device, vk::CommandBuffer) -> Result<()>,
+    ) -> Result<()> {
+        let cmd = self.upload_cmd;
+        unsafe {
+            self.device
+                .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
+            self.device.begin_command_buffer(
+                cmd,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+        }
+        record(&self.device, cmd)?;
+        unsafe {
+            self.device.end_command_buffer(cmd)?;
+            self.device.queue_submit(
+                self.graphics_queue,
+                &[vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd))],
+                vk::Fence::null(),
+            )?;
+            self.device.queue_wait_idle(self.graphics_queue)?;
+        }
+        Ok(())
+    }
 }
 
 impl Drop for VulkanGpu {
@@ -730,7 +1168,18 @@ impl Drop for VulkanGpu {
             for pso in self.pipelines.drain(..) {
                 self.device.destroy_pipeline(pso, None);
             }
+            for pso in self.compute_pipelines.drain(..) {
+                self.device.destroy_pipeline(pso, None);
+            }
             self.device.destroy_pipeline_layout(self.empty_layout, None);
+            if let Some(alloc) = self.allocator.as_mut() {
+                for img in self.images.drain(..) {
+                    resources::destroy_image(&self.device, alloc, img);
+                }
+                if let Some(heap) = self.bindless.take() {
+                    heap.destroy(&self.device, alloc);
+                }
+            }
             for frame in &self.frames {
                 self.device.destroy_fence(frame.fence, None);
                 self.device.destroy_semaphore(frame.image_available, None);
@@ -747,6 +1196,14 @@ impl Drop for VulkanGpu {
             }
             self.instance.destroy_instance(None);
         }
+    }
+}
+
+fn require_true(flag: vk::Bool32, name: &str) -> Result<()> {
+    if flag == vk::FALSE {
+        Err(RhiError::msg(format!("GPU lacks {name}")))
+    } else {
+        Ok(())
     }
 }
 
@@ -814,44 +1271,5 @@ fn find_graphics_present(
         }
     }
     Ok(None)
-}
-
-unsafe fn image_barrier(
-    device: &Device,
-    cmd: vk::CommandBuffer,
-    image: vk::Image,
-    old_layout: vk::ImageLayout,
-    new_layout: vk::ImageLayout,
-    src_access: vk::AccessFlags,
-    dst_access: vk::AccessFlags,
-    src_stage: vk::PipelineStageFlags,
-    dst_stage: vk::PipelineStageFlags,
-) {
-    let barrier = vk::ImageMemoryBarrier::default()
-        .src_access_mask(src_access)
-        .dst_access_mask(dst_access)
-        .old_layout(old_layout)
-        .new_layout(new_layout)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
-        .subresource_range(vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        });
-    unsafe {
-        device.cmd_pipeline_barrier(
-            cmd,
-            src_stage,
-            dst_stage,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier],
-        );
-    }
 }
 

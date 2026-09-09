@@ -10,8 +10,12 @@ Engine 3D em Rust. Vulkan 1.3 (`ash` + `gpu-allocator`). Código em `prog/`, dou
 # Fase 1 — triângulo, 90 frames, validation 0 (default)
 cargo run -p hello-triangle -- --frames 90
 
+# Fase 2 — bindless + mips + compute UAV, 16 frames
+cargo run -p gate-bindless
+
 # Sem GPU
 cargo run -p hello-triangle -- --backend null --frames 8
+cargo run -p gate-bindless -- --backend null --frames 8
 
 # Janela até fechar (opt-in; no AMD/RADV não é o default)
 cargo run -p hello-triangle -- --interactive

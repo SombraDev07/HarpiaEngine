@@ -10,10 +10,13 @@ mod null;
 mod types;
 mod vulkan;
 
-pub use device::{create, Device, DeviceDesc, Gpu, GraphicsPipelineDesc, WindowHandles};
+pub use device::{
+    create, ComputePipelineDesc, Device, DeviceDesc, Gpu, GraphicsPipelineDesc, WindowHandles,
+};
 pub use error::RhiError;
 pub use types::{
-    Backend, Extent2D, Format, FrameInfo, GraphicsPipeline, PrimitiveTopology,
+    Backend, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
+    PrimitiveTopology, Texture, TextureDesc,
 };
 
 pub type Result<T, E = RhiError> = std::result::Result<T, E>;
@@ -46,6 +49,7 @@ mod tests {
                 fs_spirv: &[],
                 vs_entry: "VSMain",
                 fs_entry: "PSMain",
+                bindless: false,
             })
             .unwrap();
         gpu.set_pipeline(&pso).unwrap();
@@ -53,5 +57,41 @@ mod tests {
         gpu.end_swapchain_pass().unwrap();
         gpu.end_frame().unwrap();
         assert_eq!(gpu.validation_error_count(), 0);
+    }
+
+    #[test]
+    fn null_bindless_upload_and_dispatch() {
+        let mut gpu = create(&DeviceDesc {
+            backend: Backend::Null,
+            validation: false,
+            app_name: "test",
+            width: 64,
+            height: 64,
+            window: None,
+        })
+        .unwrap();
+        let tex = gpu
+            .create_texture(&TextureDesc {
+                width: 4,
+                height: 4,
+                mip_levels: 1,
+                format: Format::Rgba8Unorm,
+                sampled: true,
+                storage: false,
+            })
+            .unwrap();
+        gpu.upload_texture_mip(tex, 0, &[0u8; 64]).unwrap();
+        assert_ne!(gpu.bindless_index(tex).unwrap(), 0);
+        assert_eq!(gpu.bindless_index(Texture::NULL).unwrap(), 0);
+        let _ = gpu.begin_frame().unwrap();
+        gpu.write_frame_constants(FrameConstants {
+            tex_a: 1,
+            tex_b: 0,
+            _pad: [0, 0],
+        })
+        .unwrap();
+        gpu.bind_compute_bindless().unwrap();
+        gpu.dispatch(1, 1, 1).unwrap();
+        gpu.end_frame().unwrap();
     }
 }

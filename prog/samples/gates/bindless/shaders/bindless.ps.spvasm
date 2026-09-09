@@ -1,0 +1,80 @@
+; SPIR-V — sample bindlessHeap[texA] and heap[texB], mix 50/50
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %in_uv %out_color %cb %heap %samp
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %in_uv Location 0
+OpDecorate %out_color Location 0
+OpDecorate %FrameCB Block
+OpMemberDecorate %FrameCB 0 Offset 0
+OpMemberDecorate %FrameCB 1 Offset 4
+OpMemberDecorate %FrameCB 2 Offset 8
+OpMemberDecorate %FrameCB 3 Offset 12
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp DescriptorSet 2
+OpDecorate %samp Binding 0
+OpDecorate %texa NonUniform
+OpDecorate %texb NonUniform
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v4 = OpTypeVector %float 4
+%ptr_in_v2 = OpTypePointer Input %v2
+%ptr_out_v4 = OpTypePointer Output %v4
+%in_uv = OpVariable %ptr_in_v2 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%f05 = OpConstant %float 0.5
+%f05v = OpConstantComposite %v4 %f05 %f05 %f05 %f05
+
+%FrameCB = OpTypeStruct %uint %uint %uint %uint
+%ptr_cb = OpTypePointer Uniform %FrameCB
+%cb = OpVariable %ptr_cb Uniform
+%ptr_u = OpTypePointer Uniform %uint
+
+%img = OpTypeImage %float 2D 0 0 0 1 Unknown
+%img_arr = OpTypeRuntimeArray %img
+%ptr_arr = OpTypePointer UniformConstant %img_arr
+%heap = OpVariable %ptr_arr UniformConstant
+%ptr_img = OpTypePointer UniformConstant %img
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp = OpVariable %ptr_samp UniformConstant
+%sampled = OpTypeSampledImage %img
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%uv = OpLoad %v2 %in_uv
+%ptexa = OpAccessChain %ptr_u %cb %u0
+%texa = OpLoad %uint %ptexa
+%ptexb = OpAccessChain %ptr_u %cb %u1
+%texb = OpLoad %uint %ptexb
+%pa = OpAccessChain %ptr_img %heap %texa
+%ia = OpLoad %img %pa
+%pb = OpAccessChain %ptr_img %heap %texb
+%ib = OpLoad %img %pb
+%s = OpLoad %samp_ty %samp
+%ca = OpSampledImage %sampled %ia %s
+%cb_img = OpSampledImage %sampled %ib %s
+%cola = OpImageSampleImplicitLod %v4 %ca %uv
+%colb = OpImageSampleImplicitLod %v4 %cb_img %uv
+%ha = OpFMul %v4 %cola %f05v
+%hb = OpFMul %v4 %colb %f05v
+%mix = OpFAdd %v4 %ha %hb
+OpStore %out_color %mix
+OpReturn
+OpFunctionEnd

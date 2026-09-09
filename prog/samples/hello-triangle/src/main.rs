@@ -17,6 +17,7 @@ impl Sample for Triangle {
                 fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/triangle.ps.spv")),
                 vs_entry: "VSMain",
                 fs_entry: "PSMain",
+                bindless: false,
             })
             .context("hello-triangle PSO")?;
         self.pipeline = Some(pipeline);

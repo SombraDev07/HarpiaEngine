@@ -73,8 +73,7 @@ O CPU escreve `uint texId` no constant buffer. `texId == 0` é válido (null).
 
 ## O que a fase 1 **não** faz
 
-- Não cria o heap de 8192.
-- Não cria dummy 1×1.
+- Hello-triangle **não** usa o heap (pipeline layout vazio).
 - O shader do triângulo não declara descriptor nenhum.
 
-Fase 2: criar heap + dummy + `bindless_index()` nas texturas. Este documento não muda sem entrada em `memory/DECISIONS.md`.
+Fase 2: heap + dummy + `bindless_index()` + upload por mip + compute UAV. Este documento não muda sem entrada em `memory/DECISIONS.md`.

@@ -1,0 +1,61 @@
+; SPIR-V — textured triangle VS (VertexIndex, UV)
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %VSMain "VSMain" %vid %position %uv
+OpName %VSMain "VSMain"
+OpDecorate %vid BuiltIn VertexIndex
+OpDecorate %position BuiltIn Position
+OpDecorate %uv Location 0
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v4 = OpTypeVector %float 4
+%ptr_in_u = OpTypePointer Input %uint
+%ptr_out_v4 = OpTypePointer Output %v4
+%ptr_out_v2 = OpTypePointer Output %v2
+%vid = OpVariable %ptr_in_u Input
+%position = OpVariable %ptr_out_v4 Output
+%uv = OpVariable %ptr_out_v2 Output
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u2 = OpConstant %uint 2
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%f075 = OpConstant %float 0.75
+%fn075 = OpConstant %float -0.75
+%f05 = OpConstant %float 0.5
+%p0 = OpConstantComposite %v4 %f0 %f075 %f0 %f1
+%p1 = OpConstantComposite %v4 %f075 %fn075 %f0 %f1
+%p2 = OpConstantComposite %v4 %fn075 %fn075 %f0 %f1
+%uv0 = OpConstantComposite %v2 %f05 %f0
+%uv1 = OpConstantComposite %v2 %f1 %f1
+%uv2 = OpConstantComposite %v2 %f0 %f1
+
+%VSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%id = OpLoad %uint %vid
+OpSelectionMerge %merge None
+OpSwitch %id %def 0 %c0 1 %c1 2 %c2
+%c0 = OpLabel
+OpStore %position %p0
+OpStore %uv %uv0
+OpBranch %merge
+%c1 = OpLabel
+OpStore %position %p1
+OpStore %uv %uv1
+OpBranch %merge
+%c2 = OpLabel
+OpStore %position %p2
+OpStore %uv %uv2
+OpBranch %merge
+%def = OpLabel
+OpStore %position %p0
+OpStore %uv %uv0
+OpBranch %merge
+%merge = OpLabel
+OpReturn
+OpFunctionEnd

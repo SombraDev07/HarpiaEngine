@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal SPIR-V assembler for the hello-triangle .spvasm files. Prefer spirv-as / DXC when present."""
+"""Minimal SPIR-V assembler for Harpia .spvasm files. Prefer spirv-as / DXC when present."""
 from __future__ import annotations
 
 import re
@@ -12,13 +12,22 @@ OP = {
     "OpMemoryModel": 14,
     "OpEntryPoint": 15,
     "OpExecutionMode": 16,
+    "OpExtension": 10,
     "OpName": 5,
     "OpDecorate": 71,
+    "OpMemberDecorate": 72,
     "OpTypeVoid": 19,
+    "OpTypeBool": 20,
     "OpTypeFunction": 33,
     "OpTypeInt": 21,
     "OpTypeFloat": 22,
     "OpTypeVector": 23,
+    "OpTypeImage": 25,
+    "OpTypeSampler": 26,
+    "OpTypeSampledImage": 27,
+    "OpTypeArray": 28,
+    "OpTypeRuntimeArray": 29,
+    "OpTypeStruct": 30,
     "OpTypePointer": 32,
     "OpVariable": 59,
     "OpConstant": 43,
@@ -28,12 +37,24 @@ OP = {
     "OpLabel": 248,
     "OpLoad": 61,
     "OpStore": 62,
+    "OpAccessChain": 65,
+    "OpSampledImage": 86,
+    "OpImageSampleImplicitLod": 87,
+    "OpImageWrite": 99,
     "OpReturn": 253,
     "OpSelectionMerge": 247,
     "OpSwitch": 251,
     "OpBranch": 249,
     "OpCompositeExtract": 81,
     "OpCompositeConstruct": 80,
+    "OpUDiv": 132,
+    "OpUMod": 139,
+    "OpIAdd": 128,
+    "OpIEqual": 170,
+    "OpINotEqual": 171,
+    "OpSelect": 169,
+    "OpFMul": 133,
+    "OpFAdd": 129,
 }
 
 ENUM = {
@@ -42,25 +63,40 @@ ENUM = {
     "GLSL450": 1,
     "Vertex": 0,
     "Fragment": 4,
+    "GLCompute": 5,
     "OriginUpperLeft": 7,
+    "LocalSize": 17,
     "BuiltIn": 11,
     "VertexIndex": 42,
     "Position": 0,
+    "GlobalInvocationId": 28,
     "Location": 30,
+    "Binding": 33,
+    "DescriptorSet": 34,
+    "Offset": 35,
+    "Block": 2,
+    "NonUniform": 5300,
     "Input": 1,
     "Output": 3,
+    "UniformConstant": 0,
+    "Uniform": 2,
+    "Function": 7,
     "None": 0,
+    "2D": 1,
+    "Unknown": 0,
+    "Rgba8": 4,
+    "RuntimeDescriptorArray": 5302,
+    "SampledImageArrayNonUniformIndexing": 5307,
+    "ShaderNonUniform": 5301,
+    "SampledImageArrayDynamicIndexing": 29,
 }
-
-STR_OPS = {"OpName", "OpEntryPoint"}
 
 
 def str_words(s: str) -> list[int]:
     raw = s.encode("utf-8") + b"\x00"
     pad = (4 - (len(raw) % 4)) % 4
     raw += b"\x00" * pad
-    words = list(struct.unpack("<" + "I" * (len(raw) // 4), raw))
-    return words
+    return list(struct.unpack("<" + "I" * (len(raw) // 4), raw))
 
 
 def assemble(text: str) -> bytes:
@@ -83,9 +119,7 @@ def assemble(text: str) -> bytes:
         if "=" in line and not line.startswith("Op"):
             result, line = [p.strip() for p in line.split("=", 1)]
             intern(result.lstrip("%"))
-        op, *rest = line.split()
-        # keep quoted strings as one token
-        tokens = re.findall(r'"[^"]*"|%[A-Za-z0-9_]+|-?\d+\.\d+|-?\d+|[A-Za-z0-9_]+', line)
+        tokens = re.findall(r'"[^"]*"|%[A-Za-z0-9_]+|-?\d+\.\d+|[A-Za-z0-9_]+|-?\d+', line)
         op = tokens[0]
         args = tokens[1:]
         if result:
@@ -116,34 +150,25 @@ def assemble(text: str) -> bytes:
         opcode = OP[op]
         payload: list[int] = []
         if result:
-            # result-type is first arg for typed ops; handled below via args
-            pass
-        # Typed instructions: %id = OpXxx %type ...
-        if result:
-            # For Type* the result id is the type itself; operands follow opcode
             if op.startswith("OpType"):
                 payload.append(ids[result.lstrip("%")])
                 for a in args:
                     payload.extend(tok(a))
-            elif op in ("OpFunction", "OpLoad", "OpConstant", "OpConstantComposite", "OpVariable", "OpCompositeExtract", "OpCompositeConstruct", "OpLabel"):
-                if op == "OpLabel":
-                    payload.append(ids[result.lstrip("%")])
-                else:
-                    # result type is args[0], result id is result
-                    payload.extend(tok(args[0]))
-                    payload.append(ids[result.lstrip("%")])
-                    type_name = args[0].lstrip("%") if args and args[0].startswith("%") else ""
-                    for a in args[1:]:
-                        if (
-                            op == "OpConstant"
-                            and type_name in float_types
-                            and re.fullmatch(r"-?\d+(\.\d+)?", a)
-                        ):
-                            payload.append(struct.unpack("<I", struct.pack("<f", float(a)))[0])
-                        else:
-                            payload.extend(tok(a))
+            elif op == "OpLabel":
+                payload.append(ids[result.lstrip("%")])
             else:
-                raise ValueError(op)
+                payload.extend(tok(args[0]))
+                payload.append(ids[result.lstrip("%")])
+                type_name = args[0].lstrip("%") if args and args[0].startswith("%") else ""
+                for a in args[1:]:
+                    if (
+                        op == "OpConstant"
+                        and type_name in float_types
+                        and re.fullmatch(r"-?\d+(\.\d+)?", a)
+                    ):
+                        payload.append(struct.unpack("<I", struct.pack("<f", float(a)))[0])
+                    else:
+                        payload.extend(tok(a))
         else:
             for a in args:
                 payload.extend(tok(a))

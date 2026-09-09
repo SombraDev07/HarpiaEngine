@@ -46,3 +46,37 @@ pub struct FrameInfo {
 pub struct GraphicsPipeline {
     pub(crate) id: u32,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ComputePipeline {
+    pub(crate) id: u32,
+}
+
+/// Texture handle. `Texture::NULL` is bindless slot 0 (dummy 1×1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Texture {
+    pub(crate) id: u32,
+}
+
+impl Texture {
+    pub const NULL: Texture = Texture { id: 0 };
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TextureDesc {
+    pub width: u32,
+    pub height: u32,
+    pub mip_levels: u32,
+    pub format: Format,
+    pub sampled: bool,
+    pub storage: bool,
+}
+
+/// Per-frame CBV (set 0 binding 0). Written **after** `begin_frame`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameConstants {
+    pub tex_a: u32,
+    pub tex_b: u32,
+    pub _pad: [u32; 2],
+}

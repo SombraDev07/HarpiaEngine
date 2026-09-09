@@ -26,12 +26,12 @@ Fechadas. Não reabrir sem motivo escrito aqui.
 - Pedido: 2024 se possível, senão 2021.
 - Workspace em **2024** (toolchain local: rustc 1.98).
 
-## D2 — Bindless (contrato; heap ainda não existe)
+## D2 — Bindless
 
 - Spec: `docs/Bindless-Descriptor-Layout.md`.
-- Heap sampled 8192, slot 0 = null para sempre.
-- HLSL usa `[[vk::binding(n, set)]]` explícito. Sem `#if SPIRV` a adivinhar spaces.
-- Hello-triangle **não** cria o heap. Layout documentado antes do primeiro shader.
+- Heap sampled 8192, slot 0 = null (dummy 1×1) criado no init do device Vulkan.
+- Índice inteiro no CBV (set 0), escrito **depois** de `begin_frame`.
+- Hello-triangle continua com pipeline layout vazio. `gate-bindless` usa o layout completo (sets 0–4).
 
 ## D3 — Hello-triangle
 

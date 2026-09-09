@@ -1,7 +1,10 @@
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::null::NullGpu;
-use crate::types::{Backend, Extent2D, Format, FrameInfo, GraphicsPipeline};
+use crate::types::{
+    Backend, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
+    Texture, TextureDesc,
+};
 use crate::vulkan::VulkanGpu;
 use crate::Result;
 
@@ -39,6 +42,13 @@ pub struct GraphicsPipelineDesc<'a> {
     pub fs_spirv: &'a [u8],
     pub vs_entry: &'a str,
     pub fs_entry: &'a str,
+    /// Hello-triangle: false (empty layout). Bindless gate: true.
+    pub bindless: bool,
+}
+
+pub struct ComputePipelineDesc<'a> {
+    pub cs_spirv: &'a [u8],
+    pub cs_entry: &'a str,
 }
 
 /// Public device. Engine code never downcasts to Vulkan types.
@@ -54,8 +64,23 @@ pub fn create(desc: &DeviceDesc) -> Result<Gpu> {
     }
 }
 
+macro_rules! gpu {
+    ($self:expr, $method:ident) => {
+        match $self {
+            Gpu::Null(g) => g.$method(),
+            Gpu::Vulkan(g) => g.$method(),
+        }
+    };
+    ($self:expr, $method:ident, $($arg:expr),+ $(,)?) => {
+        match $self {
+            Gpu::Null(g) => g.$method($($arg),+),
+            Gpu::Vulkan(g) => g.$method($($arg),+),
+        }
+    };
+}
+
 /// GPU commands. Valid between [`Device::begin_frame`] and [`Device::end_frame`]
-/// except create/resize/idle.
+/// except create/resize/idle. Dynamic CBV writes only **after** `begin_frame`.
 pub trait Device {
     fn begin_frame(&mut self) -> Result<FrameInfo>;
     fn begin_swapchain_pass(&mut self, clear: [f32; 4]) -> Result<()>;
@@ -75,30 +100,29 @@ pub trait Device {
     fn create_graphics_pipeline(&mut self, desc: &GraphicsPipelineDesc<'_>) -> Result<GraphicsPipeline>;
     fn wait_idle(&self) -> Result<()>;
     fn validation_error_count(&self) -> u32;
+
+    fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture>;
+    fn upload_texture_mip(&mut self, tex: Texture, mip: u32, rgba: &[u8]) -> Result<()>;
+    fn bindless_index(&self, tex: Texture) -> Result<u32>;
+    fn write_frame_constants(&mut self, c: FrameConstants) -> Result<()>;
+    fn bind_graphics_bindless(&mut self) -> Result<()>;
+    fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> Result<ComputePipeline>;
+    fn set_compute_pipeline(&mut self, pipeline: &ComputePipeline) -> Result<()>;
+    fn bind_compute_bindless(&mut self) -> Result<()>;
+    fn dispatch(&mut self, x: u32, y: u32, z: u32) -> Result<()>;
+    fn storage_barrier(&mut self, tex: Texture) -> Result<()>;
 }
 
 impl Device for Gpu {
     fn begin_frame(&mut self) -> Result<FrameInfo> {
-        match self {
-            Gpu::Null(g) => g.begin_frame(),
-            Gpu::Vulkan(g) => g.begin_frame(),
-        }
+        gpu!(self, begin_frame)
     }
-
     fn begin_swapchain_pass(&mut self, clear: [f32; 4]) -> Result<()> {
-        match self {
-            Gpu::Null(g) => g.begin_swapchain_pass(clear),
-            Gpu::Vulkan(g) => g.begin_swapchain_pass(clear),
-        }
+        gpu!(self, begin_swapchain_pass, clear)
     }
-
     fn set_pipeline(&mut self, pipeline: &GraphicsPipeline) -> Result<()> {
-        match self {
-            Gpu::Null(g) => g.set_pipeline(pipeline),
-            Gpu::Vulkan(g) => g.set_pipeline(pipeline),
-        }
+        gpu!(self, set_pipeline, pipeline)
     }
-
     fn draw(
         &mut self,
         vertex_count: u32,
@@ -106,65 +130,60 @@ impl Device for Gpu {
         first_vertex: u32,
         first_instance: u32,
     ) -> Result<()> {
-        match self {
-            Gpu::Null(g) => g.draw(vertex_count, instance_count, first_vertex, first_instance),
-            Gpu::Vulkan(g) => g.draw(vertex_count, instance_count, first_vertex, first_instance),
-        }
+        gpu!(self, draw, vertex_count, instance_count, first_vertex, first_instance)
     }
-
     fn end_swapchain_pass(&mut self) -> Result<()> {
-        match self {
-            Gpu::Null(g) => g.end_swapchain_pass(),
-            Gpu::Vulkan(g) => g.end_swapchain_pass(),
-        }
+        gpu!(self, end_swapchain_pass)
     }
-
     fn end_frame(&mut self) -> Result<()> {
-        match self {
-            Gpu::Null(g) => g.end_frame(),
-            Gpu::Vulkan(g) => g.end_frame(),
-        }
+        gpu!(self, end_frame)
     }
-
     fn resize(&mut self, width: u32, height: u32) -> Result<()> {
-        match self {
-            Gpu::Null(g) => g.resize(width, height),
-            Gpu::Vulkan(g) => g.resize(width, height),
-        }
+        gpu!(self, resize, width, height)
     }
-
     fn present_format(&self) -> Format {
-        match self {
-            Gpu::Null(g) => g.present_format(),
-            Gpu::Vulkan(g) => g.present_format(),
-        }
+        gpu!(self, present_format)
     }
-
     fn extent(&self) -> Extent2D {
-        match self {
-            Gpu::Null(g) => g.extent(),
-            Gpu::Vulkan(g) => g.extent(),
-        }
+        gpu!(self, extent)
     }
-
     fn create_graphics_pipeline(&mut self, desc: &GraphicsPipelineDesc<'_>) -> Result<GraphicsPipeline> {
-        match self {
-            Gpu::Null(g) => g.create_graphics_pipeline(desc),
-            Gpu::Vulkan(g) => g.create_graphics_pipeline(desc),
-        }
+        gpu!(self, create_graphics_pipeline, desc)
     }
-
     fn wait_idle(&self) -> Result<()> {
-        match self {
-            Gpu::Null(g) => g.wait_idle(),
-            Gpu::Vulkan(g) => g.wait_idle(),
-        }
+        gpu!(self, wait_idle)
     }
-
     fn validation_error_count(&self) -> u32 {
-        match self {
-            Gpu::Null(g) => g.validation_error_count(),
-            Gpu::Vulkan(g) => g.validation_error_count(),
-        }
+        gpu!(self, validation_error_count)
+    }
+    fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture> {
+        gpu!(self, create_texture, desc)
+    }
+    fn upload_texture_mip(&mut self, tex: Texture, mip: u32, rgba: &[u8]) -> Result<()> {
+        gpu!(self, upload_texture_mip, tex, mip, rgba)
+    }
+    fn bindless_index(&self, tex: Texture) -> Result<u32> {
+        gpu!(self, bindless_index, tex)
+    }
+    fn write_frame_constants(&mut self, c: FrameConstants) -> Result<()> {
+        gpu!(self, write_frame_constants, c)
+    }
+    fn bind_graphics_bindless(&mut self) -> Result<()> {
+        gpu!(self, bind_graphics_bindless)
+    }
+    fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> Result<ComputePipeline> {
+        gpu!(self, create_compute_pipeline, desc)
+    }
+    fn set_compute_pipeline(&mut self, pipeline: &ComputePipeline) -> Result<()> {
+        gpu!(self, set_compute_pipeline, pipeline)
+    }
+    fn bind_compute_bindless(&mut self) -> Result<()> {
+        gpu!(self, bind_compute_bindless)
+    }
+    fn dispatch(&mut self, x: u32, y: u32, z: u32) -> Result<()> {
+        gpu!(self, dispatch, x, y, z)
+    }
+    fn storage_barrier(&mut self, tex: Texture) -> Result<()> {
+        gpu!(self, storage_barrier, tex)
     }
 }

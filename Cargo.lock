@@ -412,6 +412,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate-bindless"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-memory",
+ "harpia-rhi",
+]
+
+[[package]]
 name = "gethostname"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -21,13 +21,16 @@ Copiado do roadmap C++ + o que esta sessão já toca. Actualizar quando GPUVM / 
 - WaitIdle só em shutdown / testes.
 - Callback de validation pode correr noutro thread → mimalloc (TLS).
 
-## Bindless (ainda não ligado — não esquecer na fase 2)
+## Bindless (fase 2)
 
 - Slot 0 = dummy 1×1, barreira VS+PS+CS **antes** de qualquer sample.
-- Upload **por mip**. SampleLevel em mip UNDEFINED = GPUVM.
-- `t0` e `u0` no mesmo space = mesmo binding. UAVs de buffer a partir de `u1`.
-- Arrays HLSL `RWStructuredBuffer[N]` ≠ N descriptors no SPIR-V. Buffers soltos.
+- Upload **por mip**. SampleLevel em mip UNDEFINED = GPUVM. Uma barreira UNDEFINED→TRANSFER_DST para **todos** os mips, depois copies, depois TRANSFER_DST→SHADER_READ.
+- Row pitch **256** em `copy_buffer_to_texture` (`bufferRowLength` em texels).
+- UAV view = **mip 0** se o recurso tem mips. UAV 2D em GENERAL; sampled do mesmo recurso também em GENERAL.
+- `t0` e `u0` no mesmo space = mesmo binding. UAVs de buffer a partir de `u1`. Set 3 fica vazio (placeholder). Storage image no set 4 binding 0.
 - Não destruir `PipelineLayout` depois de criar o PSO.
+- SPIR-V 1.4+: `OpEntryPoint` tem de listar UBO / heap / sampler / UAV, não só Input/Output.
+- Caps no assembler: `RuntimeDescriptorArray=5302`, `ShaderNonUniform=5301`, `SampledImageArrayNonUniformIndexing=5307` (não os números 5074/5079 do draft antigo).
 
 ## SPIR-V do hello-triangle
 

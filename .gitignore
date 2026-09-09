@@ -11,3 +11,9 @@ capture_*.txt
 
 # C++ reference engine — do not vendor into Harpia
 TucanoEngine/
+
+# Canonical doctrine lives in docs/
+/Rust-Rewrite-Quality-Bar.md
+/Rust-Rewrite-Roadmap.md
+/Rust-Rewrite-Starter-Prompt.md
+

@@ -8,6 +8,7 @@ members = [
     "prog/engine/plugin",
     "prog/engine/app",
     "prog/samples/hello-triangle",
+    "prog/samples/gates/bindless",
 ]
 
 [workspace.package]

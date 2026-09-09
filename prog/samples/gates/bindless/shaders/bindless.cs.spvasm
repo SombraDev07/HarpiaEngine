@@ -1,0 +1,51 @@
+; SPIR-V — 8x8 checker into RWTexture2D (set 4 binding 0)
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %CSMain "CSMain" %gid %uav
+OpExecutionMode %CSMain LocalSize 8 8 1
+OpName %CSMain "CSMain"
+OpDecorate %gid BuiltIn GlobalInvocationId
+OpDecorate %uav DescriptorSet 4
+OpDecorate %uav Binding 0
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2u = OpTypeVector %uint 2
+%v3u = OpTypeVector %uint 3
+%v4 = OpTypeVector %float 4
+%ptr_in = OpTypePointer Input %v3u
+%gid = OpVariable %ptr_in Input
+
+%img = OpTypeImage %float 2D 0 0 0 2 Rgba8
+%ptr_img = OpTypePointer UniformConstant %img
+%uav = OpVariable %ptr_img UniformConstant
+
+%u0 = OpConstant %uint 0
+%u2 = OpConstant %uint 2
+%u8 = OpConstant %uint 8
+%f1 = OpConstant %float 1.0
+%f02 = OpConstant %float 0.2
+%f015 = OpConstant %float 0.15
+
+%CSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%id = OpLoad %v3u %gid
+%x = OpCompositeExtract %uint %id 0
+%y = OpCompositeExtract %uint %id 1
+%coord = OpCompositeConstruct %v2u %x %y
+%sx = OpUDiv %uint %x %u8
+%sy = OpUDiv %uint %y %u8
+%mx = OpUMod %uint %sx %u2
+%my = OpUMod %uint %sy %u2
+%cx = OpIEqual %bool %mx %u0
+%cy = OpIEqual %bool %my %u0
+%r = OpSelect %float %cx %f1 %f02
+%g = OpSelect %float %cy %f1 %f02
+%color = OpCompositeConstruct %v4 %r %g %f015 %f1
+%image = OpLoad %img %uav
+OpImageWrite %image %coord %color
+OpReturn
+OpFunctionEnd
