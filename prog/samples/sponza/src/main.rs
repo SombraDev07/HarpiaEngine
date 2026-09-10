@@ -2,19 +2,29 @@ use anyhow::{Context, Result};
 use harpia_app::{run, AppConfig, Sample};
 use harpia_math::{Vec2, Vec3, Vec4};
 use harpia_render::{
-    color_desc, compute_csm, depth_desc, load_gltf, sampled_desc, shadow_atlas_desc, Camera,
-    CpuScene, LightingCb, PushConstants, DEFAULT_ATLAS_SIZE, GBUFFER_DEPTH_FORMAT,
-    VERTEX_STRIDE_UV,
+    color_desc, compute_csm, depth_desc, froxel_desc, halton2, inject_dispatch,
+    integrate_dispatch, load_gltf, sampled_desc, shadow_atlas_desc, Camera, CpuScene, FogCb,
+    LightingCb, PushConstants, DEFAULT_ATLAS_SIZE, GBUFFER_DEPTH_FORMAT, VERTEX_STRIDE_UV,
 };
 use harpia_rhi::{
-    Buffer, Device, Extent2D, Format, FrameInfo, Gpu, GraphicsPipeline, GraphicsPipelineDesc,
-    PipelineTargets, Texture,
+    Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
+    GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture,
 };
 
 #[global_allocator]
 static ALLOC: harpia_memory::Allocator = harpia_memory::Allocator::new();
 
-const SCENE_FORMAT: Format = Format::Rgba8Unorm;
+/// Linear HDR: the fog has to be composited in light, not on an encoded image,
+/// so the tonemap moved out of `color.ps` and into the fog apply.
+const SCENE_FORMAT: Format = Format::Rgba16Float;
+const VIEW_DEPTH: Format = Format::R32Float;
+const COMPOSITE: Format = Format::Rgba8Unorm;
+const COMPOSITE_FORMATS: [Format; 1] = [COMPOSITE];
+/// The atrium is about 30 units across; there is no point marching past it.
+const FOG_NEAR: f32 = 0.3;
+const FOG_FAR: f32 = 45.0;
+const SLOT_SCATTER: u32 = 0;
+const SLOT_INTEGRATED: u32 = 1;
 
 struct GpuPrim {
     vb: Buffer,
@@ -28,7 +38,9 @@ struct GpuPrim {
 
 struct SceneRt {
     color: Texture,
+    view_depth: Texture,
     depth: Texture,
+    composite: Texture,
 }
 
 struct Sponza {
@@ -39,6 +51,11 @@ struct Sponza {
     /// Same depth-only pass, plus a PS that kills on the MASK cutoff.
     shadow_cutout_pso: Option<GraphicsPipeline>,
     blit_pso: Option<GraphicsPipeline>,
+    apply_pso: Option<GraphicsPipeline>,
+    inject_pso: Option<ComputePipeline>,
+    integrate_pso: Option<ComputePipeline>,
+    scatter: Option<Texture>,
+    integrated: Option<Texture>,
     /// Sorted: plain opaque first, then everything that needs the cutout /
     /// no-cull path (glTF `MASK` or `doubleSided` — in Sponza the same three
     /// materials). One partition serves both the shadow and the colour pass.
@@ -57,6 +74,11 @@ impl Default for Sponza {
             color_pso_two_sided: None,
             shadow_cutout_pso: None,
             blit_pso: None,
+            apply_pso: None,
+            inject_pso: None,
+            integrate_pso: None,
+            scatter: None,
+            integrated: None,
             prims: Vec::new(),
             two_sided_from: 0,
             atlas: None,
@@ -75,7 +97,9 @@ impl Sponza {
         let h = extent.height.max(1);
         self.scene = Some(SceneRt {
             color: gpu.create_texture(&color_desc(w, h, SCENE_FORMAT))?,
+            view_depth: gpu.create_texture(&color_desc(w, h, VIEW_DEPTH))?,
             depth: gpu.create_texture(&depth_desc(w, h))?,
+            composite: gpu.create_texture(&color_desc(w, h, COMPOSITE))?,
         });
         self.scene_extent = Extent2D { width: w, height: h };
         Ok(())
@@ -142,7 +166,7 @@ fn upload_images(gpu: &mut Gpu, scene: &CpuScene) -> Result<Vec<Texture>> {
 }
 
 fn color_targets(cull_back: bool) -> PipelineTargets<'static> {
-    const FORMATS: [Format; 1] = [SCENE_FORMAT];
+    const FORMATS: [Format; 2] = [SCENE_FORMAT, VIEW_DEPTH];
     PipelineTargets {
         color_formats: &FORMATS,
         depth_format: Some(GBUFFER_DEPTH_FORMAT),
@@ -255,6 +279,41 @@ impl Sample for Sponza {
             .context("blit PSO")?,
         );
         self.atlas = Some(gpu.create_texture(&shadow_atlas_desc(DEFAULT_ATLAS_SIZE))?);
+        self.apply_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/apply.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &COMPOSITE_FORMATS,
+                    ..Default::default()
+                },
+            })
+            .context("fog apply PSO")?,
+        );
+        self.inject_pso = Some(
+            gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/inject.cs.spv")),
+                cs_entry: "CSMain",
+            })
+            .context("inject PSO")?,
+        );
+        self.integrate_pso = Some(
+            gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/integrate.cs.spv")),
+                cs_entry: "CSMain",
+            })
+            .context("integrate PSO")?,
+        );
+        let scatter = gpu.create_texture(&froxel_desc())?;
+        let integrated = gpu.create_texture(&froxel_desc())?;
+        gpu.bind_volume_uav(SLOT_SCATTER, scatter)?;
+        gpu.bind_volume_uav(SLOT_INTEGRATED, integrated)?;
+        gpu.bind_volume_srv(0, integrated)?;
+        self.scatter = Some(scatter);
+        self.integrated = Some(integrated);
         self.recreate_scene(gpu, gpu.extent())?;
         Ok(())
     }
@@ -266,6 +325,9 @@ impl Sample for Sponza {
         }
         if let Some(t) = self.atlas {
             out.push(("shadow-atlas", t));
+        }
+        if let Some(rt) = self.scene.as_ref() {
+            out.push(("composite", rt.composite));
         }
         out
     }
@@ -289,6 +351,11 @@ impl Sample for Sponza {
             .as_ref()
             .context("two-sided color pso")?;
         let blit_pso = self.blit_pso.as_ref().context("blit pso")?;
+        let apply_pso = self.apply_pso.as_ref().context("apply pso")?;
+        let inject_pso = self.inject_pso.as_ref().context("inject pso")?;
+        let integrate_pso = self.integrate_pso.as_ref().context("integrate pso")?;
+        let scatter = self.scatter.context("scatter")?;
+        let integrated = self.integrated.context("integrated")?;
         let one_sided = 0..self.two_sided_from;
         let two_sided = self.two_sided_from..self.prims.len();
 
@@ -346,17 +413,58 @@ impl Sample for Sponza {
         }
         gpu.end_color_pass()?;
 
+        // The clear is sky radiance, not a colour: the scene target is linear HDR
+        // now and the tonemap happens in the fog apply. Depth clears to the fog
+        // far plane so the sky gets a full froxel march instead of zero fog.
         gpu.begin_color_pass(
-            &[scene.color],
+            &[scene.color, scene.view_depth],
             Some(scene.depth),
-            &[[0.38, 0.52, 0.70, 1.0]],
+            &[[0.62, 0.86, 1.20, 1.0], [FOG_FAR, 0.0, 0.0, 0.0]],
             Some(1.0),
         )?;
         self.draw_prims(gpu, color_pso, one_sided, view_proj, true, &mut cb)?;
         self.draw_prims(gpu, two_sided_pso, two_sided, view_proj, true, &mut cb)?;
         gpu.end_color_pass()?;
 
-        cb.gbuf0 = gpu.bindless_index(scene.color)?;
+        // Fog, default-on (roadmap fase 5): the inject reads the same cascades the
+        // scene did, so the shafts through the arcade cost no extra pass.
+        let fog_cb = FogCb {
+            inv_view: view.inverse(),
+            camera_pos: Vec4::new(camera.eye.x, camera.eye.y, camera.eye.z, 1.0),
+            sun_dir: Vec4::new(sun.x, sun.y, sun.z, 0.0),
+            sun_color: Vec4::new(4.0, 3.6, 3.1, 1.0),
+            fog: Vec4::new(0.020, 0.09, 0.60, 0.0),
+            froxel: Vec4::new(FOG_NEAR, FOG_FAR, (camera.fov_y * 0.5).tan(), camera.aspect),
+            misc: Vec4::new(halton2(info.frame_index as u32), harpia_render::FROXEL_D as f32, 1.0, 0.0),
+            scene_color: gpu.bindless_index(scene.color)?,
+            scene_depth: gpu.bindless_index(scene.view_depth)?,
+            inv_extent: Vec2::new(1.0 / w, 1.0 / h),
+            shadow_idx: gpu.bindless_index(atlas)?,
+            cascade_count: 4,
+            atlas_size: DEFAULT_ATLAS_SIZE as f32,
+            shadow_strength: 0.85,
+            splits: csm.splits,
+            cascades: csm.view_proj,
+        };
+        gpu.write_frame_bytes(fog_cb.as_bytes())?;
+        let (ix, iy, iz) = inject_dispatch();
+        gpu.set_compute_pipeline(inject_pso)?;
+        gpu.bind_compute_bindless()?;
+        gpu.dispatch(ix, iy, iz)?;
+        gpu.storage_barrier(scatter)?;
+        let (gx, gy, gz) = integrate_dispatch();
+        gpu.set_compute_pipeline(integrate_pso)?;
+        gpu.bind_compute_bindless()?;
+        gpu.dispatch(gx, gy, gz)?;
+        gpu.storage_barrier(integrated)?;
+
+        gpu.begin_color_pass(&[scene.composite], None, &[[0.0, 0.0, 0.0, 1.0]], None)?;
+        gpu.set_pipeline(apply_pso)?;
+        gpu.bind_graphics_bindless()?;
+        gpu.draw(3, 1, 0, 0)?;
+        gpu.end_color_pass()?;
+
+        cb.gbuf0 = gpu.bindless_index(scene.composite)?;
         cb.alpha_cutoff = 0.0;
         gpu.write_frame_bytes(cb.as_bytes())?;
         gpu.begin_swapchain_pass([0.02, 0.03, 0.05, 1.0])?;

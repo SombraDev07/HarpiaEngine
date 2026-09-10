@@ -591,6 +591,8 @@ Ordem: fog compute → clouds (sem driveRain) → water → **rain por último**
       Falta a sombra das **nuvens** nos froxels (a das malhas já lá está, D23).
 - [ ] Water: point-sample depth no SSR.
 - [ ] Rain: GBuffer wet + post; cones sem HDR SRV; `--frames 16` only.
+- [x] Fog default-on na **Sponza**: cena em HDR linear + view depth no 2.º MRT,
+      tonemap no apply, shaders partilhados com o gate (D25).
 - [ ] **Exit:** gates `fog` `clouds` `water` `rain`. Default-on na **Sponza** (`--frames` curto) ou o pass não entra.
 
 ### Fase 6 — Terreno + vegetação + mundo — [ ]

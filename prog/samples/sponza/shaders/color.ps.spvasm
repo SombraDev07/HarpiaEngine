@@ -10,14 +10,16 @@ OpCapability ShaderNonUniform
 OpExtension "SPV_EXT_descriptor_indexing"
 %glsl = OpExtInstImport "GLSL.std.450"
 OpMemoryModel Logical GLSL450
-OpEntryPoint Fragment %PSMain "PSMain" %in_world %in_nrm %in_uv %frag %out_color %cb %heap %samp %samp_c %samp_cmp
+OpEntryPoint Fragment %PSMain "PSMain" %in_world %in_nrm %in_uv %in_z %frag %out_color %out_depth %cb %heap %samp %samp_c %samp_cmp
 OpExecutionMode %PSMain OriginUpperLeft
 OpName %PSMain "PSMain"
 OpDecorate %in_world Location 0
 OpDecorate %in_nrm Location 1
 OpDecorate %in_uv Location 2
 OpDecorate %frag BuiltIn FragCoord
+OpDecorate %in_z Location 3
 OpDecorate %out_color Location 0
+OpDecorate %out_depth Location 1
 OpDecorate %Lighting Block
 OpMemberDecorate %Lighting 0 Offset 0
 OpMemberDecorate %Lighting 0 ColMajor
@@ -93,6 +95,10 @@ OpDecorate %ig0 NonUniform
 %in_uv = OpVariable %ptr_in_v2 Input
 %frag = OpVariable %ptr_in_v4 Input
 %out_color = OpVariable %ptr_out_v4 Output
+%ptr_in_f = OpTypePointer Input %float
+%ptr_out_f = OpTypePointer Output %float
+%in_z = OpVariable %ptr_in_f Input
+%out_depth = OpVariable %ptr_out_f Output
 
 %Lighting = OpTypeStruct %mat4 %v4 %v4 %v4 %uint %uint %uint %uint %uint %uint %uint %uint %float %float %float %float %v2 %v2 %mat4 %uint %float %uint %uint %v4 %mat4 %mat4 %mat4 %mat4 %v4 %v4
 %ptr_cb = OpTypePointer Uniform %Lighting
@@ -444,21 +450,9 @@ OpBranch %after_sh
 %light = OpFAdd %v3 %v3_amb %litc
 %rgb = OpFMul %v3 %alb %light
 
-%pexp = OpAccessChain %ptr_f %cb %u14
-%exposure = OpLoad %float %pexp
-%x = OpVectorTimesScalar %v3 %rgb %exposure
-%x251 = OpVectorTimesScalar %v3 %x %f251
-%numt = OpFAdd %v3 %x251 %v3_003
-%num = OpFMul %v3 %x %numt
-%x243 = OpVectorTimesScalar %v3 %x %f243
-%dent = OpFAdd %v3 %x243 %v3_059
-%denA = OpFMul %v3 %x %dent
-%denC = OpFAdd %v3 %denA %v3_014
-%toned0 = OpFDiv %v3 %num %denC
-%toned = OpExtInst %v3 %glsl FClamp %toned0 %v3_zero %v3_one
-; The swapchain is B8G8R8A8_UNORM: nothing else encodes sRGB.
-%srgb = OpExtInst %v3 %glsl Pow %toned %v3_invg
-%out4 = OpCompositeConstruct %v4 %srgb %f1
+%out4 = OpCompositeConstruct %v4 %rgb %f1
 OpStore %out_color %out4
+%z = OpLoad %float %in_z
+OpStore %out_depth %z
 OpReturn
 OpFunctionEnd

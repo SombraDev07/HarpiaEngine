@@ -265,6 +265,27 @@ O assembler ganhou um check de **uso antes da definição** — um `%v2` declara
 depois do struct que o usa passava aqui e só o driver reclamava, apontando para o
 struct em vez da linha que falta. Os 43 shaders da árvore continuam a assemblar.
 
+## Sessão 2026-09-10 (parte 6) — a Sponza ficou HDR e recebeu o fog
+
+Critério de saída da fase 5 para o fog: **default-on na cena de referência**. Feito,
+`sponza --frames 32` validation 0, e a captura continua a Sponza de sempre — mármore,
+panos, folhagem, o leão ao fundo — agora com neblina que cresce com a distância.
+
+O que teve de mudar: o `color.ps` deixou de fazer ACES + sRGB e o alvo passou a
+`Rgba16Float` **linear**, com o view depth (`clip.w`) num segundo MRT. Quem faz o
+tonemap é o apply do fog. Compor névoa por cima de uma imagem já codificada é o
+erro clássico que dá halos.
+
+Os shaders do froxel não foram copiados: o `build.rs` aponta para os do gate. Uma
+segunda cópia do inject/integrate/apply seria uma segunda implementação.
+
+Medido: ligar as sombras volumétricas muda **50.7%** dos pixels em mais de 8/255
+(média 12.9, máximo 59). No `gate-fog` era 20.2% — a Sponza tem muito mais
+geometria a tapar o sol.
+
+O sol da Sponza continua alto, que é o que a fase 4 validou. Baixá-lo daria feixes
+muito mais dramáticos pela arcada; fica como escolha de arte, não de motor.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.
@@ -276,9 +297,7 @@ Não mesh shaders, RT, FSR, editor. Não VSM.
 5. ~~Sombras volumétricas no fog (CSM no inject).~~ **feito** (D23)
 6. **Sombra das nuvens** nos mesmos froxels — falta só ler a transmitância das
    nuvens onde o inject já lê o CSM.
-7. **Fog default-on na Sponza.** Precisa de mexer no pipeline dela: o pass de cor
-   tem de sair em HDR linear com view-depth num segundo MRT, e o tonemap passa
-   para o apply. É o critério de saída da fase 5.
+7. ~~Fog default-on na Sponza.~~ **feito** (D25)
 8. Water: point-sample depth no SSR.
 9. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).
 10. Marcar fase 5 `[x]` no roadmap §15 **no mesmo PR** que fechar o último gate.

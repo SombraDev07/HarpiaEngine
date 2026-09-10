@@ -313,3 +313,21 @@ Desvio consciente ao roadmap §5 («Bruneton LUTs baked na CPU no init»).
   o cosseno certo. A diferença é só qual das duas pontas o vector aponta — que é
   precisamente por isso que este erro passa despercebido.
 
+## D25 — A Sponza passou a HDR linear, e o tonemap mudou de sítio
+
+- O `color.ps` deixou de fazer ACES + sRGB. O alvo de cena é **`Rgba16Float`
+  linear** e quem faz o tonemap é o **apply do fog** — a névoa tem de ser composta
+  em luz, não por cima de uma imagem já codificada. Compor fog depois do tonemap
+  é o erro clássico que dá halos e uma cena leitosa.
+- O `color.ps` ganhou um segundo MRT com o **view depth** (`clip.w`, positivo com
+  `perspective_vk`), que é como o apply escolhe a slice do froxel. O clear desse
+  alvo é o plano longe do fog, senão o céu não leva marcha nenhuma.
+- Os shaders do froxel **não foram copiados**: o `build.rs` da Sponza aponta para
+  `../../gates/fog/shaders/`. Uma segunda cópia do inject/integrate/apply seria
+  uma segunda implementação para manter em dia.
+- Fog **default-on** (§15 fase 5 exige-o). O inject lê as mesmas cascatas que a
+  cena, por isso os feixes pela arcada não custam um pass.
+- Medido: ligar as sombras volumétricas muda **50.7%** dos pixels em mais de
+  8/255 (média 12.9, máximo 59). No `gate-fog` é 20.2% — a Sponza tem muito mais
+  geometria a tapar o sol, que é exactamente o ponto.
+

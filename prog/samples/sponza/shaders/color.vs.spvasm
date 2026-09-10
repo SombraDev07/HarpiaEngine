@@ -2,7 +2,7 @@
 OpCapability Shader
 %glsl = OpExtInstImport "GLSL.std.450"
 OpMemoryModel Logical GLSL450
-OpEntryPoint Vertex %VSMain "VSMain" %in_pos %in_nrm %in_uv %position %v_world %v_nrm %v_uv %pc
+OpEntryPoint Vertex %VSMain "VSMain" %in_pos %in_nrm %in_uv %position %v_world %v_nrm %v_uv %v_z %pc
 OpName %VSMain "VSMain"
 OpDecorate %in_pos Location 0
 OpDecorate %in_nrm Location 1
@@ -11,6 +11,9 @@ OpDecorate %position BuiltIn Position
 OpDecorate %v_world Location 0
 OpDecorate %v_nrm Location 1
 OpDecorate %v_uv Location 2
+; clip.w is the positive view depth for perspective_vk -- the fog apply picks
+; its froxel slice from it.
+OpDecorate %v_z Location 3
 OpDecorate %Push Block
 OpMemberDecorate %Push 0 Offset 0
 OpMemberDecorate %Push 0 ColMajor
@@ -44,6 +47,8 @@ OpMemberDecorate %Push 1 MatrixStride 16
 %v_world = OpVariable %ptr_out_v3 Output
 %v_nrm = OpVariable %ptr_out_v3 Output
 %v_uv = OpVariable %ptr_out_v2 Output
+%ptr_out_f = OpTypePointer Output %float
+%v_z = OpVariable %ptr_out_f Output
 
 %Push = OpTypeStruct %mat4 %mat4
 %ptr_push = OpTypePointer PushConstant %Push
@@ -71,5 +76,7 @@ OpStore %v_world %wn
 %nn = OpExtInst %v3 %glsl Normalize %wn3
 OpStore %v_nrm %nn
 OpStore %v_uv %uv
+%cw = OpCompositeExtract %float %clip 3
+OpStore %v_z %cw
 OpReturn
 OpFunctionEnd
