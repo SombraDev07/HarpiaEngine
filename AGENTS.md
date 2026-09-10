@@ -21,7 +21,7 @@ Não clones a checklist do Tucano C++. Clona o **6**: PBR + IBL + fog + clima + 
 - `MESA_VK_ABORT_ON_DEVICE_LOSS=1`. Validation ON. Exit ≠ 0 se houver erros de validation.
 - `vk::*` **só** em `prog/engine/drv`. Render nunca chama `vkCmd*`.
 - `cfg` de plataforma só em `harpia-rhi` (módulo window/surface).
-- Não inventes libs: glam, winit, ash, gpu-allocator, mimalloc, bumpalo, image, gltf, serde, tracing, thiserror, libloading, meshopt, FidelityFX.
+- Não inventes libs. O que está dentro e **o que entra em que fase**: `docs/Rust-Rewrite-Roadmap.md` §14.1. Nada entra fora da fase que o pede. `wgpu` está fora (D0).
 - Inventas só: trait RHI, frame graph, PBR/clima/clipmap, bindless, plugin ABI.
 - Swapchain: não destruir a surface; passar `oldSwapchain`; `presentFormat` real (BGRA no X11).
 - Sem `unwrap` em GPU. Sem `waitIdle` no frame quente.

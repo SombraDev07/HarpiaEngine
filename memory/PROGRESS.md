@@ -153,6 +153,13 @@ Uma hora perdida por bissectar o shader errado: o módulo inválido era um `blit
 gerado por regex, não o que eu estava a cortar. O assembler passou a validar ids e
 `LANDMINES.md` tem a regra: descobre qual módulo falha **antes** de bissectar.
 
+## Dependências
+
+`docs/Rust-Rewrite-Roadmap.md` §14.1 diz o que entra em que fase (D20). Duas
+coisas por resolver antes de lá chegar: qual ECS (fase 6, decidir com um gate de
+1e6 instâncias) e o que é «box3d» na frase «jolt ou box3d» — não existe crate com
+esse nome.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.

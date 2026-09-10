@@ -214,3 +214,20 @@ Desvio consciente ao roadmap §5 («Bruneton LUTs baked na CPU no init»).
   volta do solo, o que aparece como um horizonte ligeiramente mais escuro.
 - Falta a **aerial perspective** (froxel 32³). Não é do gate do céu — é integração
   com a cena, entra quando a Sponza receber atmosfera.
+
+## D20 — Dependências têm fase, e `wgpu` continua fora
+
+- A lista fechada de libs no `AGENTS.md` foi substituída por
+  `docs/Rust-Rewrite-Roadmap.md` §14.1: uma tabela do que já está dentro e do que
+  entra **em que fase**. Regra: nada entra fora da fase que o pede.
+- **`wgpu` está fora**, e `egui-wgpu` com ele. D0 é explícita e todo o RHI,
+  bindless, froxels e LUTs assumem Vulkan explícito. Editor usa
+  `egui-ash-renderer`. Reabrir isto é uma sessão, não uma linha no `Cargo.toml`.
+- **ECS não se escolhe agora.** Candidatos e critério em §14.1; decide-se na fase
+  6 com um gate que crie 1e6 instâncias e meça.
+- **Física**: o pedido foi «Jolt ou box3d». `box3d` não existe — `Box2D` é 2D. Se
+  a intenção era Bullet são `bullet3-sys`. Jolt em Rust é por bindings e traz
+  toolchain C++; `rapier3d` é o Rust puro. **Fica por clarificar** antes de a fase
+  de física abrir.
+- `rayon` entra para trabalho offline (bake de noise, clipmap, mips), **não** para
+  o frame graph — esse continua single-thread por D0.

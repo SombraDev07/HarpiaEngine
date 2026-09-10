@@ -439,6 +439,83 @@ Regra: `tucano-render` depende de `tucano-rhi` + `tucano-scene`. **Não** depend
 
 ---
 
+## 14.1 Dependências: o que entra, e **quando**
+
+Regra que não muda: **nada entra fora da fase que a pede.** Uma crate no
+`Cargo.toml` antes de haver um gate que a use é peso morto e uma decisão tomada
+sem informação. A coluna «fase» é o contrato.
+
+### Já dentro (fases 0–5)
+
+| Crate | Para quê | Entrou |
+|---|---|---|
+| `ash` + `gpu-allocator` | Vulkan 1.3, memória | 1 |
+| `winit` + `raw-window-handle` | janela, surface | 1 |
+| `glam` (via `harpia-math`) | matemática | 1 |
+| `mimalloc`, `bumpalo` | allocator global, frame bump | 1 |
+| `tracing` + `tracing-subscriber` | log | 1 |
+| `anyhow`, `thiserror` | erros de app / de lib | 1 |
+| `gltf` | Sponza | 4 |
+| `image` | decode + PNG da captura | 4 |
+| `libloading` | ABI de plugins | 5 (dormente) |
+
+### A entrar, por fase
+
+| Fase | Crate | Porquê, e o que **não** é |
+|---|---|---|
+| **5** (clima) | `meshopt` | optimizar as malhas da Sponza e da vegetação. Já autorizada em `AGENTS.md`. |
+| **6** (terreno/veg/mundo) | **ECS** — ver decisão abaixo | milhões de instâncias de vegetação e streaming de células precisam de storage por arquétipo. Antes da fase 6 **não há entidades**, só sistemas. |
+| **6** | `rayon` | bake de noise, build de clipmap, geração de mips. **Não** para o frame graph — esse é single-thread por decisão (D0). |
+| **6** | `serde` + `postcard` (ou `bincode`) | descrever mundo/células em disco. `rkyv` só se o profiling mostrar que a desserialização dói. |
+| **7** (GI/post) | `parry3d` | queries de geometria para probes e occlusion. Vem com o Rapier, mas usa-se sozinha. |
+| **8** (editor) | `egui` + **`egui-ash-renderer`** | tooling. **Não `egui-wgpu`** — ver o aviso sobre wgpu abaixo. Pool de descriptors à parte do heap 8192 (mina 7). |
+| **8** | `puffin` ou `tracy-client` + `profiling` | precisa de editor para ver o resultado; antes disso o `--frames N` chega. |
+| **9** (opcional) | `kira` (áudio), `cpal` por baixo | `rodio` é mais simples e menos capaz; `kira` tem mixer, spatial, clocks, tweens. |
+| **9** | `gilrs` | gamepads com hotplug e mapeamentos SDL. |
+| **9** | `quinn` (QUIC) ou `renet` | só se houver multiplayer no plano. `laminar` está parado. |
+| **quando houver física** | ver decisão abaixo | |
+
+### Decisões em aberto (não escolher antes da fase)
+
+**ECS.** Quatro candidatos honestos:
+
+- `bevy_ecs` — o mais maduro, puxa-se isolado do resto do Bevy. Melhor ergonomia,
+  scheduler paralelo pronto. Traz opinião sobre como o frame é organizado.
+- `hecs` — minimalista e rápido, «library-first». Máximo controlo, zero scheduler.
+- `shipyard` — sparse-set, bom em paralelismo pesado.
+- `flecs_ecs` — bindings do Flecs. Relationships e hierarquias de verdade,
+  queries muito expressivas, usado em produção. Não é Rust puro.
+
+Recomendação: **`hecs` se o frame graph continuar a mandar**, `bevy_ecs` se se
+quiser o scheduler dele. Decidir na fase 6 com um gate que crie 1e6 instâncias de
+vegetação e meça, não por gosto.
+
+**Física.** O pedido foi «Jolt ou box3d». Duas notas antes de escolher:
+
+- **Jolt** é C++; em Rust usa-se por bindings (`jolt-rust` / `joltc-sys`), o que
+  traz uma toolchain C++ ao build. É excelente e é usado em produção (Horizon).
+- **`box3d` não existe.** `Box2D` é 2D. Se a intenção era Bullet, são
+  `bullet3-sys`; se era Box2D, não serve a uma engine 3D. **Isto precisa de ser
+  clarificado antes de a fase de física abrir.**
+- `rapier3d` é o Rust puro, determinístico, sem toolchain C++. É o fallback óbvio
+  e a escolha certa se não se quiser C++ no build.
+
+**Assets.** `gltf` + `image` já chegam. `tobj` só se aparecer OBJ, e a Sponza é
+glTF. `bevy_asset` traz o modelo de asset do Bevy inteiro (handles, hot-reload,
+scheduler) — é uma decisão de arquitectura, não uma dependência; não entra sem
+entrada em `DECISIONS.md`.
+
+### Aviso: `wgpu` está fora
+
+A lista pedida inclui `wgpu` e `egui-wgpu`. **D0 proíbe wgpu** («Vulkan 1.3 via
+`ash` + `gpu-allocator`. Proibido wgpu / DX12 / GL / Metal»). Todo o RHI, os
+sets bindless, os froxels e as LUTs assumem Vulkan explícito. Trazer wgpu agora
+seria um segundo backend a meio da fase 5, e a barra é explícita sobre não ter
+dois caminhos para a mesma coisa.
+
+Para o editor usa-se **`egui-ash-renderer`**. Se um dia se quiser wgpu, isso
+reabre a D0 e é uma sessão inteira, não uma linha no `Cargo.toml`.
+
 ## 15. Fases da reescrita (com exit)
 
 Cada fase: código + **um binário que corre N frames e sai 0**. Sem pixel-identical vs C++. “Reconhecível” chega.
