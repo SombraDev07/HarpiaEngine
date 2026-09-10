@@ -1,0 +1,16 @@
+[package]
+name = "gate-water"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Fase 5: Gerstner waves, Fresnel against the sky, depth absorption."
+
+[dependencies]
+anyhow.workspace = true
+harpia-app.workspace = true
+harpia-math.workspace = true
+harpia-memory.workspace = true
+harpia-render.workspace = true
+harpia-rhi.workspace = true
+tracing.workspace = true

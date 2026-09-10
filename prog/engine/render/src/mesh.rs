@@ -84,6 +84,42 @@ impl SphereMesh {
         }
     }
 
+    /// A tessellated XZ grid spanning `[-half, half]`, `n` quads a side.
+    ///
+    /// `plane_xz` is four vertices, which is enough for a floor and useless for
+    /// water: Gerstner waves displace the vertices, so the surface can only be as
+    /// detailed as the grid. Normals point up; the VS replaces them.
+    pub fn grid_xz(n: u32, half: f32) -> Self {
+        let n = n.max(1);
+        let step = 2.0 * half / n as f32;
+        let mut vertices = Vec::with_capacity(((n + 1) * (n + 1)) as usize);
+        for row in 0..=n {
+            for col in 0..=n {
+                vertices.push(Vertex {
+                    pos: [
+                        -half + col as f32 * step,
+                        0.0,
+                        -half + row as f32 * step,
+                    ],
+                    nrm: [0.0, 1.0, 0.0],
+                });
+            }
+        }
+        let stride = n + 1;
+        let mut indices = Vec::with_capacity((n * n * 6) as usize);
+        for row in 0..n {
+            for col in 0..n {
+                let a = row * stride + col;
+                let b = a + 1;
+                let c = a + stride;
+                let d = c + 1;
+                // CCW seen from +Y, to match the outward winding everywhere else.
+                indices.extend_from_slice(&[a, c, b, b, c, d]);
+            }
+        }
+        Self { vertices, indices }
+    }
+
     pub fn vertex_bytes(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(
@@ -106,6 +142,25 @@ impl SphereMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_is_square_and_faces_up() {
+        let g = SphereMesh::grid_xz(4, 10.0);
+        assert_eq!(g.vertices.len(), 25);
+        assert_eq!(g.indices.len(), 4 * 4 * 6);
+        // corners land on the extents, so the surface covers exactly [-10, 10]
+        assert_eq!(g.vertices[0].pos, [-10.0, 0.0, -10.0]);
+        assert_eq!(g.vertices[24].pos, [10.0, 0.0, 10.0]);
+        for t in g.indices.chunks(3) {
+            let p = |i: u32| g.vertices[i as usize].pos;
+            let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            // cross(u, v).y > 0 == CCW from above
+            let ny = u[2] * v[0] - u[0] * v[2];
+            assert!(ny > 0.0, "triangle {t:?} winds the wrong way (ny={ny})");
+        }
+    }
 
     /// Outward-facing CCW: every non-degenerate triangle's cross product must
     /// point the same way as its vertex normal. The poles are degenerate.

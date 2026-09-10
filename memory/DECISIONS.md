@@ -331,3 +331,30 @@ Desvio consciente ao roadmap §5 («Bruneton LUTs baked na CPU no init»).
   8/255 (média 12.9, máximo 59). No `gate-fog` é 20.2% — a Sponza tem muito mais
   geometria a tapar o sol, que é exactamente o ponto.
 
+## D26 — Água: Gerstner primeiro, SSR depois
+
+- **Gerstner numa grelha**, não um height map: a onda desloca vértices em X e Z,
+  não só em Y, e é isso que dá a crista afiada e o vale largo em vez de um
+  seno. A superfície só é tão detalhada como a grelha (192² quads, 73k triângulos)
+  — Gerstner desloca, não tessela.
+- Cada onda viaja à velocidade de água funda `sqrt(g/k)`. Sem a dispersão as
+  quatro ondas andam à mesma velocidade e a superfície lê-se como uma chapa
+  rígida a deslizar. Há teste que fixa `omega(34 m) ≈ 1.345 rad/s`.
+- **Normal pela derivada analítica** da mesma soma. Tirá-la dos vizinhos custava
+  o motivo de fazer isto no VS.
+- **Sem culling**: com esteepness alta a crista dobra e o culling abriria buracos
+  exactamente onde a onda é mais interessante.
+- **Sem SSR nesta fatia.** A reflexão é o céu analítico. Aos ângulos rasantes,
+  onde Fresnel domina, o que uma superfície real reflecte é sobretudo céu — por
+  isso isto é a aproximação honesta e não um placeholder. SSR (point-sample do
+  depth, §5) é a fatia seguinte.
+- Corpo de água por **Beer-Lambert sobre o caminho até ao fundo** (`seabed/N·V`):
+  a olhar a direito vê-se o tom raso, rasante vê-se o fundo. É o que faz o
+  primeiro plano escuro e o horizonte claro sem nenhum truque.
+- Céu e água escrevem **radiância linear** no mesmo pass HDR (o céu primeiro, sem
+  depth; a superfície por cima, com depth) e o tonemap é um pass fullscreen no
+  fim. Pôr o céu num pass próprio obrigava o RHI a fazer LOAD de um attachment em
+  vez de CLEAR — não vale a pena por isto.
+- `pow(cos θ, 90)` para o brilho do sol ainda vale 25% a 10° do disco: um sol do
+  tamanho de um punho. 900 põe-no onde deve estar.
+

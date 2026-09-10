@@ -1,0 +1,170 @@
+; Water PS: Fresnel between a sky reflection and the water body.
+;
+; No SSR yet -- that needs the scene depth and is the next slice. At the grazing
+; angles where Fresnel dominates, what a real surface reflects is mostly sky
+; anyway, so the analytic sky is the honest approximation and not a placeholder.
+;
+; The body colour comes from how far the view ray travels through water before
+; the seabed: Beer-Lambert on that path length, deep tint to shallow tint. Looking
+; straight down shows the shallow colour, grazing shows the deep one.
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %in_world %in_nrm %out_color %cb
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %in_world Location 0
+OpDecorate %in_nrm Location 1
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %Water Block
+OpMemberDecorate %Water 0 Offset 0
+OpMemberDecorate %Water 0 ColMajor
+OpMemberDecorate %Water 0 MatrixStride 16
+OpMemberDecorate %Water 1 Offset 64
+OpMemberDecorate %Water 2 Offset 80
+OpMemberDecorate %Water 3 Offset 96
+OpMemberDecorate %Water 4 Offset 112
+OpMemberDecorate %Water 5 Offset 128
+OpMemberDecorate %Water 6 Offset 144
+OpMemberDecorate %Water 7 Offset 160
+OpMemberDecorate %Water 8 Offset 176
+OpMemberDecorate %Water 9 Offset 192
+OpMemberDecorate %Water 10 Offset 208
+OpMemberDecorate %Water 11 Offset 224
+OpMemberDecorate %Water 12 Offset 240
+OpMemberDecorate %Water 13 Offset 256
+OpMemberDecorate %Water 14 Offset 264
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v3 = OpTypePointer Input %v3
+%ptr_out_v4 = OpTypePointer Output %v4
+%in_world = OpVariable %ptr_in_v3 Input
+%in_nrm = OpVariable %ptr_in_v3 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Water = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint
+%ptr_cb = OpTypePointer Uniform %Water
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv4 = OpTypePointer Uniform %v4
+
+%u1 = OpConstant %uint 1
+%u2 = OpConstant %uint 2
+%u3 = OpConstant %uint 3
+%u4 = OpConstant %uint 4
+%u5 = OpConstant %uint 5
+%u10 = OpConstant %uint 10
+%u11 = OpConstant %uint 11
+%u12 = OpConstant %uint 12
+%f0 = OpConstant %float 0.0
+%f05 = OpConstant %float 0.5
+%f1 = OpConstant %float 1.0
+%f2 = OpConstant %float 2.0
+%f5 = OpConstant %float 5.0
+%feps = OpConstant %float 0.0001
+%fskyg = OpConstant %float 0.55
+%fglowp = OpConstant %float 900.0
+%fglowk = OpConstant %float 1.1
+%fsuncos = OpConstant %float 0.9997
+%v3_zero = OpConstantComposite %v3 %f0 %f0 %f0
+; Water's index of refraction gives F0 = ((1-1.33)/(1+1.33))^2
+%ff0 = OpConstant %float 0.02
+%fmf0 = OpConstant %float 0.98
+%fmindot = OpConstant %float 0.02
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%world = OpLoad %v3 %in_world
+%nrm0 = OpLoad %v3 %in_nrm
+%N = OpExtInst %v3 %glsl Normalize %nrm0
+%pcam = OpAccessChain %ptr_uv4 %cb %u1
+%cam4 = OpLoad %v4 %pcam
+%camw = OpVectorShuffle %v3 %cam4 %cam4 0 1 2
+%toeye = OpFSub %v3 %camw %world
+%V = OpExtInst %v3 %glsl Normalize %toeye
+%psun = OpAccessChain %ptr_uv4 %cb %u2
+%sun4 = OpLoad %v4 %psun
+%sun0 = OpVectorShuffle %v3 %sun4 %sun4 0 1 2
+%sun = OpExtInst %v3 %glsl Normalize %sun0
+%psc = OpAccessChain %ptr_uv4 %cb %u3
+%sc4 = OpLoad %v4 %psc
+%sun_c = OpVectorShuffle %v3 %sc4 %sc4 0 1 2
+%pzen = OpAccessChain %ptr_uv4 %cb %u11
+%zen4 = OpLoad %v4 %pzen
+%zenith = OpVectorShuffle %v3 %zen4 %zen4 0 1 2
+%phor = OpAccessChain %ptr_uv4 %cb %u12
+%hor4 = OpLoad %v4 %phor
+%horiz = OpVectorShuffle %v3 %hor4 %hor4 0 1 2
+%seabed = OpCompositeExtract %float %hor4 3
+
+; ---- Fresnel (Schlick) ----
+%ndv0 = OpDot %float %N %V
+%ndv = OpExtInst %float %glsl FMax %ndv0 %fmindot
+%omn = OpFSub %float %f1 %ndv
+%omn5 = OpExtInst %float %glsl Pow %omn %f5
+%fr0 = OpFMul %float %fmf0 %omn5
+%fresnel = OpFAdd %float %ff0 %fr0
+
+; ---- reflected sky ----
+%negV = OpFNegate %v3 %V
+%R = OpExtInst %v3 %glsl Reflect %negV %N
+%upyr = OpCompositeExtract %float %R 1
+%upcr = OpExtInst %float %glsl FClamp %upyr %f0 %f1
+%upgr = OpExtInst %float %glsl Pow %upcr %fskyg
+%upvr = OpCompositeConstruct %v3 %upgr %upgr %upgr
+%gradr = OpExtInst %v3 %glsl FMix %horiz %zenith %upvr
+%sdotr = OpDot %float %R %sun
+%sdcr = OpExtInst %float %glsl FClamp %sdotr %f0 %f1
+%sglowr = OpExtInst %float %glsl Pow %sdcr %fglowp
+%sgvr = OpVectorTimesScalar %v3 %sun_c %sglowr
+%sgsr = OpVectorTimesScalar %v3 %sgvr %fglowk
+%discr = OpFOrdGreaterThan %bool %sdotr %fsuncos
+%dvr = OpSelect %v3 %discr %sun_c %v3_zero
+%sky0r = OpFAdd %v3 %gradr %sgsr
+%refl = OpFAdd %v3 %sky0r %dvr
+
+; ---- body: Beer-Lambert over the path down to the seabed and back ----
+%pshal = OpAccessChain %ptr_uv4 %cb %u4
+%shal4 = OpLoad %v4 %pshal
+%shallow = OpVectorShuffle %v3 %shal4 %shal4 0 1 2
+%pdeep = OpAccessChain %ptr_uv4 %cb %u5
+%deep4 = OpLoad %v4 %pdeep
+%deep = OpVectorShuffle %v3 %deep4 %deep4 0 1 2
+%absorb_k = OpCompositeExtract %float %deep4 3
+%path = OpFDiv %float %seabed %ndv
+%pk = OpFMul %float %path %absorb_k
+%npk = OpFNegate %float %pk
+%trans = OpExtInst %float %glsl Exp %npk
+%tv = OpCompositeConstruct %v3 %trans %trans %trans
+%body = OpExtInst %v3 %glsl FMix %deep %shallow %tv
+
+; ---- sun specular (Blinn), gated by the same Fresnel ----
+%hv = OpFAdd %v3 %V %sun
+%H = OpExtInst %v3 %glsl Normalize %hv
+%ndh0 = OpDot %float %N %H
+%ndh = OpExtInst %float %glsl FClamp %ndh0 %f0 %f1
+%pmisc = OpAccessChain %ptr_uv4 %cb %u10
+%misc = OpLoad %v4 %pmisc
+%specp = OpCompositeExtract %float %misc 2
+%spow = OpExtInst %float %glsl Pow %ndh %specp
+%sk = OpFMul %float %spow %fresnel
+%spec = OpVectorTimesScalar %v3 %sun_c %sk
+
+; ---- combine ----
+%fv = OpCompositeConstruct %v3 %fresnel %fresnel %fresnel
+%mixed = OpExtInst %v3 %glsl FMix %body %refl %fv
+%total = OpFAdd %v3 %mixed %spec
+%out4 = OpCompositeConstruct %v4 %total %f1
+OpStore %out_color %out4
+OpReturn
+OpFunctionEnd

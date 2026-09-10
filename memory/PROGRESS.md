@@ -30,6 +30,7 @@ cargo run -p gate-taa
 cargo run -p gate-fog
 cargo run -p gate-sky
 cargo run -p gate-clouds
+cargo run -p gate-water
 cargo run -p sponza -- --frames 90
 # assets: python3 prog/tools/fetch_sponza.py  (glTF gitignored)
 # pixels, não screenshots:
@@ -43,6 +44,7 @@ cargo run -p gate-taa -- --backend null --frames 8
 cargo run -p gate-fog -- --backend null --frames 8
 cargo run -p gate-sky -- --backend null --frames 8
 cargo run -p gate-clouds -- --backend null --frames 8
+cargo run -p gate-water -- --backend null --frames 8
 ```
 
 ## Feito (para não redescobrir)
@@ -301,6 +303,25 @@ mão.
 Testado a sério: com um `Offset` trocado de propósito num shader o teste falha e
 diz o ficheiro, o membro e os dois offsets.
 
+## Sessão 2026-09-10 (parte 8) — água
+
+`gate-water` verde à primeira: 16 frames, validation 0, e a captura é um mar a
+sério — cristas de Gerstner, o caminho de brilho do sol a partir-se nas faces das
+ondas, primeiro plano escuro (olha-se através da água) e horizonte claro (Fresnel
+rasante). Detalhe em D26.
+
+Gerstner numa grelha de 192² quads (73k triângulos), quatro ondas, cada uma à
+velocidade de água funda `sqrt(g/k)` — sem a dispersão as quatro andam juntas e a
+superfície parece uma chapa. Normal pela derivada analítica da mesma soma.
+
+Sem SSR: a reflexão é o céu analítico. Aos ângulos rasantes, onde o Fresnel
+domina, é sobretudo céu que uma superfície real reflecte, portanto isto é a
+aproximação honesta e não um placeholder.
+
+Provado que as ondas andam: entre o frame 20 e o 40 a faixa do céu tem delta
+**0.00** (câmara parada) e a faixa da água **22.25**. Se o termo do tempo estivesse
+morto os dois seriam zero e a imagem continuava bonita.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.
@@ -316,7 +337,8 @@ Não mesh shaders, RT, FSR, editor. Não VSM.
    cair. Mesma razão adia o céu Hillaire na Sponza (pelas aberturas vê-se quase
    nada). Fazer com o terreno, não antes.
 7. ~~Fog default-on na Sponza.~~ **feito** (D25)
-8. Water: point-sample depth no SSR.
+8. Water: ~~Gerstner + Fresnel + absorção~~ **feito** (D26). Falta **SSR**
+   (point-sample do depth) e espuma nas cristas.
 9. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).
 10. Marcar fase 5 `[x]` no roadmap §15 **no mesmo PR** que fechar o último gate.
 

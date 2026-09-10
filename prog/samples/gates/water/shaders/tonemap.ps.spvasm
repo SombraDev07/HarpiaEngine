@@ -1,0 +1,123 @@
+; Tonemap the HDR target onto the swapchain. The sky and the water both write
+; linear radiance, so ACES and the sRGB encode happen once, here.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %heap %samp_c
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %ihdr NonUniform
+OpDecorate %Water Block
+OpMemberDecorate %Water 0 Offset 0
+OpMemberDecorate %Water 0 ColMajor
+OpMemberDecorate %Water 0 MatrixStride 16
+OpMemberDecorate %Water 1 Offset 64
+OpMemberDecorate %Water 2 Offset 80
+OpMemberDecorate %Water 3 Offset 96
+OpMemberDecorate %Water 4 Offset 112
+OpMemberDecorate %Water 5 Offset 128
+OpMemberDecorate %Water 6 Offset 144
+OpMemberDecorate %Water 7 Offset 160
+OpMemberDecorate %Water 8 Offset 176
+OpMemberDecorate %Water 9 Offset 192
+OpMemberDecorate %Water 10 Offset 208
+OpMemberDecorate %Water 11 Offset 224
+OpMemberDecorate %Water 12 Offset 240
+OpMemberDecorate %Water 13 Offset 256
+OpMemberDecorate %Water 14 Offset 264
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Water = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint
+%ptr_cb = OpTypePointer Uniform %Water
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv2 = OpTypePointer Uniform %v2
+%ptr_uv4 = OpTypePointer Uniform %v4
+%ptr_uu = OpTypePointer Uniform %uint
+
+%u10 = OpConstant %uint 10
+%u13 = OpConstant %uint 13
+%u14 = OpConstant %uint 14
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%f251 = OpConstant %float 2.51
+%f003 = OpConstant %float 0.03
+%f059 = OpConstant %float 0.59
+%f014 = OpConstant %float 0.14
+%f243 = OpConstant %float 2.43
+%finvg = OpConstant %float 0.45454545
+%v3_003 = OpConstantComposite %v3 %f003 %f003 %f003
+%v3_059 = OpConstantComposite %v3 %f059 %f059 %f059
+%v3_014 = OpConstantComposite %v3 %f014 %f014 %f014
+%v3_zero = OpConstantComposite %v3 %f0 %f0 %f0
+%v3_one = OpConstantComposite %v3 %f1 %f1 %f1
+%v3_invg = OpConstantComposite %v3 %finvg %finvg %finvg
+
+%img2 = OpTypeImage %float 2D 0 0 0 1 Unknown
+%arr2 = OpTypeRuntimeArray %img2
+%ptr_arr2 = OpTypePointer UniformConstant %arr2
+%heap = OpVariable %ptr_arr2 UniformConstant
+%ptr_img2 = OpTypePointer UniformConstant %img2
+%sampled2 = OpTypeSampledImage %img2
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u13
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%phdr = OpAccessChain %ptr_uu %cb %u14
+%ihdr = OpLoad %uint %phdr
+%pim = OpAccessChain %ptr_img2 %heap %ihdr
+%im = OpLoad %img2 %pim
+%s = OpLoad %samp_ty %samp_c
+%sm = OpSampledImage %sampled2 %im %s
+%src = OpImageSampleImplicitLod %v4 %sm %uv
+%rgb = OpVectorShuffle %v3 %src %src 0 1 2
+%pmisc = OpAccessChain %ptr_uv4 %cb %u10
+%misc = OpLoad %v4 %pmisc
+%exposure = OpCompositeExtract %float %misc 3
+%x = OpVectorTimesScalar %v3 %rgb %exposure
+%x251 = OpVectorTimesScalar %v3 %x %f251
+%numt = OpFAdd %v3 %x251 %v3_003
+%num = OpFMul %v3 %x %numt
+%x243 = OpVectorTimesScalar %v3 %x %f243
+%dent = OpFAdd %v3 %x243 %v3_059
+%denA = OpFMul %v3 %x %dent
+%denC = OpFAdd %v3 %denA %v3_014
+%toned0 = OpFDiv %v3 %num %denC
+%toned = OpExtInst %v3 %glsl FClamp %toned0 %v3_zero %v3_one
+%srgb = OpExtInst %v3 %glsl Pow %toned %v3_invg
+%out4 = OpCompositeConstruct %v4 %srgb %f1
+OpStore %out_color %out4
+OpReturn
+OpFunctionEnd

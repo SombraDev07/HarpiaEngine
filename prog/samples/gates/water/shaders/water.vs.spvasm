@@ -1,0 +1,284 @@
+; Water VS: four Gerstner waves on a flat grid.
+;
+; Gerstner moves vertices, it does not tessellate, so the surface is only ever as
+; detailed as the grid underneath it. Each wave travels at the deep-water speed
+; sqrt(g/k), which is what stops the four of them looking like one rigid sheet.
+;
+; The normal comes from the analytic derivative of the same sum -- deriving it
+; from neighbouring vertices would cost the whole point of doing this in the VS.
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %VSMain "VSMain" %in_pos %in_nrm %position %v_world %v_nrm %cb %pc
+OpName %VSMain "VSMain"
+OpDecorate %in_pos Location 0
+OpDecorate %in_nrm Location 1
+OpDecorate %position BuiltIn Position
+OpDecorate %v_world Location 0
+OpDecorate %v_nrm Location 1
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %Push Block
+OpMemberDecorate %Push 0 Offset 0
+OpMemberDecorate %Push 0 ColMajor
+OpMemberDecorate %Push 0 MatrixStride 16
+OpMemberDecorate %Push 1 Offset 64
+OpMemberDecorate %Push 1 ColMajor
+OpMemberDecorate %Push 1 MatrixStride 16
+OpDecorate %Water Block
+OpMemberDecorate %Water 0 Offset 0
+OpMemberDecorate %Water 0 ColMajor
+OpMemberDecorate %Water 0 MatrixStride 16
+OpMemberDecorate %Water 1 Offset 64
+OpMemberDecorate %Water 2 Offset 80
+OpMemberDecorate %Water 3 Offset 96
+OpMemberDecorate %Water 4 Offset 112
+OpMemberDecorate %Water 5 Offset 128
+OpMemberDecorate %Water 6 Offset 144
+OpMemberDecorate %Water 7 Offset 160
+OpMemberDecorate %Water 8 Offset 176
+OpMemberDecorate %Water 9 Offset 192
+OpMemberDecorate %Water 10 Offset 208
+OpMemberDecorate %Water 11 Offset 224
+OpMemberDecorate %Water 12 Offset 240
+OpMemberDecorate %Water 13 Offset 256
+OpMemberDecorate %Water 14 Offset 264
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v3 = OpTypePointer Input %v3
+%ptr_out_v3 = OpTypePointer Output %v3
+%ptr_out_v4 = OpTypePointer Output %v4
+%in_pos = OpVariable %ptr_in_v3 Input
+%in_nrm = OpVariable %ptr_in_v3 Input
+%position = OpVariable %ptr_out_v4 Output
+%v_world = OpVariable %ptr_out_v3 Output
+%v_nrm = OpVariable %ptr_out_v3 Output
+
+%Water = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint
+%ptr_cb = OpTypePointer Uniform %Water
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv4 = OpTypePointer Uniform %v4
+
+%Push = OpTypeStruct %mat4 %mat4
+%ptr_push = OpTypePointer PushConstant %Push
+%pc = OpVariable %ptr_push PushConstant
+%ptr_pmat = OpTypePointer PushConstant %mat4
+
+%u0 = OpConstant %uint 0
+%u6 = OpConstant %uint 6
+%u7 = OpConstant %uint 7
+%u8 = OpConstant %uint 8
+%u9 = OpConstant %uint 9
+%u10 = OpConstant %uint 10
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%ftau = OpConstant %float 6.28318531
+%fgrav = OpConstant %float 9.81
+%fminlen = OpConstant %float 0.01
+
+%VSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%pos = OpLoad %v3 %in_pos
+%_n = OpLoad %v3 %in_nrm
+%p_x = OpCompositeExtract %float %pos 0
+%p_y = OpCompositeExtract %float %pos 1
+%p_z = OpCompositeExtract %float %pos 2
+
+%pmisc = OpAccessChain %ptr_uv4 %cb %u10
+%misc = OpLoad %v4 %pmisc
+%time = OpCompositeExtract %float %misc 0
+%steep = OpCompositeExtract %float %misc 1
+
+
+; ---- wave 0 ----
+%pw0 = OpAccessChain %ptr_uv4 %cb %u6
+%wv0 = OpLoad %v4 %pw0
+%dx00 = OpCompositeExtract %float %wv0 0
+%dz00 = OpCompositeExtract %float %wv0 1
+%amp0 = OpCompositeExtract %float %wv0 2
+%len00 = OpCompositeExtract %float %wv0 3
+%len0 = OpExtInst %float %glsl FMax %len00 %fminlen
+%dl0 = OpCompositeConstruct %v2 %dx00 %dz00
+%dn0 = OpExtInst %v2 %glsl Normalize %dl0
+%dx0 = OpCompositeExtract %float %dn0 0
+%dz0 = OpCompositeExtract %float %dn0 1
+%k0 = OpFDiv %float %ftau %len0
+%gk0 = OpFMul %float %fgrav %k0
+%om0 = OpExtInst %float %glsl Sqrt %gk0
+%px0 = OpFMul %float %dx0 %p_x
+%pz0 = OpFMul %float %dz0 %p_z
+%pd0 = OpFAdd %float %px0 %pz0
+%kp0 = OpFMul %float %k0 %pd0
+%wt0 = OpFMul %float %om0 %time
+%phi0 = OpFSub %float %kp0 %wt0
+%cos0 = OpExtInst %float %glsl Cos %phi0
+%sin0 = OpExtInst %float %glsl Sin %phi0
+%qa0 = OpFMul %float %steep %amp0
+%ox0 = OpFMul %float %qa0 %dx0
+%oxc0 = OpFMul %float %ox0 %cos0
+%oz0 = OpFMul %float %qa0 %dz0
+%ozc0 = OpFMul %float %oz0 %cos0
+%oy0 = OpFMul %float %amp0 %sin0
+%ka0 = OpFMul %float %k0 %amp0
+%nxa0 = OpFMul %float %dx0 %ka0
+%nxc0 = OpFMul %float %nxa0 %cos0
+%nza0 = OpFMul %float %dz0 %ka0
+%nzc0 = OpFMul %float %nza0 %cos0
+%nya0 = OpFMul %float %steep %ka0
+%nyc0 = OpFMul %float %nya0 %sin0
+%accx0 = OpFAdd %float %f0 %oxc0
+%accz0 = OpFAdd %float %f0 %ozc0
+%accy0 = OpFAdd %float %f0 %oy0
+%nnx0 = OpFSub %float %f0 %nxc0
+%nnz0 = OpFSub %float %f0 %nzc0
+%nny0 = OpFSub %float %f1 %nyc0
+; ---- wave 1 ----
+%pw1 = OpAccessChain %ptr_uv4 %cb %u7
+%wv1 = OpLoad %v4 %pw1
+%dx10 = OpCompositeExtract %float %wv1 0
+%dz10 = OpCompositeExtract %float %wv1 1
+%amp1 = OpCompositeExtract %float %wv1 2
+%len10 = OpCompositeExtract %float %wv1 3
+%len1 = OpExtInst %float %glsl FMax %len10 %fminlen
+%dl1 = OpCompositeConstruct %v2 %dx10 %dz10
+%dn1 = OpExtInst %v2 %glsl Normalize %dl1
+%dx1 = OpCompositeExtract %float %dn1 0
+%dz1 = OpCompositeExtract %float %dn1 1
+%k1 = OpFDiv %float %ftau %len1
+%gk1 = OpFMul %float %fgrav %k1
+%om1 = OpExtInst %float %glsl Sqrt %gk1
+%px1 = OpFMul %float %dx1 %p_x
+%pz1 = OpFMul %float %dz1 %p_z
+%pd1 = OpFAdd %float %px1 %pz1
+%kp1 = OpFMul %float %k1 %pd1
+%wt1 = OpFMul %float %om1 %time
+%phi1 = OpFSub %float %kp1 %wt1
+%cos1 = OpExtInst %float %glsl Cos %phi1
+%sin1 = OpExtInst %float %glsl Sin %phi1
+%qa1 = OpFMul %float %steep %amp1
+%ox1 = OpFMul %float %qa1 %dx1
+%oxc1 = OpFMul %float %ox1 %cos1
+%oz1 = OpFMul %float %qa1 %dz1
+%ozc1 = OpFMul %float %oz1 %cos1
+%oy1 = OpFMul %float %amp1 %sin1
+%ka1 = OpFMul %float %k1 %amp1
+%nxa1 = OpFMul %float %dx1 %ka1
+%nxc1 = OpFMul %float %nxa1 %cos1
+%nza1 = OpFMul %float %dz1 %ka1
+%nzc1 = OpFMul %float %nza1 %cos1
+%nya1 = OpFMul %float %steep %ka1
+%nyc1 = OpFMul %float %nya1 %sin1
+%accx1 = OpFAdd %float %accx0 %oxc1
+%accz1 = OpFAdd %float %accz0 %ozc1
+%accy1 = OpFAdd %float %accy0 %oy1
+%nnx1 = OpFSub %float %nnx0 %nxc1
+%nnz1 = OpFSub %float %nnz0 %nzc1
+%nny1 = OpFSub %float %nny0 %nyc1
+; ---- wave 2 ----
+%pw2 = OpAccessChain %ptr_uv4 %cb %u8
+%wv2 = OpLoad %v4 %pw2
+%dx20 = OpCompositeExtract %float %wv2 0
+%dz20 = OpCompositeExtract %float %wv2 1
+%amp2 = OpCompositeExtract %float %wv2 2
+%len20 = OpCompositeExtract %float %wv2 3
+%len2 = OpExtInst %float %glsl FMax %len20 %fminlen
+%dl2 = OpCompositeConstruct %v2 %dx20 %dz20
+%dn2 = OpExtInst %v2 %glsl Normalize %dl2
+%dx2 = OpCompositeExtract %float %dn2 0
+%dz2 = OpCompositeExtract %float %dn2 1
+%k2 = OpFDiv %float %ftau %len2
+%gk2 = OpFMul %float %fgrav %k2
+%om2 = OpExtInst %float %glsl Sqrt %gk2
+%px2 = OpFMul %float %dx2 %p_x
+%pz2 = OpFMul %float %dz2 %p_z
+%pd2 = OpFAdd %float %px2 %pz2
+%kp2 = OpFMul %float %k2 %pd2
+%wt2 = OpFMul %float %om2 %time
+%phi2 = OpFSub %float %kp2 %wt2
+%cos2 = OpExtInst %float %glsl Cos %phi2
+%sin2 = OpExtInst %float %glsl Sin %phi2
+%qa2 = OpFMul %float %steep %amp2
+%ox2 = OpFMul %float %qa2 %dx2
+%oxc2 = OpFMul %float %ox2 %cos2
+%oz2 = OpFMul %float %qa2 %dz2
+%ozc2 = OpFMul %float %oz2 %cos2
+%oy2 = OpFMul %float %amp2 %sin2
+%ka2 = OpFMul %float %k2 %amp2
+%nxa2 = OpFMul %float %dx2 %ka2
+%nxc2 = OpFMul %float %nxa2 %cos2
+%nza2 = OpFMul %float %dz2 %ka2
+%nzc2 = OpFMul %float %nza2 %cos2
+%nya2 = OpFMul %float %steep %ka2
+%nyc2 = OpFMul %float %nya2 %sin2
+%accx2 = OpFAdd %float %accx1 %oxc2
+%accz2 = OpFAdd %float %accz1 %ozc2
+%accy2 = OpFAdd %float %accy1 %oy2
+%nnx2 = OpFSub %float %nnx1 %nxc2
+%nnz2 = OpFSub %float %nnz1 %nzc2
+%nny2 = OpFSub %float %nny1 %nyc2
+; ---- wave 3 ----
+%pw3 = OpAccessChain %ptr_uv4 %cb %u9
+%wv3 = OpLoad %v4 %pw3
+%dx30 = OpCompositeExtract %float %wv3 0
+%dz30 = OpCompositeExtract %float %wv3 1
+%amp3 = OpCompositeExtract %float %wv3 2
+%len30 = OpCompositeExtract %float %wv3 3
+%len3 = OpExtInst %float %glsl FMax %len30 %fminlen
+%dl3 = OpCompositeConstruct %v2 %dx30 %dz30
+%dn3 = OpExtInst %v2 %glsl Normalize %dl3
+%dx3 = OpCompositeExtract %float %dn3 0
+%dz3 = OpCompositeExtract %float %dn3 1
+%k3 = OpFDiv %float %ftau %len3
+%gk3 = OpFMul %float %fgrav %k3
+%om3 = OpExtInst %float %glsl Sqrt %gk3
+%px3 = OpFMul %float %dx3 %p_x
+%pz3 = OpFMul %float %dz3 %p_z
+%pd3 = OpFAdd %float %px3 %pz3
+%kp3 = OpFMul %float %k3 %pd3
+%wt3 = OpFMul %float %om3 %time
+%phi3 = OpFSub %float %kp3 %wt3
+%cos3 = OpExtInst %float %glsl Cos %phi3
+%sin3 = OpExtInst %float %glsl Sin %phi3
+%qa3 = OpFMul %float %steep %amp3
+%ox3 = OpFMul %float %qa3 %dx3
+%oxc3 = OpFMul %float %ox3 %cos3
+%oz3 = OpFMul %float %qa3 %dz3
+%ozc3 = OpFMul %float %oz3 %cos3
+%oy3 = OpFMul %float %amp3 %sin3
+%ka3 = OpFMul %float %k3 %amp3
+%nxa3 = OpFMul %float %dx3 %ka3
+%nxc3 = OpFMul %float %nxa3 %cos3
+%nza3 = OpFMul %float %dz3 %ka3
+%nzc3 = OpFMul %float %nza3 %cos3
+%nya3 = OpFMul %float %steep %ka3
+%nyc3 = OpFMul %float %nya3 %sin3
+%accx3 = OpFAdd %float %accx2 %oxc3
+%accz3 = OpFAdd %float %accz2 %ozc3
+%accy3 = OpFAdd %float %accy2 %oy3
+%nnx3 = OpFSub %float %nnx2 %nxc3
+%nnz3 = OpFSub %float %nnz2 %nzc3
+%nny3 = OpFSub %float %nny2 %nyc3
+
+%wx = OpFAdd %float %p_x %accx3
+%wy = OpFAdd %float %p_y %accy3
+%wz = OpFAdd %float %p_z %accz3
+%world = OpCompositeConstruct %v3 %wx %wy %wz
+%nrm0 = OpCompositeConstruct %v3 %nnx3 %nny3 %nnz3
+%nrm = OpExtInst %v3 %glsl Normalize %nrm0
+%world4 = OpCompositeConstruct %v4 %wx %wy %wz %f1
+%p_vp = OpAccessChain %ptr_pmat %pc %u0
+%vp = OpLoad %mat4 %p_vp
+%clip = OpMatrixTimesVector %v4 %vp %world4
+OpStore %position %clip
+OpStore %v_world %world
+OpStore %v_nrm %nrm
+OpReturn
+OpFunctionEnd

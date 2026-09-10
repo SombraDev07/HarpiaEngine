@@ -1,0 +1,136 @@
+; Sky background for the water gate: a gradient plus the sun, in linear HDR.
+; The same block lights the water's reflection, so a change here shows up in both.
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %Water Block
+OpMemberDecorate %Water 0 Offset 0
+OpMemberDecorate %Water 0 ColMajor
+OpMemberDecorate %Water 0 MatrixStride 16
+OpMemberDecorate %Water 1 Offset 64
+OpMemberDecorate %Water 2 Offset 80
+OpMemberDecorate %Water 3 Offset 96
+OpMemberDecorate %Water 4 Offset 112
+OpMemberDecorate %Water 5 Offset 128
+OpMemberDecorate %Water 6 Offset 144
+OpMemberDecorate %Water 7 Offset 160
+OpMemberDecorate %Water 8 Offset 176
+OpMemberDecorate %Water 9 Offset 192
+OpMemberDecorate %Water 10 Offset 208
+OpMemberDecorate %Water 11 Offset 224
+OpMemberDecorate %Water 12 Offset 240
+OpMemberDecorate %Water 13 Offset 256
+OpMemberDecorate %Water 14 Offset 264
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Water = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint
+%ptr_cb = OpTypePointer Uniform %Water
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv2 = OpTypePointer Uniform %v2
+%ptr_uv4 = OpTypePointer Uniform %v4
+%ptr_umat = OpTypePointer Uniform %mat4
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u2 = OpConstant %uint 2
+%u3 = OpConstant %uint 3
+%u11 = OpConstant %uint 11
+%u12 = OpConstant %uint 12
+%u13 = OpConstant %uint 13
+%f0 = OpConstant %float 0.0
+%f05 = OpConstant %float 0.5
+%f1 = OpConstant %float 1.0
+%f2 = OpConstant %float 2.0
+%f5 = OpConstant %float 5.0
+%feps = OpConstant %float 0.0001
+%fskyg = OpConstant %float 0.55
+%fglowp = OpConstant %float 900.0
+%fglowk = OpConstant %float 1.1
+%fsuncos = OpConstant %float 0.9997
+%v3_zero = OpConstantComposite %v3 %f0 %f0 %f0
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u13
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%uvx = OpCompositeExtract %float %uv 0
+%uvy = OpCompositeExtract %float %uv 1
+%ndx0 = OpFMul %float %uvx %f2
+%ndx = OpFSub %float %ndx0 %f1
+%ndy0 = OpFMul %float %uvy %f2
+%ndy = OpFSub %float %ndy0 %f1
+%pivp = OpAccessChain %ptr_umat %cb %u0
+%ivp = OpLoad %mat4 %pivp
+%farclip = OpCompositeConstruct %v4 %ndx %ndy %f1 %f1
+%farw = OpMatrixTimesVector %v4 %ivp %farclip
+%fw = OpCompositeExtract %float %farw 3
+%fwc = OpExtInst %float %glsl FMax %fw %feps
+%invfw = OpFDiv %float %f1 %fwc
+%fx = OpCompositeExtract %float %farw 0
+%fy = OpCompositeExtract %float %farw 1
+%fz = OpCompositeExtract %float %farw 2
+%fpx = OpFMul %float %fx %invfw
+%fpy = OpFMul %float %fy %invfw
+%fpz = OpFMul %float %fz %invfw
+%farpos = OpCompositeConstruct %v3 %fpx %fpy %fpz
+%pcam = OpAccessChain %ptr_uv4 %cb %u1
+%cam4 = OpLoad %v4 %pcam
+%camw = OpVectorShuffle %v3 %cam4 %cam4 0 1 2
+%rawd = OpFSub %v3 %farpos %camw
+%dir = OpExtInst %v3 %glsl Normalize %rawd
+%psun = OpAccessChain %ptr_uv4 %cb %u2
+%sun4 = OpLoad %v4 %psun
+%sun0 = OpVectorShuffle %v3 %sun4 %sun4 0 1 2
+%sun = OpExtInst %v3 %glsl Normalize %sun0
+%psc = OpAccessChain %ptr_uv4 %cb %u3
+%sc4 = OpLoad %v4 %psc
+%sun_c = OpVectorShuffle %v3 %sc4 %sc4 0 1 2
+%pzen = OpAccessChain %ptr_uv4 %cb %u11
+%zen4 = OpLoad %v4 %pzen
+%zenith = OpVectorShuffle %v3 %zen4 %zen4 0 1 2
+%phor = OpAccessChain %ptr_uv4 %cb %u12
+%hor4 = OpLoad %v4 %phor
+%horiz = OpVectorShuffle %v3 %hor4 %hor4 0 1 2
+
+%upys = OpCompositeExtract %float %dir 1
+%upcs = OpExtInst %float %glsl FClamp %upys %f0 %f1
+%upgs = OpExtInst %float %glsl Pow %upcs %fskyg
+%upvs = OpCompositeConstruct %v3 %upgs %upgs %upgs
+%grads = OpExtInst %v3 %glsl FMix %horiz %zenith %upvs
+%sdots = OpDot %float %dir %sun
+%sdcs = OpExtInst %float %glsl FClamp %sdots %f0 %f1
+%sglows = OpExtInst %float %glsl Pow %sdcs %fglowp
+%sgvs = OpVectorTimesScalar %v3 %sun_c %sglows
+%sgss = OpVectorTimesScalar %v3 %sgvs %fglowk
+%discs = OpFOrdGreaterThan %bool %sdots %fsuncos
+%dvs = OpSelect %v3 %discs %sun_c %v3_zero
+%sky0s = OpFAdd %v3 %grads %sgss
+%skyc = OpFAdd %v3 %sky0s %dvs
+%out4 = OpCompositeConstruct %v4 %skyc %f1
+OpStore %out_color %out4
+OpReturn
+OpFunctionEnd
