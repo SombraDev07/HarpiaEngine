@@ -645,3 +645,34 @@ O ganho é modesto **nesta cena** porque a câmara vê quase todo o átrio — �
 mecanismo que interessa, e ele passa a existir para o terreno da fase 6, onde a
 maior parte do mundo está sempre fora do ecrã.
 
+## D40 — Terreno: clipmap por SV_VertexID, e três bugs que valem a pena
+
+O roadmap manda «só `ClipmapTerrain` SV_VertexID», e a razão é boa: a malha de um
+clipmap é sempre a mesma grelha, só muda de escala e de sítio. **Zero vertex
+buffers, zero index buffers.** Um `draw` de 24 576 vértices × 7 instâncias — uma
+por nível — e o VS deriva tudo dos índices.
+
+**Medido:** 7 níveis, alcance 1024 unidades, **2 draws**, 57 345 triângulos,
+**0.077 ms** de GPU no pass do terreno (0.109 ms de frame). Este é o argumento
+todo a favor do SV_VertexID.
+
+A altura é a **mesma função** em `harpia_render::terrain_height` e no GLSL, linha
+a linha. A câmara do gate usa a versão CPU para não atravessar o chão que o VS
+desenha; se divergirem vê-se logo, e é o ensaio do gate `heightquery`.
+
+### Os três bugs
+
+1. **Winding invertido.** `(0,0) (1,0) (0,1)` parece a ordem óbvia, mas num plano
+   XZ o produto vectorial de +X com +Z aponta para **baixo**: com `cull_back` o
+   terreno inteiro era cortado. 89% do ecrã era exactamente a cor do clear, e eu
+   li as manchas pálidas como montanhas nevadas até contar as cores e ver que era
+   céu. **Contar pixels desmentiu o que os olhos diziam.**
+2. **Snap por nível abre fendas.** Cada nível a fazer snap à sua própria célula
+   alinha à sua própria grelha, e a fronteira com o vizinho fica deslocada. Snap
+   ao **dobro** da célula ajuda, mas não chega: dois níveis vizinhos não podem
+   alinhar sempre. Um clipmap completo resolve isto com uma tira de recorte em L
+   de tamanho variável; aqui há uma **saia** na fronteira interior de cada anel,
+   que faz o mesmo em duas linhas ao custo de uma dobra a rasar o chão.
+3. **Fade linear a partir de zero.** Um vale a 600 unidades ficava meio céu e
+   lia-se como terreno em falta. Agora é `smoothstep(0.55·far, far)`.
+

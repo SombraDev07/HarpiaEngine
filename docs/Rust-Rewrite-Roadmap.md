@@ -616,7 +616,8 @@ Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
 
 - [x] ECS decidido: **`bevy_ecs`**, pelo `gate-ecs` de 1e6 instâncias (D38).
 
-- [ ] Só `ClipmapTerrain` SV_VertexID.
+- [x] Só `ClipmapTerrain` SV_VertexID. `gate-terrain`: 7 níveis, alcance 1024,
+      **2 draws**, 0.077 ms de GPU, zero vertex buffers (D40).
 - [ ] HeightQuery GPU vs CPU.
 - [ ] Veg cull + indirect (buffers soltos, sem arrays HLSL).
 - [ ] Instance cull 2500 cubos → 1 indirect.
