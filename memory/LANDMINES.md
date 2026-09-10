@@ -79,6 +79,30 @@ pares Ord/Unord são intercalados (180 FOrdEqual, 181 FUnordEqual, 182 FOrdNotEq
 opcode errado apanhado (o primeiro foi `OpUDiv` = 132). Se houver `spirv-as` no
 host, ele ganha sempre.
 
+## Mais opcodes do assembler (e como os apanhar cedo)
+
+- `OpImageSampleDrefExplicitLod` é **90**. 91 é `OpImageSampleProjImplicitLod` —
+  o spirv-val disse exactamente isso em 2 segundos. A família: 87 SampleImplicit,
+  88 SampleExplicit, 89 SampleDrefImplicit, **90 SampleDrefExplicit**,
+  91 SampleProjImplicit, 92 SampleProjExplicit, 95 Fetch, 96 Gather,
+  97 DrefGather, 98 Read, 99 Write.
+- `Rgba16f` no `ImageFormat` é **2** (1 = Rgba32f, 3 = R32f, 4 = Rgba8).
+- `prog/tools/dis_spv.py` desmonta um `.spv` quando o validador não ajuda. Foi
+  assim que se confirmou que o stream estava bem formado e o problema era outro.
+
+## `OpKill` com bloco de merge vazio é rejeitado
+
+O spirv-val recusa um fragment shader em que o ramo do `OpKill` funde num bloco
+que só tem `OpReturn` — e a mensagem vem **vazia**, o que não ajuda nada. O mesmo
+`OpKill` passa noutro shader onde o bloco de merge tem trabalho a seguir.
+Bissecção: mínimo passa, sem kill passa, `OpReturn` em vez de kill passa, kill +
+merge vazio falha.
+
+No `shadow.ps` da Sponza a saída é ter um output de cor a escrever o alpha que foi
+testado. O pass é depth-only, portanto o valor é deitado fora — mas o shader fica
+legível em vez de ter um no-op só para agradar ao validador. **Não apagues esse
+output.**
+
 ## Verificação visual: usa `--capture`, não screenshots
 
 - `--capture <prefixo>` grava `<prefixo>.<nome>.png` de cada `capture_targets()`

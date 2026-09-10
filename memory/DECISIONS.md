@@ -155,3 +155,33 @@ Fechadas. Não reabrir sem motivo escrito aqui.
 - Integrate conserva energia: `S = (Sc - Sc·T_slice)/sigma`, `acc += T·S`.
 - `FogCb` (176 B) é o contrato com os `.spvasm`; o teste
   `fog::tests::cb_layout_matches_the_spvasm` fixa os offsets.
+
+## D18 — Sombra: a barra fecha em CSM honesto + PCF por hardware + PCSS
+
+A `Rust-Rewrite-Quality-Bar.md` define sombra pronta de forma estreita: «clonar
+**só** CSM, mas consertar o frustum», «até lá: **CSM + PCSS**. Um path». Recusa
+VSM, ESM e contact shadows; toroidal é optimização posterior, não produto. Está
+tudo feito:
+
+- **Sampler de comparação** (set 2 binding 2, `LESS_OR_EQUAL`). Os taps usam
+  `OpImageSampleDrefExplicitLod`: o hardware compara **e depois** filtra, e cada
+  tap já é 2×2 PCF. Amostrar profundidade com sampler linear e comparar a seguir
+  é a ordem errada — estava assim e errava em todas as silhuetas.
+- **PCSS** (§6): blocker search de 8 taps → penumbra → PCF adaptativo de 16 taps,
+  raio 1…4.5 texels, `pcssLightSize = 0.035`.
+- **Penumbra na forma direccional**, não a do C++. Para uma cascata ortográfica a
+  largura é `(z_recv − z_blk) · depthRange · lightSize` em metros, convertida a
+  texels pelo world-per-texel da cascata. Sem dividir pela profundidade do
+  blocker — essa é a fórmula de luz perspectiva e rebenta perto de zero.
+  `Csm::radius` leva o `depthRange` e o `world_per_texel` ao shader.
+- **Disco de Vogel rodado por pixel** com interleaved gradient noise; sem isto os
+  16 taps repetem o mesmo padrão em todo o ecrã.
+- **Taps presos ao tile** da cascata (`FClamp` ao rect), senão o raio de 4.5
+  texels sangra para a cascata vizinha no atlas 2×2.
+- **Cutout no pass de sombra** (`shadow.ps`): a folhagem da Sponza projectava
+  rectângulos. Uma partição só (`alpha_cutoff > 0 || double_sided`) serve o pass
+  de cor e o de sombra.
+
+Fora da barra, por decisão dela: VSM, ESM, contact shadows, toroidal, octa points
+(não há point lights). O bloco de sombra é partilhado à letra entre `gate-csm` e
+a Sponza — se um mudar, o outro muda.

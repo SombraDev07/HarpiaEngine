@@ -17,7 +17,7 @@ pub use fog::{
 };
 pub use gltf_scene::{load_path as load_gltf, CpuImage, CpuPrimitive, CpuScene, GltfError};
 pub use ibl::{generate as generate_ibl, IblCpu, RgbaImage};
-pub use lighting::{LightingCb, PushConstants};
+pub use lighting::{LightingCb, PushConstants, PCSS_LIGHT_SIZE};
 pub use material::{MaterialGpu, SphereInstance};
 pub use mesh::{MeshVertex, SphereMesh, Vertex};
 pub use packing::{

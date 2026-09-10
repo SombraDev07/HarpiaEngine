@@ -36,8 +36,12 @@ struct Sponza {
     color_pso: Option<GraphicsPipeline>,
     /// glTF `doubleSided` (the cutout foliage): same shaders, cull off.
     color_pso_two_sided: Option<GraphicsPipeline>,
+    /// Same depth-only pass, plus a PS that kills on the MASK cutoff.
+    shadow_cutout_pso: Option<GraphicsPipeline>,
     blit_pso: Option<GraphicsPipeline>,
-    /// Sorted: single-sided first, then the `doubleSided` primitives.
+    /// Sorted: plain opaque first, then everything that needs the cutout /
+    /// no-cull path (glTF `MASK` or `doubleSided` — in Sponza the same three
+    /// materials). One partition serves both the shadow and the colour pass.
     prims: Vec<GpuPrim>,
     two_sided_from: usize,
     atlas: Option<Texture>,
@@ -51,6 +55,7 @@ impl Default for Sponza {
             shadow_pso: None,
             color_pso: None,
             color_pso_two_sided: None,
+            shadow_cutout_pso: None,
             blit_pso: None,
             prims: Vec::new(),
             two_sided_from: 0,
@@ -154,16 +159,19 @@ impl Sample for Sponza {
         let path = sponza_gltf();
         let cpu = load_gltf(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
         let textures = upload_images(gpu, &cpu)?;
+
+
+        let special = |i: usize| cpu.prims[i].alpha_cutoff > 0.0 || cpu.prims[i].double_sided;
+        let mut order: Vec<usize> = (0..cpu.prims.len()).collect();
+        order.sort_by_key(|&i| special(i));
+        self.two_sided_from = order.partition_point(|&i| !special(i));
         tracing::info!(
             primitives = cpu.prims.len(),
             images = cpu.images.len(),
+            cutout = cpu.prims.len() - self.two_sided_from,
             path = %path.display(),
             "loaded sponza"
         );
-
-        let mut order: Vec<usize> = (0..cpu.prims.len()).collect();
-        order.sort_by_key(|&i| cpu.prims[i].double_sided);
-        self.two_sided_from = order.partition_point(|&i| !cpu.prims[i].double_sided);
         for i in order {
             let p = &cpu.prims[i];
             self.prims.push(GpuPrim {
@@ -198,6 +206,26 @@ impl Sample for Sponza {
                 },
             })
             .context("shadow PSO")?,
+        );
+        self.shadow_cutout_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/shadow.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/shadow.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &[],
+                    depth_format: Some(GBUFFER_DEPTH_FORMAT),
+                    vertex_stride: VERTEX_STRIDE_UV,
+                    instance_stride: 0,
+                    depth_test: true,
+                    cull_back: false,
+                    depth_only: true,
+                    depth_bias: true,
+                },
+            })
+            .context("cutout shadow PSO")?,
         );
         let color = GraphicsPipelineDesc {
             vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/color.vs.spv")),
@@ -251,13 +279,16 @@ impl Sample for Sponza {
         let scene = self.scene.as_ref().context("scene rt")?;
         let atlas = self.atlas.context("atlas")?;
         let shadow_pso = self.shadow_pso.as_ref().context("shadow pso")?;
+        let shadow_cutout_pso = self
+            .shadow_cutout_pso
+            .as_ref()
+            .context("cutout shadow pso")?;
         let color_pso = self.color_pso.as_ref().context("color pso")?;
         let two_sided_pso = self
             .color_pso_two_sided
             .as_ref()
             .context("two-sided color pso")?;
         let blit_pso = self.blit_pso.as_ref().context("blit pso")?;
-        let all = 0..self.prims.len();
         let one_sided = 0..self.two_sided_from;
         let two_sided = self.two_sided_from..self.prims.len();
 
@@ -295,7 +326,23 @@ impl Sample for Sponza {
         for i in 0..4 {
             let (x, y, tw, th) = csm.tile_viewport(i);
             gpu.set_viewport(x, y, tw, th)?;
-            self.draw_prims(gpu, shadow_pso, all.clone(), csm.view_proj[i], false, &mut cb)?;
+            self.draw_prims(
+                gpu,
+                shadow_pso,
+                one_sided.clone(),
+                csm.view_proj[i],
+                false,
+                &mut cb,
+            )?;
+            // Cutout casters need the albedo alpha, so they carry material.
+            self.draw_prims(
+                gpu,
+                shadow_cutout_pso,
+                two_sided.clone(),
+                csm.view_proj[i],
+                true,
+                &mut cb,
+            )?;
         }
         gpu.end_color_pass()?;
 

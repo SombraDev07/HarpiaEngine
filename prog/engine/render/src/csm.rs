@@ -39,6 +39,10 @@ pub struct Csm {
     pub view_proj: [Mat4; 4],
     /// Positive view-space distances of each cascade far plane (`-view.z` in RH).
     pub splits: Vec4,
+    /// World radius of each cascade's bounding sphere. The ortho depth range is
+    /// `2 * radius` and a tile texel is `2 * radius / (atlas/2)` world units —
+    /// PCSS turns a penumbra in metres into a radius in texels with these.
+    pub radius: Vec4,
 }
 
 impl Csm {
@@ -71,6 +75,7 @@ pub fn compute(camera: &Camera, sun_dir: Vec3, atlas_size: u32) -> Csm {
         }
     };
     let mut view_proj = [Mat4::IDENTITY; CASCADE_COUNT];
+    let mut radii = [0.0f32; CASCADE_COUNT];
     for i in 0..CASCADE_COUNT {
         let near_i = if i == 0 { camera.near } else { split_far[i - 1] };
         let far_i = split_far[i];
@@ -115,11 +120,13 @@ pub fn compute(camera: &Camera, sun_dir: Vec3, atlas_size: u32) -> Csm {
         let z_far = dist + radius;
         let ortho = Mat4::orthographic_rh(-radius, radius, -radius, radius, z_near, z_far);
         view_proj[i] = ortho * light_view;
+        radii[i] = radius;
     }
     Csm {
         atlas_size,
         view_proj,
         splits: Vec4::new(split_far[0], split_far[1], split_far[2], split_far[3]),
+        radius: Vec4::new(radii[0], radii[1], radii[2], radii[3]),
     }
 }
 

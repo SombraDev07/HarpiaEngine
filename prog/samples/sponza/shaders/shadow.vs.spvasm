@@ -1,13 +1,15 @@
 ; Sponza shadow VS. MeshVertex pos+nrm+uv. Push: cascadeVP + world.
+; UV goes out at location 0 so the cutout PS can kill on the albedo alpha.
 OpCapability Shader
 %glsl = OpExtInstImport "GLSL.std.450"
 OpMemoryModel Logical GLSL450
-OpEntryPoint Vertex %VSMain "VSMain" %in_pos %in_nrm %in_uv %position %pc
+OpEntryPoint Vertex %VSMain "VSMain" %in_pos %in_nrm %in_uv %position %v_uv %pc
 OpName %VSMain "VSMain"
 OpDecorate %in_pos Location 0
 OpDecorate %in_nrm Location 1
 OpDecorate %in_uv Location 2
 OpDecorate %position BuiltIn Position
+OpDecorate %v_uv Location 0
 OpDecorate %Push Block
 OpMemberDecorate %Push 0 Offset 0
 OpMemberDecorate %Push 0 ColMajor
@@ -34,7 +36,9 @@ OpMemberDecorate %Push 1 MatrixStride 16
 %in_pos = OpVariable %ptr_in_v3 Input
 %in_nrm = OpVariable %ptr_in_v3 Input
 %in_uv = OpVariable %ptr_in_v2 Input
+%ptr_out_v2 = OpTypePointer Output %v2
 %position = OpVariable %ptr_out_v4 Output
+%v_uv = OpVariable %ptr_out_v2 Output
 
 %Push = OpTypeStruct %mat4 %mat4
 %ptr_push = OpTypePointer PushConstant %Push
@@ -45,7 +49,7 @@ OpMemberDecorate %Push 1 MatrixStride 16
 %entry = OpLabel
 %pos = OpLoad %v3 %in_pos
 %_n = OpLoad %v3 %in_nrm
-%_u = OpLoad %v2 %in_uv
+%uv = OpLoad %v2 %in_uv
 %world4 = OpCompositeConstruct %v4 %pos %f1
 %p_world = OpAccessChain %ptr_mat %pc %u1
 %worldM = OpLoad %mat4 %p_world
@@ -54,5 +58,6 @@ OpMemberDecorate %Push 1 MatrixStride 16
 %wp = OpMatrixTimesVector %v4 %worldM %world4
 %clip = OpMatrixTimesVector %v4 %vp %wp
 OpStore %position %clip
+OpStore %v_uv %uv
 OpReturn
 OpFunctionEnd

@@ -5,6 +5,10 @@ use harpia_math::{Mat4, Vec2, Vec4};
 
 use crate::csm::Csm;
 
+/// Roadmap §6 default. Read as `tan` of the sun's angular radius: the real sun
+/// is ~0.0047, this is exaggerated so the penumbra is visible.
+pub const PCSS_LIGHT_SIZE: f32 = 0.035;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct LightingCb {
@@ -34,6 +38,11 @@ pub struct LightingCb {
     pub _pad2: u32,
     pub splits: Vec4,
     pub cascades: [Mat4; 4],
+    /// PCSS: light size (tan of the source's angular radius, exaggerated for
+    /// looks), blocker-search radius in texels, min and max PCF radius in texels.
+    pub pcss: Vec4,
+    /// [`crate::Csm::radius`] per cascade.
+    pub cascade_radius: Vec4,
 }
 
 impl Default for LightingCb {
@@ -64,6 +73,8 @@ impl Default for LightingCb {
             _pad2: 0,
             splits: Vec4::ZERO,
             cascades: [Mat4::IDENTITY; 4],
+            pcss: Vec4::new(PCSS_LIGHT_SIZE, 3.0, 1.0, 4.5),
+            cascade_radius: Vec4::ONE,
         }
     }
 }
@@ -103,6 +114,7 @@ impl LightingCb {
         self.cascade_count = 4;
         self.splits = csm.splits;
         self.cascades = csm.view_proj;
+        self.cascade_radius = csm.radius;
     }
 }
 
@@ -118,7 +130,9 @@ mod tests {
     fn push_is_128_and_cb_fits_ubo() {
         assert_eq!(std::mem::size_of::<PushConstants>(), 128);
         assert!(std::mem::size_of::<LightingCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
-        assert_eq!(std::mem::size_of::<LightingCb>(), 528);
+        assert_eq!(std::mem::size_of::<LightingCb>(), 560);
+        assert_eq!(std::mem::offset_of!(LightingCb, pcss), 528);
+        assert_eq!(std::mem::offset_of!(LightingCb, cascade_radius), 544);
         assert_eq!(std::mem::offset_of!(LightingCb, exposure), 152);
         assert_eq!(std::mem::offset_of!(LightingCb, alpha_cutoff), 156);
         assert_eq!(std::mem::offset_of!(LightingCb, view), 176);

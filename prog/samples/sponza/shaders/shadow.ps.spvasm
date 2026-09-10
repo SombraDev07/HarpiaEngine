@@ -1,0 +1,104 @@
+; Shadow caster cutout: OpKill where the albedo alpha is under the glTF MASK
+; cutoff. Without this, Sponza's foliage casts solid rectangles.
+; Opaque primitives can share this PSO safely: their cutoff is 0, so `alpha < 0`
+; is never true and nothing is killed.
+;
+; The pass is depth-only, so the colour output goes nowhere — but it has to
+; exist: spirv-val rejects OpKill when the branch's merge block holds nothing
+; but OpReturn. Writing the alpha that was tested keeps the shader honest
+; instead of parking a no-op there to please the validator.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %in_uv %out_alpha %cb %heap %samp
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %in_uv Location 0
+OpDecorate %out_alpha Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp DescriptorSet 2
+OpDecorate %samp Binding 0
+OpDecorate %ig0 NonUniform
+OpDecorate %Lighting Block
+OpMemberDecorate %Lighting 0 Offset 0
+OpMemberDecorate %Lighting 0 ColMajor
+OpMemberDecorate %Lighting 0 MatrixStride 16
+OpMemberDecorate %Lighting 1 Offset 64
+OpMemberDecorate %Lighting 2 Offset 80
+OpMemberDecorate %Lighting 3 Offset 96
+OpMemberDecorate %Lighting 4 Offset 112
+OpMemberDecorate %Lighting 5 Offset 116
+OpMemberDecorate %Lighting 6 Offset 120
+OpMemberDecorate %Lighting 7 Offset 124
+OpMemberDecorate %Lighting 8 Offset 128
+OpMemberDecorate %Lighting 9 Offset 132
+OpMemberDecorate %Lighting 10 Offset 136
+OpMemberDecorate %Lighting 11 Offset 140
+OpMemberDecorate %Lighting 12 Offset 144
+OpMemberDecorate %Lighting 13 Offset 148
+OpMemberDecorate %Lighting 14 Offset 152
+OpMemberDecorate %Lighting 15 Offset 156
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v2 = OpTypePointer Input %v2
+%ptr_out_v4 = OpTypePointer Output %v4
+%in_uv = OpVariable %ptr_in_v2 Input
+%out_alpha = OpVariable %ptr_out_v4 Output
+
+%Lighting = OpTypeStruct %mat4 %v4 %v4 %v4 %uint %uint %uint %uint %uint %uint %uint %uint %float %float %float %float
+%ptr_cb = OpTypePointer Uniform %Lighting
+%cb = OpVariable %ptr_cb Uniform
+%ptr_u = OpTypePointer Uniform %uint
+%ptr_f = OpTypePointer Uniform %float
+
+%img = OpTypeImage %float 2D 0 0 0 1 Unknown
+%img_arr = OpTypeRuntimeArray %img
+%ptr_arr = OpTypePointer UniformConstant %img_arr
+%heap = OpVariable %ptr_arr UniformConstant
+%ptr_img = OpTypePointer UniformConstant %img
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp = OpVariable %ptr_samp UniformConstant
+%sampled = OpTypeSampledImage %img
+
+%u4 = OpConstant %uint 4
+%u15 = OpConstant %uint 15
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%uv = OpLoad %v2 %in_uv
+%pg0 = OpAccessChain %ptr_u %cb %u4
+%ig0 = OpLoad %uint %pg0
+%pa0 = OpAccessChain %ptr_img %heap %ig0
+%ia0 = OpLoad %img %pa0
+%sw = OpLoad %samp_ty %samp
+%sm0 = OpSampledImage %sampled %ia0 %sw
+%alb4 = OpImageSampleImplicitLod %v4 %sm0 %uv
+%alpha = OpCompositeExtract %float %alb4 3
+%pcut = OpAccessChain %ptr_f %cb %u15
+%cut = OpLoad %float %pcut
+%cutme = OpFOrdLessThan %bool %alpha %cut
+OpSelectionMerge %keep None
+OpBranchConditional %cutme %cutout %keep
+%cutout = OpLabel
+OpKill
+%keep = OpLabel
+%kept = OpCompositeConstruct %v4 %alpha %alpha %alpha %alpha
+OpStore %out_alpha %kept
+OpReturn
+OpFunctionEnd

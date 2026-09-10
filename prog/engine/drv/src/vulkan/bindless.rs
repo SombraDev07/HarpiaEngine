@@ -32,6 +32,10 @@ pub struct Bindless {
     pub set5: vk::DescriptorSet,
     pub sampler: vk::Sampler,
     pub clamp_sampler: vk::Sampler,
+    /// Depth compare (`LESS_OR_EQUAL`). Hardware PCF: compare **then** filter.
+    /// Sampling depth with a plain linear sampler blends depths and compares
+    /// after, which is the wrong order and wrong at every silhouette.
+    pub compare_sampler: vk::Sampler,
     pub frame_ubos: Vec<GpuBuffer>,
     pub staging: GpuBuffer,
     pub next_slot: u32,
@@ -78,6 +82,22 @@ impl Bindless {
 
         // Dynamic: one bound set, one chunk per draw. Landmine: a plain
         // UNIFORM_BUFFER means every draw in the frame reads the *last* write.
+        let compare_sampler = unsafe {
+            device.create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .mag_filter(vk::Filter::LINEAR)
+                    .min_filter(vk::Filter::LINEAR)
+                    .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .compare_enable(true)
+                    .compare_op(vk::CompareOp::LESS_OR_EQUAL)
+                    .max_lod(0.0),
+                None,
+            )?
+        };
+
         let ubo_binding = [vk::DescriptorSetLayoutBinding::default()
             .binding(0)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
@@ -125,6 +145,11 @@ impl Bindless {
                 .stage_flags(sampler_stage),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
+                .descriptor_type(vk::DescriptorType::SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(sampler_stage),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(sampler_stage),
@@ -210,7 +235,7 @@ impl Bindless {
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLER,
-                descriptor_count: 4,
+                descriptor_count: 6,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_IMAGE,
@@ -310,8 +335,14 @@ impl Bindless {
             .dst_binding(1)
             .descriptor_type(vk::DescriptorType::SAMPLER)
             .image_info(std::slice::from_ref(&clamp_info));
+        let compare_info = vk::DescriptorImageInfo::default().sampler(compare_sampler);
+        let compare_write = vk::WriteDescriptorSet::default()
+            .dst_set(set2)
+            .dst_binding(2)
+            .descriptor_type(vk::DescriptorType::SAMPLER)
+            .image_info(std::slice::from_ref(&compare_info));
         unsafe {
-            device.update_descriptor_sets(&[wrap_write, clamp_write], &[]);
+            device.update_descriptor_sets(&[wrap_write, clamp_write, compare_write], &[]);
         }
 
         for (i, set) in set0.iter().enumerate() {
@@ -341,6 +372,7 @@ impl Bindless {
             set5,
             sampler,
             clamp_sampler,
+            compare_sampler,
             frame_ubos,
             staging,
             next_slot: BINDLESS_NULL_SLOT + 1,
@@ -537,6 +569,7 @@ impl Bindless {
             device.destroy_descriptor_pool(self.pool, None);
             device.destroy_sampler(self.sampler, None);
             device.destroy_sampler(self.clamp_sampler, None);
+            device.destroy_sampler(self.compare_sampler, None);
         }
         for ubo in self.frame_ubos.drain(..) {
             resources::destroy_buffer(device, allocator, ubo);

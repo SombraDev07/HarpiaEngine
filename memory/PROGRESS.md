@@ -122,12 +122,25 @@ PNG. Foi assim que se confirmou o froxel antes de olhar para a composição.
 Falta na fase 5: clouds, water, rain. E o fog ainda não amostra o CSM — sem
 sombras volumétricas / god rays.
 
+## Sessão 2026-09-09 (parte 4) — a barra da sombra fechou
+
+Sampler de comparação + PCSS + cutout nos casters. Detalhe em D18. Verificado em
+pixels: `gate-csm` com penumbra que abre com a distância e dura no contacto;
+Sponza com a sombra da arcada suave no chão do átrio e a folhagem a projectar
+folhas em vez de rectângulos (14 primitivas no caminho de cutout).
+
+Dois opcodes errados apanhados outra vez — mas agora em segundos, porque o
+validador está ligado e há `prog/tools/dis_spv.py`. Ver `LANDMINES.md`.
+
+O que a barra manda **não** fazer e não foi feito: VSM, ESM, contact shadows,
+toroidal atlas, octa point shadows.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.
 
 1. ~~Fog: froxels, 3D GENERAL. Gate `fog`.~~ **feito**
-2. Clouds (sem driveRain). Gate `clouds`.
+2. Clouds (sem driveRain). Gate `clouds`.  ← próximo
 3. Water: point-sample depth no SSR.
 4. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).
 5. Default-on na Sponza (`--frames` curto) ou o pass não entra. Marcar fase 5 `[x]` no roadmap §15 **neste mesmo PR**.

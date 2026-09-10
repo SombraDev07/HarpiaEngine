@@ -9,6 +9,7 @@ fn main() {
 
     for (src_name, dst_name) in [
         ("shadow.vs.spvasm", "shadow.vs.spv"),
+        ("shadow.ps.spvasm", "shadow.ps.spv"),
         ("color.vs.spvasm", "color.vs.spv"),
         ("color.ps.spvasm", "color.ps.spv"),
         ("blit.vs.spvasm", "blit.vs.spv"),
