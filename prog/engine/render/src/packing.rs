@@ -1,6 +1,6 @@
 //! GBuffer packing ABI (roadmap §3). `fuzzColor` reaches lighting via RT3.
 
-use harpia_rhi::{Format, TextureDesc};
+use harpia_rhi::{Format, TextureDesc, TextureDim};
 
 /// RT0 albedo sRGB, RT1 normal, RT2 ORM, RT3 emissive/fuzzColor, RT4 depthColor.
 pub const GBUFFER_COLOR_FORMATS: [Format; 5] = [
@@ -26,6 +26,8 @@ pub fn color_desc(width: u32, height: u32, format: Format) -> TextureDesc {
     TextureDesc {
         width,
         height,
+        depth_slices: 1,
+        dim: TextureDim::D2,
         mip_levels: 1,
         format,
         sampled: true,
@@ -41,6 +43,8 @@ pub fn sampled_desc(width: u32, height: u32, mip_levels: u32, format: Format) ->
     TextureDesc {
         width,
         height,
+        depth_slices: 1,
+        dim: TextureDim::D2,
         mip_levels: mip_levels.max(1),
         format,
         sampled: true,
@@ -54,6 +58,8 @@ pub fn depth_desc(width: u32, height: u32) -> TextureDesc {
     TextureDesc {
         width,
         height,
+        depth_slices: 1,
+        dim: TextureDim::D2,
         mip_levels: 1,
         format: GBUFFER_DEPTH_FORMAT,
         sampled: false,
@@ -68,6 +74,8 @@ pub fn shadow_atlas_desc(size: u32) -> TextureDesc {
     TextureDesc {
         width: size.max(1),
         height: size.max(1),
+        depth_slices: 1,
+        dim: TextureDim::D2,
         mip_levels: 1,
         format: GBUFFER_DEPTH_FORMAT,
         sampled: true,

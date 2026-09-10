@@ -1,0 +1,19 @@
+[package]
+name = "gate-fog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Harpia phase 5 gate: froxel volumetric fog (inject + integrate), --frames 16"
+
+[[bin]]
+name = "gate-fog"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+harpia-app.workspace = true
+harpia-math.workspace = true
+harpia-memory.workspace = true
+harpia-render.workspace = true
+harpia-rhi.workspace = true

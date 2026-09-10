@@ -1,0 +1,84 @@
+; Copy the composite RT (FogCb.scene_color) to the swapchain. Values are already
+; tonemapped and sRGB-encoded by apply.ps, so this is a straight copy.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %heap %samp_c
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %isc NonUniform
+OpDecorate %Fog Block
+OpMemberDecorate %Fog 0 Offset 0
+OpMemberDecorate %Fog 0 ColMajor
+OpMemberDecorate %Fog 0 MatrixStride 16
+OpMemberDecorate %Fog 1 Offset 64
+OpMemberDecorate %Fog 2 Offset 80
+OpMemberDecorate %Fog 3 Offset 96
+OpMemberDecorate %Fog 4 Offset 112
+OpMemberDecorate %Fog 5 Offset 128
+OpMemberDecorate %Fog 6 Offset 144
+OpMemberDecorate %Fog 7 Offset 160
+OpMemberDecorate %Fog 8 Offset 164
+OpMemberDecorate %Fog 9 Offset 168
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Fog = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %uint %uint %v2
+%ptr_cb = OpTypePointer Uniform %Fog
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uu = OpTypePointer Uniform %uint
+%ptr_uv2 = OpTypePointer Uniform %v2
+
+%u7 = OpConstant %uint 7
+%u9 = OpConstant %uint 9
+
+%img2 = OpTypeImage %float 2D 0 0 0 1 Unknown
+%arr2 = OpTypeRuntimeArray %img2
+%ptr_arr2 = OpTypePointer UniformConstant %arr2
+%heap = OpVariable %ptr_arr2 UniformConstant
+%ptr_img2 = OpTypePointer UniformConstant %img2
+%sampled2 = OpTypeSampledImage %img2
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u9
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%pisc = OpAccessChain %ptr_uu %cb %u7
+%isc = OpLoad %uint %pisc
+%pa = OpAccessChain %ptr_img2 %heap %isc
+%ia = OpLoad %img2 %pa
+%s = OpLoad %samp_ty %samp_c
+%sm = OpSampledImage %sampled2 %ia %s
+%col = OpImageSampleImplicitLod %v4 %sm %uv
+OpStore %out_color %col
+OpReturn
+OpFunctionEnd

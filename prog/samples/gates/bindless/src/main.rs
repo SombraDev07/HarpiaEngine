@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use harpia_app::{run, AppConfig, Sample};
 use harpia_rhi::{
     ComputePipeline, ComputePipelineDesc, Device, Format, FrameConstants, FrameInfo, Gpu,
-    GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture, TextureDesc,
+    GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture, TextureDesc, TextureDim,
 };
 
 #[global_allocator]
@@ -40,6 +40,8 @@ impl Sample for BindlessGate {
             .create_texture(&TextureDesc {
                 width: 4,
                 height: 4,
+                depth_slices: 1,
+                dim: TextureDim::D2,
                 mip_levels: 3,
                 format: Format::Rgba8Unorm,
                 sampled: true,
@@ -57,6 +59,8 @@ impl Sample for BindlessGate {
             .create_texture(&TextureDesc {
                 width: 64,
                 height: 64,
+                depth_slices: 1,
+                dim: TextureDim::D2,
                 mip_levels: 1,
                 format: Format::Rgba8Unorm,
                 sampled: true,

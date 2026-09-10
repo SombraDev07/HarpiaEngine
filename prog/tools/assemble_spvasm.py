@@ -58,6 +58,9 @@ OP = {
     "OpIEqual": 170,
     "OpINotEqual": 171,
     "OpUGreaterThan": 172,
+    "OpUGreaterThanEqual": 174,
+    "OpULessThan": 176,
+    "OpULessThanEqual": 178,
     "OpSelect": 169,
     "OpFMul": 133,
     "OpFAdd": 129,
@@ -103,6 +106,8 @@ OP = {
     "OpBranchConditional": 250,
     "OpPhi": 245,
     "OpKill": 252,
+    "OpLoopMerge": 246,
+    "OpImageRead": 98,
 }
 
 ENUM = {
@@ -130,8 +135,13 @@ ENUM = {
     "Uniform": 2,
     "Function": 7,
     "None": 0,
+    "1D": 0,
     "2D": 1,
+    "3D": 2,
     "Unknown": 0,
+    "Rgba32f": 1,
+    "Rgba16f": 2,
+    "R32f": 3,
     "Rgba8": 4,
     "RuntimeDescriptorArray": 5302,
     "SampledImageArrayNonUniformIndexing": 5307,
@@ -167,6 +177,10 @@ ENUM = {
     "Cross": 68,
     "Normalize": 69,
     "Reflect": 71,
+    "Ceil": 9,
+    "Tan": 15,
+    "Step": 48,
+    "SmoothStep": 49,
 }
 
 

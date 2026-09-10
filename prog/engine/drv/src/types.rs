@@ -71,16 +71,47 @@ pub struct Buffer {
     pub(crate) id: u32,
 }
 
+/// 2D image, or a volume (fog froxels, cloud noise). Layout spec set 4 / set 5.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextureDim {
+    #[default]
+    D2,
+    D3,
+}
+
+/// Fields are additive: build with `..Default::default()` so a new one does not
+/// break every call site.
 #[derive(Clone, Copy, Debug)]
 pub struct TextureDesc {
     pub width: u32,
     pub height: u32,
+    /// Slices when `dim` is [`TextureDim::D3`]. Ignored for 2D.
+    pub depth_slices: u32,
+    pub dim: TextureDim,
     pub mip_levels: u32,
     pub format: Format,
     pub sampled: bool,
     pub storage: bool,
     pub color_attachment: bool,
+    /// Depth-stencil attachment (not the volume extent — that is `depth_slices`).
     pub depth: bool,
+}
+
+impl Default for TextureDesc {
+    fn default() -> Self {
+        Self {
+            width: 1,
+            height: 1,
+            depth_slices: 1,
+            dim: TextureDim::D2,
+            mip_levels: 1,
+            format: Format::Rgba8Unorm,
+            sampled: true,
+            storage: false,
+            color_attachment: false,
+            depth: false,
+        }
+    }
 }
 
 /// Vertex / instance layout.
@@ -130,9 +161,16 @@ pub struct FrameConstants {
 pub struct TextureData {
     pub width: u32,
     pub height: u32,
+    /// 1 for a 2D texture; slices, in order, for a volume.
+    pub depth_slices: u32,
     pub format: Format,
     pub bytes: Vec<u8>,
 }
+
+/// Volume UAV slots in set 4 (binding 1) — fog writes two.
+pub const VOLUME_UAV_SLOTS: u32 = 4;
+/// Volume SRV slots in set 5 (binding 0).
+pub const VOLUME_SRV_SLOTS: u32 = 8;
 
 pub const PUSH_CONSTANTS_SIZE: u32 = 128;
 /// One CBV chunk: the `range` of set 0 binding 0, and the stride of the frame ring.

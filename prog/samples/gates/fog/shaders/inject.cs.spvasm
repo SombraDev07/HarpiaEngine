@@ -1,0 +1,181 @@
+; Froxel inject. One thread per froxel: extinction from height fog, in-scattering
+; from the sun through a Henyey-Greenstein phase. Writes set 4 binding 1 slot 0.
+; Z is exponential: d = near * (far/near)^((z + 0.5 + jitter) / slices).
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %CSMain "CSMain" %gid %uav %cb
+OpExecutionMode %CSMain LocalSize 8 8 4
+OpName %CSMain "CSMain"
+OpDecorate %gid BuiltIn GlobalInvocationId
+OpDecorate %uav DescriptorSet 4
+OpDecorate %uav Binding 1
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %Fog Block
+OpMemberDecorate %Fog 0 Offset 0
+OpMemberDecorate %Fog 0 ColMajor
+OpMemberDecorate %Fog 0 MatrixStride 16
+OpMemberDecorate %Fog 1 Offset 64
+OpMemberDecorate %Fog 2 Offset 80
+OpMemberDecorate %Fog 3 Offset 96
+OpMemberDecorate %Fog 4 Offset 112
+OpMemberDecorate %Fog 5 Offset 128
+OpMemberDecorate %Fog 6 Offset 144
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%v3u = OpTypeVector %uint 3
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v3u = OpTypePointer Input %v3u
+%gid = OpVariable %ptr_in_v3u Input
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u2 = OpConstant %uint 2
+%u3 = OpConstant %uint 3
+%u4 = OpConstant %uint 4
+%u5 = OpConstant %uint 5
+%u6 = OpConstant %uint 6
+%uslots = OpConstant %uint 4
+%uh = OpConstant %uint 90
+
+%img3 = OpTypeImage %float 3D 0 0 0 2 Rgba16f
+%arr3 = OpTypeArray %img3 %uslots
+%ptr_arr3 = OpTypePointer UniformConstant %arr3
+%uav = OpVariable %ptr_arr3 UniformConstant
+%ptr_img3 = OpTypePointer UniformConstant %img3
+
+%Fog = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4
+%ptr_cb = OpTypePointer Uniform %Fog
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv4 = OpTypePointer Uniform %v4
+%ptr_umat = OpTypePointer Uniform %mat4
+
+%f0 = OpConstant %float 0.0
+%f05 = OpConstant %float 0.5
+%f1 = OpConstant %float 1.0
+%f15 = OpConstant %float 1.5
+%f2 = OpConstant %float 2.0
+%feps = OpConstant %float 0.0001
+%f4pi = OpConstant %float 12.5663706
+%fw = OpConstant %float 160.0
+%fh = OpConstant %float 90.0
+
+%CSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%id = OpLoad %v3u %gid
+%x = OpCompositeExtract %uint %id 0
+%y = OpCompositeExtract %uint %id 1
+%z = OpCompositeExtract %uint %id 2
+; 90 rows is not a multiple of the 8-row group: skip the tail.
+%inb = OpULessThan %bool %y %uh
+OpSelectionMerge %end None
+OpBranchConditional %inb %work %end
+
+%work = OpLabel
+%fx = OpConvertUToF %float %x
+%fy = OpConvertUToF %float %y
+%fz = OpConvertUToF %float %z
+%fxc = OpFAdd %float %fx %f05
+%fyc = OpFAdd %float %fy %f05
+%uvx = OpFDiv %float %fxc %fw
+%uvy = OpFDiv %float %fyc %fh
+
+%pmisc = OpAccessChain %ptr_uv4 %cb %u6
+%misc = OpLoad %v4 %pmisc
+%jit = OpCompositeExtract %float %misc 0
+%slices = OpCompositeExtract %float %misc 1
+%fzj = OpFAdd %float %fz %f05
+%fzj2 = OpFAdd %float %fzj %jit
+%tz = OpFDiv %float %fzj2 %slices
+
+%pfr = OpAccessChain %ptr_uv4 %cb %u5
+%fr = OpLoad %v4 %pfr
+%near = OpCompositeExtract %float %fr 0
+%far = OpCompositeExtract %float %fr 1
+%tanh = OpCompositeExtract %float %fr 2
+%aspect = OpCompositeExtract %float %fr 3
+%ratio = OpFDiv %float %far %near
+%pw = OpExtInst %float %glsl Pow %ratio %tz
+%d = OpFMul %float %near %pw
+
+; view space from the froxel centre, then out to world with inv_view
+%ndx0 = OpFMul %float %uvx %f2
+%ndx = OpFSub %float %ndx0 %f1
+%ndy0 = OpFMul %float %uvy %f2
+%ndy = OpFSub %float %ndy0 %f1
+%sx0 = OpFMul %float %ndx %tanh
+%sx1 = OpFMul %float %sx0 %aspect
+%xv = OpFMul %float %sx1 %d
+%sy0 = OpFMul %float %ndy %tanh
+%sy1 = OpFMul %float %sy0 %d
+%yv = OpFNegate %float %sy1
+%zv = OpFNegate %float %d
+%vpos = OpCompositeConstruct %v4 %xv %yv %zv %f1
+%pinv = OpAccessChain %ptr_umat %cb %u0
+%invv = OpLoad %mat4 %pinv
+%wpos4 = OpMatrixTimesVector %v4 %invv %vpos
+%wpos = OpVectorShuffle %v3 %wpos4 %wpos4 0 1 2
+
+; extinction: exponential height fog
+%pfog = OpAccessChain %ptr_uv4 %cb %u4
+%fog = OpLoad %v4 %pfog
+%dens = OpCompositeExtract %float %fog 0
+%hfall = OpCompositeExtract %float %fog 1
+%g = OpCompositeExtract %float %fog 2
+%baseh = OpCompositeExtract %float %fog 3
+%wy = OpCompositeExtract %float %wpos 1
+%dh = OpFSub %float %wy %baseh
+%dhc = OpExtInst %float %glsl FMax %dh %f0
+%dhn = OpFNegate %float %dhc
+%hmul0 = OpFMul %float %dhn %hfall
+%hmul = OpExtInst %float %glsl Exp %hmul0
+%sigma = OpFMul %float %dens %hmul
+
+; Henyey-Greenstein phase between the view ray and the sun
+%pcam = OpAccessChain %ptr_uv4 %cb %u1
+%cam4 = OpLoad %v4 %pcam
+%cam = OpVectorShuffle %v3 %cam4 %cam4 0 1 2
+%toeye = OpFSub %v3 %cam %wpos
+%vd = OpExtInst %v3 %glsl Normalize %toeye
+%psun = OpAccessChain %ptr_uv4 %cb %u2
+%sun4 = OpLoad %v4 %psun
+%sun = OpVectorShuffle %v3 %sun4 %sun4 0 1 2
+%sunn = OpExtInst %v3 %glsl Normalize %sun
+%cosg = OpDot %float %vd %sunn
+%g2 = OpFMul %float %g %g
+%hnum = OpFSub %float %f1 %g2
+%hd0 = OpFAdd %float %f1 %g2
+%g2c = OpFMul %float %f2 %g
+%g2cc = OpFMul %float %g2c %cosg
+%hd1 = OpFSub %float %hd0 %g2cc
+%hd2 = OpExtInst %float %glsl FMax %hd1 %feps
+%hd3 = OpExtInst %float %glsl Pow %hd2 %f15
+%hd4 = OpFMul %float %f4pi %hd3
+%phase = OpFDiv %float %hnum %hd4
+
+%psc = OpAccessChain %ptr_uv4 %cb %u3
+%sc4 = OpLoad %v4 %psc
+%sc = OpVectorShuffle %v3 %sc4 %sc4 0 1 2
+%ps = OpFMul %float %phase %sigma
+%insc = OpVectorTimesScalar %v3 %sc %ps
+%ir = OpCompositeExtract %float %insc 0
+%ig = OpCompositeExtract %float %insc 1
+%ib = OpCompositeExtract %float %insc 2
+%outv = OpCompositeConstruct %v4 %ir %ig %ib %sigma
+
+%pimg = OpAccessChain %ptr_img3 %uav %u0
+%img = OpLoad %img3 %pimg
+OpImageWrite %img %id %outv
+OpBranch %end
+
+%end = OpLabel
+OpReturn
+OpFunctionEnd

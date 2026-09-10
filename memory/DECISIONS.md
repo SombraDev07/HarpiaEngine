@@ -131,3 +131,27 @@ Fechadas. Não reabrir sem motivo escrito aqui.
 - `Device::read_texture` espera o device — é caminho de captura/debug, nunca frame
   quente. Todas as imagens nascem com `TRANSFER_SRC`.
 - Nenhum gate volta a ser julgado por screenshot da janela.
+
+## D16 — Volumes vivem nos sets 4/5, nunca no heap 2D
+
+- `TextureDim::D3` + `depth_slices` no `TextureDesc`. Um volume tem view 3D e é
+  inválido no heap 2D (set 1) e no UAV 2D (set 4 binding 0).
+- Set 4 binding 1 = `VOLUME_UAV_SLOTS` (4) UAVs 3D. Set 5 binding 0 =
+  `VOLUME_SRV_SLOTS` (8) sampled 3D. É o que `docs/Bindless-Descriptor-Layout.md`
+  já dizia; agora existe.
+- Bindings nomeados por índice constante no shader (`OpTypeArray`), não runtime
+  array: são poucos e o índice é uniforme. `bindless_index()` **erra** para 3D.
+- Volumes ficam em `GENERAL` a vida toda (escritos como UAV, lidos como SRV).
+  Um dummy 1×1×1 enche os dois arrays no init.
+
+## D17 — Fog é froxel compute, exactamente como o roadmap §9
+
+- 160×90×64 RGBA16F × 2 (scatter, integrated). Inject `[8,8,4]` → (20,12,16),
+  integrate `[8,8,1]` → (20,12,1). 90 não é múltiplo de 8: os shaders testam Y.
+- Z exponencial `near·(far/near)^((z+0.5+jitter)/D)`, jitter Halton(2). O apply
+  inverte com `log`.
+- Inject: extinção de height fog + sol com fase Henyey-Greenstein. **Sem** CSM
+  ainda — sombras volumétricas / god rays ficam para quando as clouds entrarem.
+- Integrate conserva energia: `S = (Sc - Sc·T_slice)/sigma`, `acc += T·S`.
+- `FogCb` (176 B) é o contrato com os `.spvasm`; o teste
+  `fog::tests::cb_layout_matches_the_spvasm` fixa os offsets.

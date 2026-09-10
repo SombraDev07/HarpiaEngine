@@ -107,6 +107,9 @@ pub trait Device {
     fn bindless_index(&self, tex: Texture) -> Result<u32>;
     /// Copy mip 0 back to the CPU. Waits for the device: capture, not hot path.
     fn read_texture(&mut self, tex: Texture) -> Result<TextureData>;
+    /// Volumes (fog froxels, cloud noise) live in set 4 / set 5, never the 2D heap.
+    fn bind_volume_uav(&mut self, slot: u32, tex: Texture) -> Result<()>;
+    fn bind_volume_srv(&mut self, slot: u32, tex: Texture) -> Result<()>;
     fn write_frame_constants(&mut self, c: FrameConstants) -> Result<()>;
     fn bind_graphics_bindless(&mut self) -> Result<()>;
     fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> Result<ComputePipeline>;
@@ -193,6 +196,12 @@ impl Device for Gpu {
     }
     fn read_texture(&mut self, tex: Texture) -> Result<TextureData> {
         gpu!(self, read_texture, tex)
+    }
+    fn bind_volume_uav(&mut self, slot: u32, tex: Texture) -> Result<()> {
+        gpu!(self, bind_volume_uav, slot, tex)
+    }
+    fn bind_volume_srv(&mut self, slot: u32, tex: Texture) -> Result<()> {
+        gpu!(self, bind_volume_srv, slot, tex)
     }
     fn write_frame_constants(&mut self, c: FrameConstants) -> Result<()> {
         gpu!(self, write_frame_constants, c)

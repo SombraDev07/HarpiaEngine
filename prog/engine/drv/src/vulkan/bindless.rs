@@ -8,14 +8,14 @@ use harpia_core::{BINDLESS_HEAP_SIZE, BINDLESS_NULL_SLOT};
 
 use super::resources::{self, GpuBuffer, GpuImage};
 use crate::types::{
-    Format, FrameConstants, TextureDesc, FRAME_CBV_CHUNKS, FRAME_CBV_RING_SIZE, FRAME_UBO_SIZE,
-    PUSH_CONSTANTS_SIZE,
+    Format, FrameConstants, TextureDesc, TextureDim, FRAME_CBV_CHUNKS, FRAME_CBV_RING_SIZE,
+    FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE, VOLUME_SRV_SLOTS, VOLUME_UAV_SLOTS,
 };
 use crate::{RhiError, Result, FRAMES_IN_FLIGHT};
 
 /// `range` of set 0 binding 0. The buffer behind it is a ring of these.
 const UBO_SIZE: u64 = FRAME_UBO_SIZE;
-const SET_COUNT: usize = 5;
+const SET_COUNT: usize = 6;
 /// CPU staging for texture uploads. Sponza albedos can be 2k–4k (pitch 256).
 const STAGING_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -28,6 +28,8 @@ pub struct Bindless {
     pub set2: vk::DescriptorSet,
     pub set3: vk::DescriptorSet,
     pub set4: vk::DescriptorSet,
+    /// Set 5: sampled 3D (fog / clouds). Kept apart from the 2D heap, per spec.
+    pub set5: vk::DescriptorSet,
     pub sampler: vk::Sampler,
     pub clamp_sampler: vk::Sampler,
     pub frame_ubos: Vec<GpuBuffer>,
@@ -138,11 +140,20 @@ impl Bindless {
             device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default(), None)?
         };
 
-        let storage_binding = [vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::COMPUTE)];
+        // Set 4: binding 0 is the 2D UAV (gate-bindless), binding 1 the volume
+        // UAVs (fog froxels). 3D UAVs live in GENERAL — landmine 4.
+        let storage_binding = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(VOLUME_UAV_SLOTS)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        ];
         let set4_layout = unsafe {
             device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&storage_binding),
@@ -150,7 +161,30 @@ impl Bindless {
             )?
         };
 
-        let set_layouts = [set0_layout, set1_layout, set2_layout, set3_layout, set4_layout];
+        let volume_srv_binding = [vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .descriptor_count(VOLUME_SRV_SLOTS)
+            .stage_flags(
+                vk::ShaderStageFlags::VERTEX
+                    | vk::ShaderStageFlags::FRAGMENT
+                    | vk::ShaderStageFlags::COMPUTE,
+            )];
+        let set5_layout = unsafe {
+            device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&volume_srv_binding),
+                None,
+            )?
+        };
+
+        let set_layouts = [
+            set0_layout,
+            set1_layout,
+            set2_layout,
+            set3_layout,
+            set4_layout,
+            set5_layout,
+        ];
         let pc_range = vk::PushConstantRange {
             stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             offset: 0,
@@ -172,7 +206,7 @@ impl Bindless {
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
-                descriptor_count: BINDLESS_HEAP_SIZE,
+                descriptor_count: BINDLESS_HEAP_SIZE + VOLUME_SRV_SLOTS,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLER,
@@ -180,14 +214,14 @@ impl Bindless {
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: 8,
+                descriptor_count: 8 + VOLUME_UAV_SLOTS,
             },
         ];
         let pool = unsafe {
             device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
                     .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
-                    .max_sets(8)
+                    .max_sets(10)
                     .pool_sizes(&pool_sizes),
                 None,
             )?
@@ -233,6 +267,13 @@ impl Bindless {
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(pool)
                     .set_layouts(std::slice::from_ref(&set4_layout)),
+            )?[0]
+        };
+        let set5 = unsafe {
+            device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(pool)
+                    .set_layouts(std::slice::from_ref(&set5_layout)),
             )?[0]
         };
 
@@ -297,6 +338,7 @@ impl Bindless {
             set2,
             set3,
             set4,
+            set5,
             sampler,
             clamp_sampler,
             frame_ubos,
@@ -326,6 +368,44 @@ impl Bindless {
             .image_layout(layout);
         let write = vk::WriteDescriptorSet::default()
             .dst_set(self.set1)
+            .dst_binding(0)
+            .dst_array_element(slot)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .image_info(std::slice::from_ref(&info));
+        unsafe {
+            device.update_descriptor_sets(std::slice::from_ref(&write), &[]);
+        }
+    }
+
+    /// Set 4 binding 1, slot `n`: a 3D UAV. Layout is always GENERAL.
+    pub fn write_volume_uav(&self, device: &Device, slot: u32, view: vk::ImageView) {
+        let info = vk::DescriptorImageInfo::default()
+            .image_view(view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.set4)
+            .dst_binding(1)
+            .dst_array_element(slot)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .image_info(std::slice::from_ref(&info));
+        unsafe {
+            device.update_descriptor_sets(std::slice::from_ref(&write), &[]);
+        }
+    }
+
+    /// Set 5 binding 0, slot `n`: a sampled 3D image.
+    pub fn write_volume_srv(
+        &self,
+        device: &Device,
+        slot: u32,
+        view: vk::ImageView,
+        layout: vk::ImageLayout,
+    ) {
+        let info = vk::DescriptorImageInfo::default()
+            .image_view(view)
+            .image_layout(layout);
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.set5)
             .dst_binding(0)
             .dst_array_element(slot)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
@@ -384,7 +464,7 @@ impl Bindless {
     }
 
     pub fn bind_graphics(&self, device: &Device, cmd: vk::CommandBuffer, slot: usize, cbv: u32) {
-        let sets = [self.set0[slot], self.set1, self.set2, self.set3, self.set4];
+        let sets = [self.set0[slot], self.set1, self.set2, self.set3, self.set4, self.set5];
         unsafe {
             device.cmd_bind_descriptor_sets(
                 cmd,
@@ -412,7 +492,7 @@ impl Bindless {
     }
 
     pub fn bind_compute(&self, device: &Device, cmd: vk::CommandBuffer, slot: usize, cbv: u32) {
-        let sets = [self.set0[slot], self.set1, self.set2, self.set3, self.set4];
+        let sets = [self.set0[slot], self.set1, self.set2, self.set3, self.set4, self.set5];
         unsafe {
             device.cmd_bind_descriptor_sets(
                 cmd,
@@ -469,6 +549,8 @@ pub fn dummy_desc() -> TextureDesc {
     TextureDesc {
         width: 1,
         height: 1,
+        depth_slices: 1,
+        dim: TextureDim::D2,
         mip_levels: 1,
         format: Format::Rgba8Unorm,
         sampled: true,
@@ -484,4 +566,26 @@ pub fn dummy_pixel() -> [u8; 4] {
 
 pub fn create_dummy(device: &Device, allocator: &mut Allocator) -> Result<GpuImage> {
     resources::create_image(device, allocator, &dummy_desc(), BINDLESS_NULL_SLOT)
+}
+
+/// 1×1×1 volume. Every slot of set 4 binding 1 and set 5 binding 0 points here
+/// until a real volume claims it — those arrays are not PARTIALLY_BOUND, so a
+/// stale descriptor is a validation error the moment a shader is dispatched.
+pub fn volume_dummy_desc() -> TextureDesc {
+    TextureDesc {
+        width: 1,
+        height: 1,
+        depth_slices: 1,
+        dim: TextureDim::D3,
+        mip_levels: 1,
+        format: Format::Rgba16Float,
+        sampled: true,
+        storage: true,
+        color_attachment: false,
+        depth: false,
+    }
+}
+
+pub fn create_volume_dummy(device: &Device, allocator: &mut Allocator) -> Result<GpuImage> {
+    resources::create_image(device, allocator, &volume_dummy_desc(), BINDLESS_NULL_SLOT)
 }

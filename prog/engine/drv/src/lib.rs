@@ -16,8 +16,8 @@ pub use device::{
 pub use error::RhiError;
 pub use types::{
     Backend, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
-    PipelineTargets, PrimitiveTopology, Texture, TextureData, TextureDesc, FRAME_CBV_CHUNKS,
-    FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE,
+    PipelineTargets, PrimitiveTopology, Texture, TextureData, TextureDesc, TextureDim,
+    FRAME_CBV_CHUNKS, FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE, VOLUME_SRV_SLOTS, VOLUME_UAV_SLOTS,
 };
 
 pub type Result<T, E = RhiError> = std::result::Result<T, E>;
@@ -76,6 +76,8 @@ mod tests {
             .create_texture(&TextureDesc {
                 width: 4,
                 height: 4,
+                depth_slices: 1,
+                dim: TextureDim::D2,
                 mip_levels: 1,
                 format: Format::Rgba8Unorm,
                 sampled: true,
@@ -114,6 +116,8 @@ mod tests {
             .create_texture(&TextureDesc {
                 width: 64,
                 height: 64,
+                depth_slices: 1,
+                dim: TextureDim::D2,
                 mip_levels: 1,
                 format: Format::Rgba8Unorm,
                 sampled: true,
@@ -126,6 +130,8 @@ mod tests {
             .create_texture(&TextureDesc {
                 width: 64,
                 height: 64,
+                depth_slices: 1,
+                dim: TextureDim::D2,
                 mip_levels: 1,
                 format: Format::D32Float,
                 sampled: false,
@@ -163,6 +169,8 @@ mod tests {
             .create_texture(&TextureDesc {
                 width: 64,
                 height: 64,
+                depth_slices: 1,
+                dim: TextureDim::D2,
                 mip_levels: 1,
                 format: Format::D32Float,
                 sampled: true,

@@ -1,0 +1,137 @@
+; Froxel integrate. One thread per (x,y): marches the 64 Z slices, accumulating
+; in-scattering against transmittance (energy-conserving, Frostbite-style):
+;   T_slice = exp(-sigma * dz);  S = (Sc - Sc*T_slice) / sigma
+;   acc += T * S;  T *= T_slice
+; Reads set 4 binding 1 slot 0 (scatter), writes slot 1 (integrated).
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %CSMain "CSMain" %gid %uav %cb
+OpExecutionMode %CSMain LocalSize 8 8 1
+OpName %CSMain "CSMain"
+OpDecorate %gid BuiltIn GlobalInvocationId
+OpDecorate %uav DescriptorSet 4
+OpDecorate %uav Binding 1
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %Fog Block
+OpMemberDecorate %Fog 0 Offset 0
+OpMemberDecorate %Fog 0 ColMajor
+OpMemberDecorate %Fog 0 MatrixStride 16
+OpMemberDecorate %Fog 1 Offset 64
+OpMemberDecorate %Fog 2 Offset 80
+OpMemberDecorate %Fog 3 Offset 96
+OpMemberDecorate %Fog 4 Offset 112
+OpMemberDecorate %Fog 5 Offset 128
+OpMemberDecorate %Fog 6 Offset 144
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%v3u = OpTypeVector %uint 3
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v3u = OpTypePointer Input %v3u
+%gid = OpVariable %ptr_in_v3u Input
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u5 = OpConstant %uint 5
+%u6 = OpConstant %uint 6
+%uslots = OpConstant %uint 4
+%uh = OpConstant %uint 90
+%udepth = OpConstant %uint 64
+
+%img3 = OpTypeImage %float 3D 0 0 0 2 Rgba16f
+%arr3 = OpTypeArray %img3 %uslots
+%ptr_arr3 = OpTypePointer UniformConstant %arr3
+%uav = OpVariable %ptr_arr3 UniformConstant
+%ptr_img3 = OpTypePointer UniformConstant %img3
+
+%Fog = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4
+%ptr_cb = OpTypePointer Uniform %Fog
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv4 = OpTypePointer Uniform %v4
+
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%feps = OpConstant %float 0.00001
+%v3zero = OpConstantComposite %v3 %f0 %f0 %f0
+
+%CSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%id = OpLoad %v3u %gid
+%x = OpCompositeExtract %uint %id 0
+%y = OpCompositeExtract %uint %id 1
+%inb = OpULessThan %bool %y %uh
+OpSelectionMerge %fin None
+OpBranchConditional %inb %setup %fin
+
+%setup = OpLabel
+%pfr = OpAccessChain %ptr_uv4 %cb %u5
+%fr = OpLoad %v4 %pfr
+%near = OpCompositeExtract %float %fr 0
+%far = OpCompositeExtract %float %fr 1
+%ratio = OpFDiv %float %far %near
+%pmisc = OpAccessChain %ptr_uv4 %cb %u6
+%misc = OpLoad %v4 %pmisc
+%slices = OpCompositeExtract %float %misc 1
+%invsl = OpFDiv %float %f1 %slices
+%pscat = OpAccessChain %ptr_img3 %uav %u0
+%scat = OpLoad %img3 %pscat
+%pint = OpAccessChain %ptr_img3 %uav %u1
+%intg = OpLoad %img3 %pint
+OpBranch %header
+
+%header = OpLabel
+%i = OpPhi %uint %u0 %setup %inext %cont
+%acc = OpPhi %v3 %v3zero %setup %accn %cont
+%trans = OpPhi %float %f1 %setup %transn %cont
+%dprev = OpPhi %float %near %setup %d %cont
+%more = OpULessThan %bool %i %udepth
+OpLoopMerge %merge %cont None
+OpBranchConditional %more %body %merge
+
+%body = OpLabel
+%i1 = OpIAdd %uint %i %u1
+%fi1 = OpConvertUToF %float %i1
+%t = OpFMul %float %fi1 %invsl
+%pw = OpExtInst %float %glsl Pow %ratio %t
+%d = OpFMul %float %near %pw
+%dz = OpFSub %float %d %dprev
+%coord = OpCompositeConstruct %v3u %x %y %i
+%s = OpImageRead %v4 %scat %coord
+%sc = OpVectorShuffle %v3 %s %s 0 1 2
+%sig = OpCompositeExtract %float %s 3
+%od0 = OpFMul %float %sig %dz
+%od = OpFNegate %float %od0
+%tslice = OpExtInst %float %glsl Exp %od
+%scT = OpVectorTimesScalar %v3 %sc %tslice
+%dif = OpFSub %v3 %sc %scT
+%sigc = OpExtInst %float %glsl FMax %sig %feps
+%invsig = OpFDiv %float %f1 %sigc
+%S = OpVectorTimesScalar %v3 %dif %invsig
+%contrib = OpVectorTimesScalar %v3 %S %trans
+%accn = OpFAdd %v3 %acc %contrib
+%transn = OpFMul %float %trans %tslice
+%ax = OpCompositeExtract %float %accn 0
+%ay = OpCompositeExtract %float %accn 1
+%az = OpCompositeExtract %float %accn 2
+%outv = OpCompositeConstruct %v4 %ax %ay %az %transn
+OpImageWrite %intg %coord %outv
+OpBranch %cont
+
+%cont = OpLabel
+%inext = OpIAdd %uint %i %u1
+OpBranch %header
+
+%merge = OpLabel
+OpBranch %fin
+
+%fin = OpLabel
+OpReturn
+OpFunctionEnd

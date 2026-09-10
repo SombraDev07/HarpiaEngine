@@ -1,0 +1,362 @@
+use anyhow::{Context, Result};
+use harpia_app::{run, AppConfig, Sample};
+use harpia_math::{Vec2, Vec3, Vec4};
+use harpia_render::{
+    color_desc, depth_desc, froxel_desc, halton2, inject_dispatch, integrate_dispatch, Camera,
+    FogCb, MaterialGpu, PushConstants, SphereInstance, SphereMesh, GBUFFER_DEPTH_FORMAT,
+    INSTANCE_STRIDE, VERTEX_STRIDE,
+};
+use harpia_rhi::{
+    Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
+    GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture,
+};
+
+#[global_allocator]
+static ALLOC: harpia_memory::Allocator = harpia_memory::Allocator::new();
+
+const HDR: Format = Format::Rgba16Float;
+/// RT1 carries the positive view depth the fog apply pass turns into a slice.
+const VIEW_DEPTH: Format = Format::R32Float;
+const FORWARD_FORMATS: [Format; 2] = [HDR, VIEW_DEPTH];
+/// apply.ps writes display-referred values here, then blit copies to the swapchain.
+const COMPOSITE: Format = Format::Rgba8Unorm;
+const COMPOSITE_FORMATS: [Format; 1] = [COMPOSITE];
+
+const FOG_NEAR: f32 = 0.5;
+const FOG_FAR: f32 = 60.0;
+const FOV_Y: f32 = 50.0;
+
+/// UAV slots in set 4 binding 1, SRV slot in set 5 binding 0.
+const SLOT_SCATTER: u32 = 0;
+const SLOT_INTEGRATED: u32 = 1;
+
+struct Targets {
+    color: Texture,
+    view_depth: Texture,
+    depth: Texture,
+    /// apply.ps lands here instead of straight on the swapchain, so `--capture`
+    /// can look at the composite the gate is actually judged on.
+    composite: Texture,
+}
+
+struct FogGate {
+    fwd_pso: Option<GraphicsPipeline>,
+    apply_pso: Option<GraphicsPipeline>,
+    blit_pso: Option<GraphicsPipeline>,
+    inject_pso: Option<ComputePipeline>,
+    integrate_pso: Option<ComputePipeline>,
+    plane_vb: Option<Buffer>,
+    plane_ib: Option<Buffer>,
+    plane_inst: Option<Buffer>,
+    plane_idx: u32,
+    sph_vb: Option<Buffer>,
+    sph_ib: Option<Buffer>,
+    sph_inst: Option<Buffer>,
+    sph_idx: u32,
+    sph_count: u32,
+    scatter: Option<Texture>,
+    integrated: Option<Texture>,
+    rt: Option<Targets>,
+    extent: Extent2D,
+}
+
+impl Default for FogGate {
+    fn default() -> Self {
+        Self {
+            fwd_pso: None,
+            apply_pso: None,
+            blit_pso: None,
+            inject_pso: None,
+            integrate_pso: None,
+            plane_vb: None,
+            plane_ib: None,
+            plane_inst: None,
+            plane_idx: 0,
+            sph_vb: None,
+            sph_ib: None,
+            sph_inst: None,
+            sph_idx: 0,
+            sph_count: 0,
+            scatter: None,
+            integrated: None,
+            rt: None,
+            extent: Extent2D {
+                width: 0,
+                height: 0,
+            },
+        }
+    }
+}
+
+impl FogGate {
+    fn recreate(&mut self, gpu: &mut Gpu, extent: Extent2D) -> Result<()> {
+        let w = extent.width.max(1);
+        let h = extent.height.max(1);
+        self.rt = Some(Targets {
+            color: gpu.create_texture(&color_desc(w, h, HDR))?,
+            view_depth: gpu.create_texture(&color_desc(w, h, VIEW_DEPTH))?,
+            depth: gpu.create_texture(&depth_desc(w, h))?,
+            composite: gpu.create_texture(&color_desc(w, h, COMPOSITE))?,
+        });
+        self.extent = Extent2D { width: w, height: h };
+        Ok(())
+    }
+
+    fn draw_scene(&self, gpu: &mut Gpu, view_proj: harpia_math::Mat4) -> Result<()> {
+        let pso = self.fwd_pso.as_ref().context("forward pso")?;
+        gpu.set_pipeline(pso)?;
+        gpu.bind_graphics_bindless()?;
+        gpu.set_push_constants(PushConstants::new(view_proj).as_bytes())?;
+        gpu.bind_vertex_buffer(self.plane_vb.context("plane vb")?, 0)?;
+        gpu.bind_vertex_buffer(self.plane_inst.context("plane inst")?, 1)?;
+        gpu.bind_index_buffer(self.plane_ib.context("plane ib")?)?;
+        gpu.draw_indexed(self.plane_idx, 1, 0, 0, 0)?;
+        gpu.bind_vertex_buffer(self.sph_vb.context("sph vb")?, 0)?;
+        gpu.bind_vertex_buffer(self.sph_inst.context("sph inst")?, 1)?;
+        gpu.bind_index_buffer(self.sph_ib.context("sph ib")?)?;
+        gpu.draw_indexed(self.sph_idx, self.sph_count, 0, 0, 0)?;
+        Ok(())
+    }
+}
+
+impl Sample for FogGate {
+    fn init(&mut self, gpu: &mut Gpu) -> Result<()> {
+        self.fwd_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/forward.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/forward.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &FORWARD_FORMATS,
+                    depth_format: Some(GBUFFER_DEPTH_FORMAT),
+                    vertex_stride: VERTEX_STRIDE,
+                    instance_stride: INSTANCE_STRIDE,
+                    depth_test: true,
+                    cull_back: true,
+                    ..Default::default()
+                },
+            })
+            .context("forward PSO")?,
+        );
+        self.apply_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/apply.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &COMPOSITE_FORMATS,
+                    ..Default::default()
+                },
+            })
+            .context("apply PSO")?,
+        );
+        self.blit_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/blit.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets::default(),
+            })
+            .context("blit PSO")?,
+        );
+        self.inject_pso = Some(
+            gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/inject.cs.spv")),
+                cs_entry: "CSMain",
+            })
+            .context("inject PSO")?,
+        );
+        self.integrate_pso = Some(
+            gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/integrate.cs.spv")),
+                cs_entry: "CSMain",
+            })
+            .context("integrate PSO")?,
+        );
+
+        let plane = SphereMesh::plane_xz();
+        self.plane_idx = plane.indices.len() as u32;
+        self.plane_vb = Some(gpu.create_vertex_buffer(plane.vertex_bytes())?);
+        self.plane_ib = Some(gpu.create_index_buffer(plane.index_bytes())?);
+        let mut ground = MaterialGpu::default();
+        ground.base_color = [0.58, 0.56, 0.52];
+        let plane_i = [SphereInstance::from_material([0.0, 0.0, 0.0], 40.0, &ground)];
+        self.plane_inst = Some(gpu.create_vertex_buffer(instance_bytes(&plane_i))?);
+
+        let sph = SphereMesh::uv(20, 14);
+        self.sph_idx = sph.indices.len() as u32;
+        self.sph_vb = Some(gpu.create_vertex_buffer(sph.vertex_bytes())?);
+        self.sph_ib = Some(gpu.create_index_buffer(sph.index_bytes())?);
+        let spheres = pillars();
+        self.sph_count = spheres.len() as u32;
+        self.sph_inst = Some(gpu.create_vertex_buffer(instance_bytes(&spheres))?);
+
+        // Froxels live in GENERAL for their whole life: written as UAVs, read as
+        // an SRV. Binding them once at init keeps the frame free of descriptor writes.
+        let scatter = gpu.create_texture(&froxel_desc())?;
+        let integrated = gpu.create_texture(&froxel_desc())?;
+        gpu.bind_volume_uav(SLOT_SCATTER, scatter)?;
+        gpu.bind_volume_uav(SLOT_INTEGRATED, integrated)?;
+        gpu.bind_volume_srv(0, integrated)?;
+        self.scatter = Some(scatter);
+        self.integrated = Some(integrated);
+
+        self.recreate(gpu, gpu.extent())?;
+        Ok(())
+    }
+
+    fn capture_targets(&self) -> Vec<(&'static str, Texture)> {
+        let mut out = Vec::new();
+        if let Some(rt) = self.rt.as_ref() {
+            out.push(("composite", rt.composite));
+            out.push(("scene", rt.color));
+        }
+        if let Some(t) = self.scatter {
+            out.push(("froxel-scatter", t));
+        }
+        if let Some(t) = self.integrated {
+            out.push(("froxel-integrated", t));
+        }
+        out
+    }
+
+    fn frame(&mut self, gpu: &mut Gpu, info: FrameInfo) -> Result<()> {
+        if info.extent.width != self.extent.width || info.extent.height != self.extent.height {
+            self.recreate(gpu, info.extent)?;
+        }
+        let rt = self.rt.as_ref().context("rt")?;
+        let apply = self.apply_pso.as_ref().context("apply pso")?;
+        let blit = self.blit_pso.as_ref().context("blit pso")?;
+        let inject = self.inject_pso.as_ref().context("inject pso")?;
+        let integrate = self.integrate_pso.as_ref().context("integrate pso")?;
+        let scatter = self.scatter.context("scatter")?;
+        let integrated = self.integrated.context("integrated")?;
+
+        let w = info.extent.width.max(1) as f32;
+        let h = info.extent.height.max(1) as f32;
+        let camera = Camera {
+            eye: Vec3::new(0.0, 2.6, 15.0),
+            target: Vec3::new(0.0, 1.6, -6.0),
+            up: Vec3::Y,
+            fov_y: FOV_Y.to_radians(),
+            aspect: w / h,
+            near: 0.4,
+            far: 80.0,
+        };
+        let sun = Vec3::new(0.40, 0.78, 0.48).normalize();
+        let view_proj = camera.view_proj();
+
+        let cb = FogCb {
+            inv_view: camera.view().inverse(),
+            camera_pos: Vec4::new(camera.eye.x, camera.eye.y, camera.eye.z, 1.0),
+            sun_dir: Vec4::new(sun.x, sun.y, sun.z, 0.0),
+            sun_color: Vec4::new(3.6, 3.3, 2.9, 1.0),
+            // density, height falloff, phase g (forward scattering), base height
+            fog: Vec4::new(0.045, 0.20, 0.55, 0.0),
+            froxel: Vec4::new(
+                FOG_NEAR,
+                FOG_FAR,
+                (FOV_Y.to_radians() * 0.5).tan(),
+                camera.aspect,
+            ),
+            misc: Vec4::new(
+                halton2(info.frame_index as u32),
+                harpia_render::FROXEL_D as f32,
+                1.0,
+                0.0,
+            ),
+            scene_color: gpu.bindless_index(rt.color)?,
+            scene_depth: gpu.bindless_index(rt.view_depth)?,
+            inv_extent: Vec2::new(1.0 / w, 1.0 / h),
+        };
+        gpu.write_frame_bytes(cb.as_bytes())?;
+
+        // 1. scene into HDR + view depth. Depth clears to the fog far plane so
+        //    the background gets a full froxel march instead of zero fog.
+        gpu.begin_color_pass(
+            &[rt.color, rt.view_depth],
+            Some(rt.depth),
+            &[[0.40, 0.52, 0.66, 1.0], [FOG_FAR, 0.0, 0.0, 0.0]],
+            Some(1.0),
+        )?;
+        self.draw_scene(gpu, view_proj)?;
+        gpu.end_color_pass()?;
+
+        // 2. froxels: inject, then march Z. Both dispatches run outside a pass.
+        let (ix, iy, iz) = inject_dispatch();
+        gpu.set_compute_pipeline(inject)?;
+        gpu.bind_compute_bindless()?;
+        gpu.dispatch(ix, iy, iz)?;
+        gpu.storage_barrier(scatter)?;
+
+        let (gx, gy, gz) = integrate_dispatch();
+        gpu.set_compute_pipeline(integrate)?;
+        gpu.bind_compute_bindless()?;
+        gpu.dispatch(gx, gy, gz)?;
+        gpu.storage_barrier(integrated)?;
+
+        // 3. composite scene * transmittance + in-scattering, then tonemap.
+        gpu.begin_color_pass(&[rt.composite], None, &[[0.0, 0.0, 0.0, 1.0]], None)?;
+        gpu.set_pipeline(apply)?;
+        gpu.bind_graphics_bindless()?;
+        gpu.draw(3, 1, 0, 0)?;
+        gpu.end_color_pass()?;
+
+        // 4. present. A fresh CBV chunk re-points scene_color at the composite.
+        let mut blit_cb = cb;
+        blit_cb.scene_color = gpu.bindless_index(rt.composite)?;
+        gpu.write_frame_bytes(blit_cb.as_bytes())?;
+        gpu.begin_swapchain_pass([0.02, 0.03, 0.05, 1.0])?;
+        gpu.set_pipeline(blit)?;
+        gpu.bind_graphics_bindless()?;
+        gpu.draw(3, 1, 0, 0)?;
+        gpu.end_swapchain_pass()?;
+        Ok(())
+    }
+}
+
+/// A receding row of spheres: the point of the gate is seeing fog build with depth.
+fn pillars() -> Vec<SphereInstance> {
+    let mut out = Vec::new();
+    let mut pale = MaterialGpu::default();
+    pale.base_color = [0.88, 0.86, 0.82];
+    let mut warm = MaterialGpu::default();
+    warm.base_color = [0.80, 0.35, 0.22];
+    for i in 0..7 {
+        let z = -2.0 - i as f32 * 5.0;
+        let r = 1.1;
+        out.push(SphereInstance::from_material([-3.4, r, z], r, &pale));
+        out.push(SphereInstance::from_material([3.4, r, z], r, &warm));
+    }
+    out
+}
+
+fn instance_bytes(instances: &[SphereInstance]) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(
+            instances.as_ptr().cast::<u8>(),
+            std::mem::size_of_val(instances),
+        )
+    }
+}
+
+fn main() -> Result<std::process::ExitCode> {
+    let mut config = AppConfig::parse(std::env::args())?;
+    config.title = "Harpia — fog".into();
+    let interactive = config.max_frames.is_none();
+    let user_set_frames =
+        std::env::args().any(|a| a == "--frames" || a == "--interactive" || a == "-i");
+    if !user_set_frames {
+        config.max_frames = std::num::NonZeroU32::new(16);
+    }
+    if !interactive {
+        config.resize_at = vec![(6, 800, 600), (12, 1280, 720)];
+    }
+    run(config, FogGate::default())
+}

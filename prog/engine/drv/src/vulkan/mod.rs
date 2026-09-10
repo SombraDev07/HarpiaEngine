@@ -21,7 +21,7 @@ use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use crate::device::{ComputePipelineDesc, DeviceDesc, GraphicsPipelineDesc};
 use crate::types::{
     Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
-    Texture, TextureData, TextureDesc, PUSH_CONSTANTS_SIZE,
+    Texture, TextureData, TextureDesc, TextureDim, PUSH_CONSTANTS_SIZE,
 };
 use crate::{RhiError, Result, FRAMES_IN_FLIGHT};
 
@@ -376,8 +376,57 @@ impl VulkanGpu {
         dummy.mips_uploaded = 1;
         dummy.transfer_prepared = true;
         dummy.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+
+        let alloc = allocator
+            .as_mut()
+            .ok_or_else(|| RhiError::msg("allocator missing"))?;
+        let mut volume_dummy = bindless::create_volume_dummy(&device, alloc)?;
+        unsafe {
+            device.reset_command_buffer(upload_cmd, vk::CommandBufferResetFlags::empty())?;
+            device.begin_command_buffer(
+                upload_cmd,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+            resources::image_barrier(
+                &device,
+                upload_cmd,
+                volume_dummy.image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::GENERAL,
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                resources::shader_read_stages(),
+            );
+            device.end_command_buffer(upload_cmd)?;
+            device.queue_submit(
+                graphics_queue,
+                &[vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&upload_cmd))],
+                vk::Fence::null(),
+            )?;
+            device.queue_wait_idle(graphics_queue)?;
+        }
+        let volume_uav_view = volume_dummy
+            .storage_view
+            .ok_or_else(|| RhiError::msg("volume dummy has no storage view"))?;
+        for slot in 0..crate::types::VOLUME_UAV_SLOTS {
+            heap.write_volume_uav(&device, slot, volume_uav_view);
+        }
+        for slot in 0..crate::types::VOLUME_SRV_SLOTS {
+            heap.write_volume_srv(
+                &device,
+                slot,
+                volume_dummy.sampled_view,
+                vk::ImageLayout::GENERAL,
+            );
+        }
+        volume_dummy.ready = true;
+        volume_dummy.layout = vk::ImageLayout::GENERAL;
+
         let mut images = Vec::new();
         images.push(dummy);
+        images.push(volume_dummy);
 
         Ok(Self {
             entry,
@@ -972,7 +1021,7 @@ impl VulkanGpu {
                 .ok_or_else(|| RhiError::msg("allocator missing"))?;
             resources::create_image(&self.device, alloc, desc, slot)?
         };
-        if desc.storage {
+        if desc.storage || desc.dim == TextureDim::D3 {
             let image = img.image;
             let cmd = self.upload_cmd;
             unsafe {
@@ -1002,16 +1051,20 @@ impl VulkanGpu {
                 )?;
                 self.device.queue_wait_idle(self.graphics_queue)?;
             }
-            let view = img.sampled_view;
-            let storage = img
-                .storage_view
-                .ok_or_else(|| RhiError::msg("storage view missing"))?;
-            let heap = self
-                .bindless
-                .as_ref()
-                .ok_or_else(|| RhiError::msg("bindless missing"))?;
-            heap.write_sampled(&self.device, slot, view, vk::ImageLayout::GENERAL);
-            heap.write_storage(&self.device, storage);
+            // A volume is bound with bind_volume_uav / bind_volume_srv: its view
+            // type is 3D and would be invalid in the 2D heap (set 1 / set 4:0).
+            if desc.dim == TextureDim::D2 {
+                let view = img.sampled_view;
+                let storage = img
+                    .storage_view
+                    .ok_or_else(|| RhiError::msg("storage view missing"))?;
+                let heap = self
+                    .bindless
+                    .as_ref()
+                    .ok_or_else(|| RhiError::msg("bindless missing"))?;
+                heap.write_sampled(&self.device, slot, view, vk::ImageLayout::GENERAL);
+                heap.write_storage(&self.device, storage);
+            }
             img.ready = true;
             img.layout = vk::ImageLayout::GENERAL;
         }
@@ -1133,7 +1186,7 @@ impl VulkanGpu {
         if self.in_frame {
             return Err(RhiError::msg("read_texture during a frame"));
         }
-        let (image, width, height, format, layout) = {
+        let (image, width, height, slices, format, layout) = {
             let img = self
                 .images
                 .get(tex.id as usize)
@@ -1142,13 +1195,15 @@ impl VulkanGpu {
                 img.image,
                 img.width,
                 img.height,
+                img.depth_slices,
                 img.engine_format,
                 img.layout,
             )
         };
         let bpp = resources::bytes_per_pixel(format)?;
         let aspect = resources::aspect_for(format);
-        let size = resources::row_pitch_bytes(width, bpp) as u64 * height as u64;
+        let size =
+            resources::row_pitch_bytes(width, bpp) as u64 * height as u64 * slices as u64;
 
         unsafe {
             self.device.device_wait_idle()?;
@@ -1193,7 +1248,7 @@ impl VulkanGpu {
                     aspect,
                 );
                 resources::cmd_copy_to_buffer(
-                    device, cmd, image, buffer, width, height, bpp, aspect,
+                    device, cmd, image, buffer, width, height, slices, bpp, aspect,
                 );
                 resources::image_barrier_aspect(
                     device,
@@ -1219,7 +1274,7 @@ impl VulkanGpu {
                 .as_ptr()
                 .cast::<u8>();
             let padded = unsafe { std::slice::from_raw_parts(ptr, size as usize) };
-            Ok(resources::unpack_rows(padded, width, height, bpp))
+            Ok(resources::unpack_rows(padded, width, height, slices, bpp))
         });
 
         let alloc = self
@@ -1231,17 +1286,69 @@ impl VulkanGpu {
         Ok(TextureData {
             width,
             height,
+            depth_slices: slices,
             format,
             bytes: bytes?,
         })
     }
 
     pub fn bindless_index(&self, tex: Texture) -> Result<u32> {
-        Ok(self
+        let img = self
             .images
             .get(tex.id as usize)
-            .ok_or_else(|| RhiError::msg("invalid texture"))?
-            .bindless_slot)
+            .ok_or_else(|| RhiError::msg("invalid texture"))?;
+        if img.dim == TextureDim::D3 {
+            return Err(RhiError::msg(
+                "a 3D texture has no 2D heap slot; bind it with bind_volume_uav / bind_volume_srv",
+            ));
+        }
+        Ok(img.bindless_slot)
+    }
+
+    /// Set 4 binding 1, slot `slot`: the volume a compute shader writes.
+    pub fn bind_volume_uav(&mut self, slot: u32, tex: Texture) -> Result<()> {
+        let (view, dim) = {
+            let img = self
+                .images
+                .get(tex.id as usize)
+                .ok_or_else(|| RhiError::msg("invalid texture"))?;
+            (img.storage_view, img.dim)
+        };
+        if dim != TextureDim::D3 {
+            return Err(RhiError::msg("bind_volume_uav needs a 3D texture"));
+        }
+        if slot >= crate::types::VOLUME_UAV_SLOTS {
+            return Err(RhiError::msg("volume UAV slot out of range"));
+        }
+        let view = view.ok_or_else(|| RhiError::msg("volume has no storage view"))?;
+        self.bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless missing"))?
+            .write_volume_uav(&self.device, slot, view);
+        Ok(())
+    }
+
+    /// Set 5 binding 0, slot `slot`: the volume a shader samples. Volumes stay
+    /// in GENERAL, so the same image can be read and written across dispatches.
+    pub fn bind_volume_srv(&mut self, slot: u32, tex: Texture) -> Result<()> {
+        let (view, dim, layout) = {
+            let img = self
+                .images
+                .get(tex.id as usize)
+                .ok_or_else(|| RhiError::msg("invalid texture"))?;
+            (img.sampled_view, img.dim, img.layout)
+        };
+        if dim != TextureDim::D3 {
+            return Err(RhiError::msg("bind_volume_srv needs a 3D texture"));
+        }
+        if slot >= crate::types::VOLUME_SRV_SLOTS {
+            return Err(RhiError::msg("volume SRV slot out of range"));
+        }
+        self.bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless missing"))?
+            .write_volume_srv(&self.device, slot, view, layout);
+        Ok(())
     }
 
     pub fn write_frame_constants(&mut self, c: FrameConstants) -> Result<()> {

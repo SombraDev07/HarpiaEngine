@@ -1,6 +1,7 @@
 //! Deferred PBR helpers. No `vk::*`.
 
 mod csm;
+mod fog;
 mod gltf_scene;
 mod ibl;
 mod lighting;
@@ -10,6 +11,10 @@ mod packing;
 mod taa;
 
 pub use csm::{compute as compute_csm, Camera, Csm, CASCADE_COUNT, DEFAULT_ATLAS_SIZE};
+pub use fog::{
+    froxel_desc, halton2, inject_dispatch, integrate_dispatch, FogCb, FROXEL_D, FROXEL_FORMAT,
+    FROXEL_H, FROXEL_W, INJECT_GROUP, INTEGRATE_GROUP,
+};
 pub use gltf_scene::{load_path as load_gltf, CpuImage, CpuPrimitive, CpuScene, GltfError};
 pub use ibl::{generate as generate_ibl, IblCpu, RgbaImage};
 pub use lighting::{LightingCb, PushConstants};

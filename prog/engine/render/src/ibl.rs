@@ -1,7 +1,7 @@
 //! CPU IBL: procedural sky, irradiance, GGX prefilter mips, BRDF LUT. All mips filled.
 
 use harpia_math::Vec3;
-use harpia_rhi::{Format, TextureDesc};
+use harpia_rhi::{Format, TextureDesc, TextureDim};
 
 const PI: f32 = std::f32::consts::PI;
 
@@ -27,6 +27,8 @@ impl RgbaImage {
         TextureDesc {
             width: self.width,
             height: self.height,
+            depth_slices: 1,
+            dim: TextureDim::D2,
             mip_levels: self.mip_levels,
             format: Format::Rgba8Unorm,
             sampled: true,

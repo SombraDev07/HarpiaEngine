@@ -165,6 +165,20 @@ impl NullGpu {
         Ok(())
     }
 
+    pub fn bind_volume_uav(&mut self, slot: u32, _tex: Texture) -> Result<()> {
+        if slot >= crate::types::VOLUME_UAV_SLOTS {
+            return Err(RhiError::msg("volume UAV slot out of range"));
+        }
+        Ok(())
+    }
+
+    pub fn bind_volume_srv(&mut self, slot: u32, _tex: Texture) -> Result<()> {
+        if slot >= crate::types::VOLUME_SRV_SLOTS {
+            return Err(RhiError::msg("volume SRV slot out of range"));
+        }
+        Ok(())
+    }
+
     /// No pixels on the Null backend; capture is a Vulkan-only path.
     pub fn read_texture(&mut self, _tex: Texture) -> Result<TextureData> {
         Err(RhiError::msg("read_texture needs the Vulkan backend"))

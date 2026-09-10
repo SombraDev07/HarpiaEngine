@@ -9,11 +9,25 @@ use anyhow::{Context, Result};
 use harpia_rhi::{Format, TextureData};
 
 /// Writes `<prefix>.<name>.png` and logs the value range (handy in a terminal).
+/// A volume comes out as a grid of its slices, so fog froxels are one glance.
 pub fn write_png(prefix: &Path, name: &str, data: &TextureData) -> Result<()> {
     let mut path = prefix.as_os_str().to_os_string();
     path.push(format!(".{name}.png"));
     let path = std::path::PathBuf::from(path);
-    let (w, h) = (data.width, data.height);
+    let (w, h) = if data.depth_slices > 1 {
+        let cols = (data.depth_slices as f32).sqrt().ceil() as u32;
+        let rows = data.depth_slices.div_ceil(cols);
+        tracing::info!(
+            target = name,
+            slices = data.depth_slices,
+            grid = format!("{cols}x{rows}"),
+            "volume capture"
+        );
+        (data.width * cols, data.height * rows)
+    } else {
+        (data.width, data.height)
+    };
+    let data = &tile_slices(data);
 
     match data.format {
         Format::Rgba8Unorm | Format::Rgba8Srgb => {
@@ -133,5 +147,34 @@ mod tests {
             let got = half_to_f32(&bits.to_le_bytes());
             assert!((got - want).abs() < 1e-6, "{bits:#06x} -> {got}, want {want}");
         }
+    }
+}
+
+/// Lay a volume's slices out in a grid so one PNG shows the whole thing.
+fn tile_slices(data: &TextureData) -> TextureData {
+    if data.depth_slices <= 1 {
+        return data.clone();
+    }
+    let bpp = data.bytes.len() / (data.width * data.height * data.depth_slices) as usize;
+    let cols = (data.depth_slices as f32).sqrt().ceil() as u32;
+    let rows = data.depth_slices.div_ceil(cols);
+    let (tw, th) = (data.width * cols, data.height * rows);
+    let mut out = vec![0u8; tw as usize * th as usize * bpp];
+    let src_row = data.width as usize * bpp;
+    for z in 0..data.depth_slices {
+        let (cx, cy) = (z % cols, z / cols);
+        for y in 0..data.height {
+            let s = ((z * data.height + y) as usize) * src_row;
+            let dx = (cx * data.width) as usize * bpp;
+            let dy = (cy * data.height + y) as usize * tw as usize * bpp;
+            out[dy + dx..dy + dx + src_row].copy_from_slice(&data.bytes[s..s + src_row]);
+        }
+    }
+    TextureData {
+        width: tw,
+        height: th,
+        depth_slices: 1,
+        format: data.format,
+        bytes: out,
     }
 }

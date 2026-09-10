@@ -15,7 +15,7 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 | 2 bindless | `gate-bindless` (16 frames) | feito |
 | 3 PBR | `gate-pbr-grid` 90 frames | feito |
 | **4 CSM+TAA** | **`csm` + `taa` 16; Sponza 90** | **feito** |
-| **5 clima** | fog → clouds → water → rain | **agora** |
+| **5 clima** | fog → clouds → water → rain | **agora** (fog feito) |
 | 6…9 | ver roadmap §15 | não |
 
 ## Ordem de leitura (início de sessão)

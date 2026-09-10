@@ -501,7 +501,7 @@ Barra: `docs/Rust-Rewrite-Quality-Bar.md` §4.1 e §4.8. Cena de olho: **Sponza*
 
 Ordem: fog compute → clouds (sem driveRain) → water → **rain por último** (é o mais perigoso).
 
-- [ ] Fog: froxels, 3D GENERAL.
+- [x] Fog: froxels, 3D GENERAL. `gate-fog` 16 frames, validation 0.
 - [ ] Clouds: noise cache em disco.
 - [ ] Water: point-sample depth no SSR.
 - [ ] Rain: GBuffer wet + post; cones sem HDR SRV; `--frames 16` only.

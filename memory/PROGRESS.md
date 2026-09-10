@@ -26,6 +26,7 @@ cargo run -p gate-bindless
 cargo run -p gate-pbr-grid -- --frames 90
 cargo run -p gate-csm
 cargo run -p gate-taa
+cargo run -p gate-fog
 cargo run -p sponza -- --frames 90
 # assets: python3 prog/tools/fetch_sponza.py  (glTF gitignored)
 # pixels, não screenshots:
@@ -93,11 +94,39 @@ pátio em sombra e a faixa de sol que entra pela abertura; `gate-taa` com `resol
 ≠ `color` (a history passou a ser usada). Sem acne — o `depth_bias` (1.25 / 1.75)
 chega com os casters sem culling.
 
+## Sessão 2026-09-09 (parte 3) — fase 5 arrancou: fog em froxels
+
+`gate-fog` verde: 16 frames, validation 0, e a captura mostra as duas filas de
+esferas a dissolver-se com a distância, com height fog no chão.
+
+O que foi preciso no RHI (não existia): **texturas 3D**. `TextureDim::D3` +
+`depth_slices` no `TextureDesc`, views 3D, e os sets 4/5 que a
+`docs/Bindless-Descriptor-Layout.md` já especificava mas ninguém tinha
+implementado — set 4 binding 1 = UAVs de volume, set 5 binding 0 = SRVs de
+volume. Volumes **nunca** entram no heap 2D (D16). Dummy 1×1×1 em GENERAL a
+encher os dois arrays, senão um descriptor por escrever é erro de validation.
+
+Fog (roadmap §9, à risca): froxels 160×90×64 RGBA16F, inject `[8,8,4]` dispatch
+(20,12,16), integrate `[8,8,1]` dispatch (20,12,1), jitter Halton(2), Z
+exponencial. Inject = extinção de height fog + in-scattering do sol com fase
+Henyey-Greenstein. Integrate marcha os 64 slices com a integração que conserva
+energia. Apply amostra o volume em `(uv, log(z/near)/log(far/near))` e compõe
+`cena * transmitância + in-scattering`, ACES + sRGB.
+
+O assembler ganhou `OpLoopMerge`, `OpImageRead`, `OpULessThan`, dim `3D` e os
+formatos de imagem — números confirmados na spec desta vez (`Rgba16f` é **2**).
+
+`--capture` agora também escreve volumes: os 64 slices saem numa grelha 8×8 num
+PNG. Foi assim que se confirmou o froxel antes de olhar para a composição.
+
+Falta na fase 5: clouds, water, rain. E o fog ainda não amostra o CSM — sem
+sombras volumétricas / god rays.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.
 
-1. Fog: froxels, 3D GENERAL. Gate `fog`.
+1. ~~Fog: froxels, 3D GENERAL. Gate `fog`.~~ **feito**
 2. Clouds (sem driveRain). Gate `clouds`.
 3. Water: point-sample depth no SSR.
 4. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).

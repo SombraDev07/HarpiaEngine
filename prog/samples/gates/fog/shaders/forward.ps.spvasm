@@ -1,0 +1,65 @@
+; Fog gate forward PS. Lambert into RT0 (HDR), view depth into RT1 (R32F).
+; No tonemap here: the fog apply pass owns the tonemap.
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %in_world %in_nrm %in_alb %in_z %out_hdr %out_depth
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %in_world Location 0
+OpDecorate %in_nrm Location 1
+OpDecorate %in_alb Location 2
+OpDecorate %in_z Location 3
+OpDecorate %out_hdr Location 0
+OpDecorate %out_depth Location 1
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+
+%ptr_in_v3 = OpTypePointer Input %v3
+%ptr_in_f = OpTypePointer Input %float
+%ptr_out_v4 = OpTypePointer Output %v4
+%ptr_out_f = OpTypePointer Output %float
+%in_world = OpVariable %ptr_in_v3 Input
+%in_nrm = OpVariable %ptr_in_v3 Input
+%in_alb = OpVariable %ptr_in_v3 Input
+%in_z = OpVariable %ptr_in_f Input
+%out_hdr = OpVariable %ptr_out_v4 Output
+%out_depth = OpVariable %ptr_out_f Output
+
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%finvpi = OpConstant %float 0.31830989
+%famb = OpConstant %float 0.14
+%v3_amb = OpConstantComposite %v3 %famb %famb %famb
+%lx = OpConstant %float 0.40
+%ly = OpConstant %float 0.78
+%lz = OpConstant %float 0.48
+%L = OpConstantComposite %v3 %lx %ly %lz
+%sr = OpConstant %float 4.4
+%sg = OpConstant %float 4.0
+%sb = OpConstant %float 3.4
+%sun = OpConstantComposite %v3 %sr %sg %sb
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%_w = OpLoad %v3 %in_world
+%nrm = OpLoad %v3 %in_nrm
+%alb = OpLoad %v3 %in_alb
+%z = OpLoad %float %in_z
+%nn = OpExtInst %v3 %glsl Normalize %nrm
+%Ln = OpExtInst %v3 %glsl Normalize %L
+%ndot = OpDot %float %nn %Ln
+%ndotl = OpExtInst %float %glsl FMax %ndot %f0
+%nlpi = OpFMul %float %ndotl %finvpi
+%lit = OpVectorTimesScalar %v3 %sun %nlpi
+%light = OpFAdd %v3 %v3_amb %lit
+%rgb = OpFMul %v3 %alb %light
+%hdr = OpCompositeConstruct %v4 %rgb %f1
+OpStore %out_hdr %hdr
+OpStore %out_depth %z
+OpReturn
+OpFunctionEnd

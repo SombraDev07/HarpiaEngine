@@ -5,7 +5,7 @@ use gpu_allocator::MemoryLocation;
 use ash::vk;
 use ash::Device;
 
-use crate::types::{Format, TextureDesc};
+use crate::types::{Format, TextureDesc, TextureDim};
 use crate::{RhiError, Result};
 
 /// `copy_buffer_to_texture` row pitch. Landmine 9.
@@ -56,6 +56,8 @@ pub struct GpuBuffer {
 
 pub struct GpuImage {
     pub image: vk::Image,
+    pub dim: TextureDim,
+    pub depth_slices: u32,
     pub sampled_view: vk::ImageView,
     pub storage_view: Option<vk::ImageView>,
     pub allocation: Allocation,
@@ -126,6 +128,11 @@ pub fn create_image(
         return Err(RhiError::msg("texture extent is 0"));
     }
     let mip_levels = desc.mip_levels.max(1);
+    let volume = desc.dim == TextureDim::D3;
+    let depth_slices = if volume { desc.depth_slices.max(1) } else { 1 };
+    if volume && (desc.color_attachment || desc.depth) {
+        return Err(RhiError::msg("a 3D texture cannot be an attachment"));
+    }
     let format = vk_format(desc.format)?;
     let mut usage = vk::ImageUsageFlags::empty();
     if desc.sampled || desc.color_attachment || desc.depth {
@@ -156,12 +163,16 @@ pub fn create_image(
     let aspect = aspect_for(desc.format);
 
     let ci = vk::ImageCreateInfo::default()
-        .image_type(vk::ImageType::TYPE_2D)
+        .image_type(if volume {
+            vk::ImageType::TYPE_3D
+        } else {
+            vk::ImageType::TYPE_2D
+        })
         .format(format)
         .extent(vk::Extent3D {
             width: desc.width,
             height: desc.height,
-            depth: 1,
+            depth: depth_slices,
         })
         .mip_levels(mip_levels)
         .array_layers(1)
@@ -183,11 +194,16 @@ pub fn create_image(
         device.bind_image_memory(image, allocation.memory(), allocation.offset())?;
     }
 
+    let view_type = if volume {
+        vk::ImageViewType::TYPE_3D
+    } else {
+        vk::ImageViewType::TYPE_2D
+    };
     let sampled_view = unsafe {
         device.create_image_view(
             &vk::ImageViewCreateInfo::default()
                 .image(image)
-                .view_type(vk::ImageViewType::TYPE_2D)
+                .view_type(view_type)
                 .format(format)
                 .subresource_range(vk::ImageSubresourceRange {
                     aspect_mask: aspect,
@@ -205,7 +221,7 @@ pub fn create_image(
             device.create_image_view(
                 &vk::ImageViewCreateInfo::default()
                     .image(image)
-                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .view_type(view_type)
                     .format(format)
                     .subresource_range(vk::ImageSubresourceRange {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -223,6 +239,8 @@ pub fn create_image(
 
     Ok(GpuImage {
         image,
+        dim: desc.dim,
+        depth_slices,
         sampled_view,
         storage_view,
         allocation,
@@ -342,6 +360,7 @@ pub unsafe fn cmd_copy_to_buffer(
     buffer: vk::Buffer,
     width: u32,
     height: u32,
+    depth: u32,
     bpp: u32,
     aspect: vk::ImageAspectFlags,
 ) {
@@ -360,7 +379,7 @@ pub unsafe fn cmd_copy_to_buffer(
         image_extent: vk::Extent3D {
             width,
             height,
-            depth: 1,
+            depth,
         },
     };
     unsafe {
@@ -374,14 +393,18 @@ pub unsafe fn cmd_copy_to_buffer(
     }
 }
 
-/// Drop the 256-byte row padding that `cmd_copy_to_buffer` writes.
-pub fn unpack_rows(padded: &[u8], width: u32, height: u32, bpp: u32) -> Vec<u8> {
+/// Drop the 256-byte row padding that `cmd_copy_to_buffer` writes. Slices are
+/// laid out one after another, each `pitch * height` bytes.
+pub fn unpack_rows(padded: &[u8], width: u32, height: u32, depth: u32, bpp: u32) -> Vec<u8> {
     let pitch = row_pitch_bytes(width, bpp) as usize;
     let row = width as usize * bpp as usize;
-    let mut out = Vec::with_capacity(row * height as usize);
-    for y in 0..height as usize {
-        let s = y * pitch;
-        out.extend_from_slice(&padded[s..s + row]);
+    let slice = pitch * height as usize;
+    let mut out = Vec::with_capacity(row * height as usize * depth as usize);
+    for z in 0..depth as usize {
+        for y in 0..height as usize {
+            let s = z * slice + y * pitch;
+            out.extend_from_slice(&padded[s..s + row]);
+        }
     }
     out
 }
