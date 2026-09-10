@@ -82,6 +82,18 @@ pub struct FogCb {
     pub scene_depth: u32,
     /// 1/width, 1/height of the scene RT — the apply pass turns FragCoord into uv.
     pub inv_extent: Vec2,
+    /// Bindless index of the CSM atlas. Ignored when `cascade_count` is 0.
+    pub shadow_idx: u32,
+    /// 0 = no volumetric shadows, and the inject skips the lookup entirely.
+    pub cascade_count: u32,
+    pub atlas_size: f32,
+    /// How much of the sun's in-scattering a shadowed froxel loses. 1 = all.
+    pub shadow_strength: f32,
+    /// View-space far distance of each cascade, same as [`crate::Csm::splits`].
+    pub splits: Vec4,
+    /// Four separate matrices, not an array: the shader picks one with a switch
+    /// so it needs no dynamic indexing into the UBO.
+    pub cascades: [Mat4; 4],
 }
 
 impl Default for FogCb {
@@ -97,6 +109,12 @@ impl Default for FogCb {
             scene_color: 0,
             scene_depth: 0,
             inv_extent: Vec2::ONE,
+            shadow_idx: 0,
+            cascade_count: 0,
+            atlas_size: 0.0,
+            shadow_strength: 1.0,
+            splits: Vec4::ZERO,
+            cascades: [Mat4::IDENTITY; 4],
         }
     }
 }
@@ -118,7 +136,7 @@ mod tests {
 
     #[test]
     fn cb_layout_matches_the_spvasm() {
-        assert_eq!(std::mem::size_of::<FogCb>(), 176);
+        assert_eq!(std::mem::size_of::<FogCb>(), 464);
         assert_eq!(std::mem::offset_of!(FogCb, camera_pos), 64);
         assert_eq!(std::mem::offset_of!(FogCb, sun_dir), 80);
         assert_eq!(std::mem::offset_of!(FogCb, sun_color), 96);
@@ -128,6 +146,12 @@ mod tests {
         assert_eq!(std::mem::offset_of!(FogCb, scene_color), 160);
         assert_eq!(std::mem::offset_of!(FogCb, scene_depth), 164);
         assert_eq!(std::mem::offset_of!(FogCb, inv_extent), 168);
+        assert_eq!(std::mem::offset_of!(FogCb, shadow_idx), 176);
+        assert_eq!(std::mem::offset_of!(FogCb, cascade_count), 180);
+        assert_eq!(std::mem::offset_of!(FogCb, atlas_size), 184);
+        assert_eq!(std::mem::offset_of!(FogCb, shadow_strength), 188);
+        assert_eq!(std::mem::offset_of!(FogCb, splits), 192);
+        assert_eq!(std::mem::offset_of!(FogCb, cascades), 208);
         assert!(std::mem::size_of::<FogCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
     }
 

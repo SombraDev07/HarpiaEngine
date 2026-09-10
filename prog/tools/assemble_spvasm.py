@@ -245,6 +245,41 @@ def assemble(text: str) -> bytes:
             if a.startswith("%") and a[1:] not in defined:
                 raise ValueError(f"{op} uses %{a[1:]}, which nothing defines")
 
+    # SPIR-V wants ids defined before they are used, and a type declared out of
+    # order is accepted here but rejected by the driver with "requires a previous
+    # definition" -- pointing at the struct, not at the missing line. Annotations
+    # legitimately run ahead of their target, and control flow legitimately names
+    # blocks that come later, so those are the exceptions.
+    FORWARD_OK = {
+        "OpName",
+        "OpMemberName",
+        "OpDecorate",
+        "OpMemberDecorate",
+        "OpDecorationGroup",
+        "OpGroupDecorate",
+        "OpEntryPoint",
+        "OpExecutionMode",
+        "OpTypeForwardPointer",
+        "OpPhi",
+        "OpBranch",
+        "OpBranchConditional",
+        "OpSwitch",
+        "OpSelectionMerge",
+        "OpLoopMerge",
+        "OpFunctionCall",
+    }
+    seen: set[str] = set()
+    for result, op, args in lines:
+        if op not in FORWARD_OK:
+            for a in args:
+                if a.startswith("%") and a[1:] not in seen:
+                    raise ValueError(
+                        f"{op} uses %{a[1:]} before anything defines it -- "
+                        f"move that definition earlier in the module"
+                    )
+        if result:
+            seen.add(result.lstrip("%"))
+
     # OpPhi names the block each value arrives from, and that block has to be a
     # real predecessor. Getting it wrong is silently accepted here and rejected
     # by spirv-val with an empty message, so check it while the text is at hand.

@@ -103,7 +103,8 @@ chega com os casters sem culling.
 ## Sessão 2026-09-09 (parte 3) — fase 5 arrancou: fog em froxels
 
 `gate-fog` verde: 16 frames, validation 0, e a captura mostra as duas filas de
-esferas a dissolver-se com a distância, com height fog no chão.
+esferas a dissolver-se com a distância, com height fog no chão. (A cena mudou na
+parte 5: leva agora uma grelha de oclusores para mostrar os feixes.)
 
 O que foi preciso no RHI (não existia): **texturas 3D**. `TextureDim::D3` +
 `depth_slices` no `TextureDesc`, views 3D, e os sets 4/5 que a
@@ -236,6 +237,34 @@ de a esborratar. Esse par é a prova de que a reprojecção *e* o clamp funciona
 Sweep verde: `cargo test --workspace`, 9 samples Vulkan a 32 frames com
 validation 0, 8 gates no backend Null.
 
+## Sessão 2026-09-10 (parte 5) — feixes de luz: o CSM entrou no fog
+
+O froxel já era marchado; faltava-lhe **uma tap de comparação no CSM**. É daí que
+vêm os feixes, sem pass de god rays e sem radial blur. `gate-fog` ganhou cascatas
+(partilha o `shadow.vs` do gate CSM, não uma cópia) e uma grelha de oclusores com
+folgas — a arcada da Sponza reduzida ao que este gate tem.
+
+Pelo caminho apareceu um bug a sério, já commitado há sessões: **a fase de
+Henyey-Greenstein tinha o sinal trocado** (D24). Os dois vectores saíam do froxel,
+por isso o `dot` era o simétrico do cosseno certo e o lóbulo para a frente caía
+atrás da câmara: olhar para um sol baixo através de neblina ficava *escuro*. Não
+se via como bug — com o sol atrás da câmara a névoa parecia bem. Só apareceu ao
+perguntar porque é que o efeito era tão fraco e ir aos números. As nuvens **não**
+têm o mesmo erro; lá o vector aponta da outra ponta.
+
+Como foi encontrado, e vale a pena repetir: despejei o `%shadow` directamente no
+volume dos froxels e olhei para a grelha de slices. Mostrava as silhuetas certas
+das esferas, gama 0.0008–1.0 — ou seja a procura estava boa e o problema era o
+tamanho do efeito (4.6% dos froxels na sombra), não a matemática da sombra.
+
+Números finais: com a grelha de oclusores, ligar as sombras muda **20.2%** dos
+pixels em mais de 8/255. Antes, com esferas soltas e a fase errada, o máximo era
+7/255 em todo o ecrã.
+
+O assembler ganhou um check de **uso antes da definição** — um `%v2` declarado
+depois do struct que o usa passava aqui e só o driver reclamava, apontando para o
+struct em vez da linha que falta. Os 43 shaders da árvore continuam a assemblar.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.
@@ -244,13 +273,15 @@ Não mesh shaders, RT, FSR, editor. Não VSM.
 2. ~~Céu: Hillaire completo. Gate `sky`.~~ **feito** (falta aerial perspective)
 3. ~~Clouds: raymarch Nubis a meia resolução. Gate `clouds`.~~ **feito**
 4. ~~Reprojecção temporal das nuvens.~~ **feito** (D22)
-5. **Sombra das nuvens nos froxels do fog.** É daqui que vêm os god rays **sem
-   acrescentar um pass** — o fog já marcha, só lhe falta ler a transmitância das
-   nuvens.
-6. Water: point-sample depth no SSR.
-7. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).
-8. Default-on na Sponza (`--frames` curto) ou o pass não entra. Marcar fase 5 `[x]`
-   no roadmap §15 **neste mesmo PR**.
+5. ~~Sombras volumétricas no fog (CSM no inject).~~ **feito** (D23)
+6. **Sombra das nuvens** nos mesmos froxels — falta só ler a transmitância das
+   nuvens onde o inject já lê o CSM.
+7. **Fog default-on na Sponza.** Precisa de mexer no pipeline dela: o pass de cor
+   tem de sair em HDR linear com view-depth num segundo MRT, e o tonemap passa
+   para o apply. É o critério de saída da fase 5.
+8. Water: point-sample depth no SSR.
+9. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).
+10. Marcar fase 5 `[x]` no roadmap §15 **no mesmo PR** que fechar o último gate.
 
 ### Dívida conhecida (documentada, não esquecida)
 

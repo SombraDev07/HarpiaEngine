@@ -9,6 +9,7 @@ fn main() {
 
     for (src_name, dst_name) in [
         ("forward.vs.spvasm", "forward.vs.spv"),
+        ("../../csm/shaders/shadow.vs.spvasm", "shadow.vs.spv"),
         ("forward.ps.spvasm", "forward.ps.spv"),
         ("fullscreen.vs.spvasm", "fullscreen.vs.spv"),
         ("apply.ps.spvasm", "apply.ps.spv"),

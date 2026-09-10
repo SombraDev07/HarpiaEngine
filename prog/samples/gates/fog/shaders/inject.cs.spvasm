@@ -1,10 +1,24 @@
 ; Froxel inject. One thread per froxel: extinction from height fog, in-scattering
 ; from the sun through a Henyey-Greenstein phase. Writes set 4 binding 1 slot 0.
 ; Z is exponential: d = near * (far/near)^((z + 0.5 + jitter) / slices).
+;
+; The sun's contribution is attenuated by the CSM, which is what turns the fog
+; into light shafts: a froxel in shadow scatters nothing towards the eye, so the
+; lit ones stand out as beams. One compare tap per froxel -- no PCF, because a
+; froxel is already far coarser than a shadow texel and the integrate pass
+; smooths along the ray.
+;
+; cascade_count == 0 skips the whole lookup, so a sample with no shadows pays
+; nothing and behaves exactly as before.
 OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
 %glsl = OpExtInstImport "GLSL.std.450"
 OpMemoryModel Logical GLSL450
-OpEntryPoint GLCompute %CSMain "CSMain" %gid %uav %cb
+OpEntryPoint GLCompute %CSMain "CSMain" %gid %uav %cb %heap %samp_cmp
 OpExecutionMode %CSMain LocalSize 8 8 4
 OpName %CSMain "CSMain"
 OpDecorate %gid BuiltIn GlobalInvocationId
@@ -12,6 +26,11 @@ OpDecorate %uav DescriptorSet 4
 OpDecorate %uav Binding 1
 OpDecorate %cb DescriptorSet 0
 OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_cmp DescriptorSet 2
+OpDecorate %samp_cmp Binding 2
+OpDecorate %ish NonUniform
 OpDecorate %Fog Block
 OpMemberDecorate %Fog 0 Offset 0
 OpMemberDecorate %Fog 0 ColMajor
@@ -22,12 +41,33 @@ OpMemberDecorate %Fog 3 Offset 96
 OpMemberDecorate %Fog 4 Offset 112
 OpMemberDecorate %Fog 5 Offset 128
 OpMemberDecorate %Fog 6 Offset 144
+OpMemberDecorate %Fog 7 Offset 160
+OpMemberDecorate %Fog 8 Offset 164
+OpMemberDecorate %Fog 9 Offset 168
+OpMemberDecorate %Fog 10 Offset 176
+OpMemberDecorate %Fog 11 Offset 180
+OpMemberDecorate %Fog 12 Offset 184
+OpMemberDecorate %Fog 13 Offset 188
+OpMemberDecorate %Fog 14 Offset 192
+OpMemberDecorate %Fog 15 Offset 208
+OpMemberDecorate %Fog 15 ColMajor
+OpMemberDecorate %Fog 15 MatrixStride 16
+OpMemberDecorate %Fog 16 Offset 272
+OpMemberDecorate %Fog 16 ColMajor
+OpMemberDecorate %Fog 16 MatrixStride 16
+OpMemberDecorate %Fog 17 Offset 336
+OpMemberDecorate %Fog 17 ColMajor
+OpMemberDecorate %Fog 17 MatrixStride 16
+OpMemberDecorate %Fog 18 Offset 400
+OpMemberDecorate %Fog 18 ColMajor
+OpMemberDecorate %Fog 18 MatrixStride 16
 
 %void = OpTypeVoid
 %fn0 = OpTypeFunction %void
 %bool = OpTypeBool
 %uint = OpTypeInt 32 0
 %float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
 %v3 = OpTypeVector %float 3
 %v4 = OpTypeVector %float 4
 %v3u = OpTypeVector %uint 3
@@ -43,6 +83,15 @@ OpMemberDecorate %Fog 6 Offset 144
 %u4 = OpConstant %uint 4
 %u5 = OpConstant %uint 5
 %u6 = OpConstant %uint 6
+%u10 = OpConstant %uint 10
+%u11 = OpConstant %uint 11
+%u12 = OpConstant %uint 12
+%u13 = OpConstant %uint 13
+%u14 = OpConstant %uint 14
+%u15 = OpConstant %uint 15
+%u16 = OpConstant %uint 16
+%u17 = OpConstant %uint 17
+%u18 = OpConstant %uint 18
 %uslots = OpConstant %uint 4
 %uh = OpConstant %uint 90
 
@@ -52,11 +101,23 @@ OpMemberDecorate %Fog 6 Offset 144
 %uav = OpVariable %ptr_arr3 UniformConstant
 %ptr_img3 = OpTypePointer UniformConstant %img3
 
-%Fog = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4
+%Fog = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %uint %uint %v2 %uint %uint %float %float %v4 %mat4 %mat4 %mat4 %mat4
 %ptr_cb = OpTypePointer Uniform %Fog
 %cb = OpVariable %ptr_cb Uniform
 %ptr_uv4 = OpTypePointer Uniform %v4
 %ptr_umat = OpTypePointer Uniform %mat4
+%ptr_uu = OpTypePointer Uniform %uint
+%ptr_uf = OpTypePointer Uniform %float
+
+%imgd = OpTypeImage %float 2D 1 0 0 1 Unknown
+%arrd = OpTypeRuntimeArray %imgd
+%ptr_arrd = OpTypePointer UniformConstant %arrd
+%heap = OpVariable %ptr_arrd UniformConstant
+%ptr_imgd = OpTypePointer UniformConstant %imgd
+%sampled_d = OpTypeSampledImage %imgd
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_cmp = OpVariable %ptr_samp UniformConstant
 
 %f0 = OpConstant %float 0.0
 %f05 = OpConstant %float 0.5
@@ -67,6 +128,7 @@ OpMemberDecorate %Fog 6 Offset 144
 %f4pi = OpConstant %float 12.5663706
 %fw = OpConstant %float 160.0
 %fh = OpConstant %float 90.0
+%fshbias = OpConstant %float 0.0015
 
 %CSMain = OpFunction %void None %fn0
 %entry = OpLabel
@@ -124,6 +186,107 @@ OpBranchConditional %inb %work %end
 %wpos4 = OpMatrixTimesVector %v4 %invv %vpos
 %wpos = OpVectorShuffle %v3 %wpos4 %wpos4 0 1 2
 
+; ---- volumetric shadow: one compare tap in the froxel's cascade ----
+%pcc = OpAccessChain %ptr_uu %cb %u11
+%ccount = OpLoad %uint %pcc
+%hassh = OpUGreaterThan %bool %ccount %u0
+OpSelectionMerge %sh_done None
+OpBranchConditional %hassh %sh_yes %sh_no
+
+%sh_no = OpLabel
+OpBranch %sh_done
+
+%sh_yes = OpLabel
+%pspl = OpAccessChain %ptr_uv4 %cb %u14
+%spl = OpLoad %v4 %pspl
+%s0 = OpCompositeExtract %float %spl 0
+%s1 = OpCompositeExtract %float %spl 1
+%s2 = OpCompositeExtract %float %spl 2
+%s3 = OpCompositeExtract %float %spl 3
+%lt0 = OpFOrdLessThan %bool %d %s0
+%lt1 = OpFOrdLessThan %bool %d %s1
+%lt2 = OpFOrdLessThan %bool %d %s2
+%cid2 = OpSelect %uint %lt2 %u2 %u3
+%cid1 = OpSelect %uint %lt1 %u1 %cid2
+%cidx = OpSelect %uint %lt0 %u0 %cid1
+OpSelectionMerge %got_m None
+OpSwitch %cidx %lc3 0 %lc0 1 %lc1 2 %lc2
+%lc0 = OpLabel
+%pm0 = OpAccessChain %ptr_umat %cb %u15
+%m0 = OpLoad %mat4 %pm0
+OpBranch %got_m
+%lc1 = OpLabel
+%pm1 = OpAccessChain %ptr_umat %cb %u16
+%m1 = OpLoad %mat4 %pm1
+OpBranch %got_m
+%lc2 = OpLabel
+%pm2 = OpAccessChain %ptr_umat %cb %u17
+%m2 = OpLoad %mat4 %pm2
+OpBranch %got_m
+%lc3 = OpLabel
+%pm3 = OpAccessChain %ptr_umat %cb %u18
+%m3 = OpLoad %mat4 %pm3
+OpBranch %got_m
+
+%got_m = OpLabel
+%cm = OpPhi %mat4 %m0 %lc0 %m1 %lc1 %m2 %lc2 %m3 %lc3
+%clip = OpMatrixTimesVector %v4 %cm %wpos4
+%cw = OpCompositeExtract %float %clip 3
+%cwm = OpExtInst %float %glsl FMax %cw %feps
+%invcw = OpFDiv %float %f1 %cwm
+%cx = OpCompositeExtract %float %clip 0
+%cy = OpCompositeExtract %float %clip 1
+%cz = OpCompositeExtract %float %clip 2
+%sndx = OpFMul %float %cx %invcw
+%sndy = OpFMul %float %cy %invcw
+%sndz = OpFMul %float %cz %invcw
+%suvx0 = OpFMul %float %sndx %f05
+%suvx1 = OpFAdd %float %suvx0 %f05
+%suvy0 = OpFMul %float %sndy %f05
+%suvy1 = OpFAdd %float %suvy0 %f05
+%txu = OpUMod %uint %cidx %u2
+%tyu = OpUDiv %uint %cidx %u2
+%tx = OpConvertUToF %float %txu
+%ty = OpConvertUToF %float %tyu
+%txh = OpFMul %float %tx %f05
+%tyh = OpFMul %float %ty %f05
+%suvx2 = OpFMul %float %suvx1 %f05
+%suvx3 = OpFAdd %float %suvx2 %txh
+%suvy2 = OpFMul %float %suvy1 %f05
+%suvy3 = OpFAdd %float %suvy2 %tyh
+%pas = OpAccessChain %ptr_uf %cb %u12
+%asz = OpLoad %float %pas
+%aszc = OpExtInst %float %glsl FMax %asz %f1
+%texel = OpFDiv %float %f1 %aszc
+%tmaxx0 = OpFAdd %float %txh %f05
+%tmaxx = OpFSub %float %tmaxx0 %texel
+%tmaxy0 = OpFAdd %float %tyh %f05
+%tmaxy = OpFSub %float %tmaxy0 %texel
+%tilemin = OpCompositeConstruct %v2 %txh %tyh
+%tilemax = OpCompositeConstruct %v2 %tmaxx %tmaxy
+%suv0 = OpCompositeConstruct %v2 %suvx3 %suvy3
+%suv = OpExtInst %v2 %glsl FClamp %suv0 %tilemin %tilemax
+%zref = OpFSub %float %sndz %fshbias
+%psh = OpAccessChain %ptr_uu %cb %u10
+%ish = OpLoad %uint %psh
+%pimd = OpAccessChain %ptr_imgd %heap %ish
+%iad = OpLoad %imgd %pimd
+%scmp = OpLoad %samp_ty %samp_cmp
+%smc = OpSampledImage %sampled_d %iad %scmp
+%lit0 = OpImageSampleDrefExplicitLod %float %smc %suv %zref Lod %f0
+; past the last cascade there is no atlas to read: leave the fog lit
+%inrange = OpFOrdLessThan %bool %d %s3
+%lit = OpSelect %float %inrange %lit0 %f1
+%pstr = OpAccessChain %ptr_uf %cb %u13
+%strength = OpLoad %float %pstr
+%unlit = OpFSub %float %f1 %lit
+%cut = OpFMul %float %unlit %strength
+%shv = OpFSub %float %f1 %cut
+OpBranch %sh_done
+
+%sh_done = OpLabel
+%shadow = OpPhi %float %f1 %sh_no %shv %got_m
+
 ; extinction: exponential height fog
 %pfog = OpAccessChain %ptr_uv4 %cb %u4
 %fog = OpLoad %v4 %pfog
@@ -149,7 +312,13 @@ OpBranchConditional %inb %work %end
 %sun4 = OpLoad %v4 %psun
 %sun = OpVectorShuffle %v3 %sun4 %sun4 0 1 2
 %sunn = OpExtInst %v3 %glsl Normalize %sun
-%cosg = OpDot %float %vd %sunn
+; The HG angle is between the light's direction of travel (sun -> froxel) and
+; the scattered direction (froxel -> eye). Both vectors here point away from the
+; froxel, so their dot is the negative of that cosine. Without the flip the
+; forward lobe lands behind the camera and looking into a low sun goes dim --
+; which is backwards, and makes shafts impossible.
+%cosd = OpDot %float %vd %sunn
+%cosg = OpFNegate %float %cosd
 %g2 = OpFMul %float %g %g
 %hnum = OpFSub %float %f1 %g2
 %hd0 = OpFAdd %float %f1 %g2
@@ -164,7 +333,8 @@ OpBranchConditional %inb %work %end
 %psc = OpAccessChain %ptr_uv4 %cb %u3
 %sc4 = OpLoad %v4 %psc
 %sc = OpVectorShuffle %v3 %sc4 %sc4 0 1 2
-%ps = OpFMul %float %phase %sigma
+%ps0 = OpFMul %float %phase %sigma
+%ps = OpFMul %float %ps0 %shadow
 %insc = OpVectorTimesScalar %v3 %sc %ps
 %ir = OpCompositeExtract %float %insc 0
 %ig = OpCompositeExtract %float %insc 1

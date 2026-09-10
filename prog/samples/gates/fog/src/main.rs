@@ -3,8 +3,8 @@ use harpia_app::{run, AppConfig, Sample};
 use harpia_math::{Vec2, Vec3, Vec4};
 use harpia_render::{
     color_desc, depth_desc, froxel_desc, halton2, inject_dispatch, integrate_dispatch, Camera,
-    FogCb, MaterialGpu, PushConstants, SphereInstance, SphereMesh, GBUFFER_DEPTH_FORMAT,
-    INSTANCE_STRIDE, VERTEX_STRIDE,
+    compute_csm, shadow_atlas_desc, FogCb, MaterialGpu, PushConstants, SphereInstance,
+    SphereMesh, DEFAULT_ATLAS_SIZE, GBUFFER_DEPTH_FORMAT, INSTANCE_STRIDE, VERTEX_STRIDE,
 };
 use harpia_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
@@ -41,6 +41,8 @@ struct Targets {
 
 struct FogGate {
     fwd_pso: Option<GraphicsPipeline>,
+    shadow_pso: Option<GraphicsPipeline>,
+    atlas: Option<Texture>,
     apply_pso: Option<GraphicsPipeline>,
     blit_pso: Option<GraphicsPipeline>,
     inject_pso: Option<ComputePipeline>,
@@ -64,6 +66,8 @@ impl Default for FogGate {
     fn default() -> Self {
         Self {
             fwd_pso: None,
+            shadow_pso: None,
+            atlas: None,
             apply_pso: None,
             blit_pso: None,
             inject_pso: None,
@@ -99,6 +103,19 @@ impl FogGate {
             composite: gpu.create_texture(&color_desc(w, h, COMPOSITE))?,
         });
         self.extent = Extent2D { width: w, height: h };
+        Ok(())
+    }
+
+    fn draw_casters(&self, gpu: &mut Gpu, view_proj: harpia_math::Mat4) -> Result<()> {
+        let pso = self.shadow_pso.as_ref().context("shadow pso")?;
+        gpu.set_pipeline(pso)?;
+        gpu.bind_graphics_bindless()?;
+        gpu.set_push_constants(PushConstants::new(view_proj).as_bytes())?;
+        // The ground plane is not a caster: it would only shadow itself.
+        gpu.bind_vertex_buffer(self.sph_vb.context("sph vb")?, 0)?;
+        gpu.bind_vertex_buffer(self.sph_inst.context("sph inst")?, 1)?;
+        gpu.bind_index_buffer(self.sph_ib.context("sph ib")?)?;
+        gpu.draw_indexed(self.sph_idx, self.sph_count, 0, 0, 0)?;
         Ok(())
     }
 
@@ -140,6 +157,27 @@ impl Sample for FogGate {
             })
             .context("forward PSO")?,
         );
+        self.shadow_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/shadow.vs.spv")),
+                fs_spirv: &[],
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &[],
+                    depth_format: Some(GBUFFER_DEPTH_FORMAT),
+                    vertex_stride: VERTEX_STRIDE,
+                    instance_stride: INSTANCE_STRIDE,
+                    depth_test: true,
+                    cull_back: false,
+                    depth_only: true,
+                    depth_bias: true,
+                },
+            })
+            .context("shadow PSO")?,
+        );
+        self.atlas = Some(gpu.create_texture(&shadow_atlas_desc(DEFAULT_ATLAS_SIZE))?);
         self.apply_pso = Some(
             gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
                 vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
@@ -217,6 +255,9 @@ impl Sample for FogGate {
             out.push(("composite", rt.composite));
             out.push(("scene", rt.color));
         }
+        if let Some(t) = self.atlas {
+            out.push(("shadow-atlas", t));
+        }
         if let Some(t) = self.scatter {
             out.push(("froxel-scatter", t));
         }
@@ -235,6 +276,7 @@ impl Sample for FogGate {
         let blit = self.blit_pso.as_ref().context("blit pso")?;
         let inject = self.inject_pso.as_ref().context("inject pso")?;
         let integrate = self.integrate_pso.as_ref().context("integrate pso")?;
+        let atlas = self.atlas.context("atlas")?;
         let scatter = self.scatter.context("scatter")?;
         let integrated = self.integrated.context("integrated")?;
 
@@ -249,8 +291,10 @@ impl Sample for FogGate {
             near: 0.4,
             far: 80.0,
         };
-        let sun = Vec3::new(0.40, 0.78, 0.48).normalize();
+        let sun = Vec3::new(0.30, 0.34, -0.89).normalize();
         let view_proj = camera.view_proj();
+
+        let csm = compute_csm(&camera, sun, DEFAULT_ATLAS_SIZE);
 
         let cb = FogCb {
             inv_view: camera.view().inverse(),
@@ -258,7 +302,7 @@ impl Sample for FogGate {
             sun_dir: Vec4::new(sun.x, sun.y, sun.z, 0.0),
             sun_color: Vec4::new(3.6, 3.3, 2.9, 1.0),
             // density, height falloff, phase g (forward scattering), base height
-            fog: Vec4::new(0.045, 0.20, 0.55, 0.0),
+            fog: Vec4::new(0.058, 0.11, 0.66, 0.0),
             froxel: Vec4::new(
                 FOG_NEAR,
                 FOG_FAR,
@@ -268,14 +312,35 @@ impl Sample for FogGate {
             misc: Vec4::new(
                 halton2(info.frame_index as u32),
                 harpia_render::FROXEL_D as f32,
-                1.0,
+                // Looking into the sun through a forward phase is bright by
+                // construction; pull the exposure down or the shafts clip away.
+                0.62,
                 0.0,
             ),
             scene_color: gpu.bindless_index(rt.color)?,
             scene_depth: gpu.bindless_index(rt.view_depth)?,
             inv_extent: Vec2::new(1.0 / w, 1.0 / h),
+            shadow_idx: gpu.bindless_index(atlas)?,
+            cascade_count: 4,
+            atlas_size: DEFAULT_ATLAS_SIZE as f32,
+            // Not 1.0: a shadowed froxel still gets sky and bounce, and a fully
+            // black shaft boundary reads as a hard edge in mid-air.
+            shadow_strength: 0.85,
+            splits: csm.splits,
+            cascades: csm.view_proj,
+            ..Default::default()
         };
         gpu.write_frame_bytes(cb.as_bytes())?;
+
+        // 0. cascades. The froxel inject samples this, which is what makes the
+        //    fog show shafts instead of a uniform haze.
+        gpu.begin_color_pass(&[], Some(atlas), &[], Some(1.0))?;
+        for i in 0..4 {
+            let (x, y, tw, th) = csm.tile_viewport(i);
+            gpu.set_viewport(x, y, tw, th)?;
+            self.draw_casters(gpu, csm.view_proj[i])?;
+        }
+        gpu.end_color_pass()?;
 
         // 1. scene into HDR + view depth. Depth clears to the fog far plane so
         //    the background gets a full froxel march instead of zero fog.
@@ -333,6 +398,16 @@ fn pillars() -> Vec<SphereInstance> {
         let r = 1.1;
         out.push(SphereInstance::from_material([-3.4, r, z], r, &pale));
         out.push(SphereInstance::from_material([3.4, r, z], r, &warm));
+    }
+    // A lattice across the sun, Sponza's arcade reduced to what this gate has.
+    // The gaps are the whole point: the froxels show the light that gets through,
+    // and the shadow volumes between them are the shafts.
+    for row in 0..3 {
+        for col in 0..7 {
+            let x = -12.0 + col as f32 * 4.0;
+            let y = 1.6 + row as f32 * 3.6;
+            out.push(SphereInstance::from_material([x, y, -6.0], 1.55, &pale));
+        }
     }
     out
 }

@@ -210,4 +210,16 @@ output.**
   idênticas: parece que funciona (a imagem não muda) e não reduz ruído nenhum.
   Prova com números — |laplaciano| na banda do problema, antes e depois — e usa
   uma **matriz errada de propósito** como controlo.
+- Fase de scattering: confirma **de que ponta** apontam os vectores antes de
+  acreditar num `dot`. HG/Cornette-Shanks querem o ângulo entre a propagação
+  incidente e a dispersada; com os dois vectores a sair do ponto o cosseno vem
+  simétrico e o lóbulo para a frente vai parar atrás da câmara. O fog tinha-o
+  trocado, as nuvens não — e nenhum dos dois parecia errado a olho.
+- `set_viewport` fora de um pass devolve `PassMismatch`, que o `harpia_app`
+  reporta como «swapchain pass mismatch (begin/end)» — mensagem que não aponta
+  para o viewport. `begin_color_pass` já repõe o viewport inteiro; não é preciso
+  repor à mão depois do pass das cascatas.
+- Um `str.replace` de Python que não casa **não falha** — só não faz nada, e o
+  resultado é um alvo de `--capture` que nunca aparece. Põe sempre `assert old in s`
+  antes de reescrever um ficheiro.
 

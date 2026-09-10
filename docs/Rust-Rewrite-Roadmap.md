@@ -579,6 +579,8 @@ Barra: `docs/Rust-Rewrite-Quality-Bar.md` §4.1 e §4.8. Cena de olho: **Sponza*
 Ordem: fog compute → clouds (sem driveRain) → water → **rain por último** (é o mais perigoso).
 
 - [x] Fog: froxels, 3D GENERAL. `gate-fog` 16 frames, validation 0.
+      **+ sombras volumétricas**: o inject faz uma tap de comparação no CSM, que é
+      de onde vêm os feixes sem acrescentar um pass (D23). Fase HG corrigida (D24).
 - [x] Céu: **Hillaire 2020** em vez do bake do Bruneton (ver `memory/DECISIONS.md` D19).
       transmittance → multiscattering → sky-view → composite. `gate-sky` 16 frames.
 - [x] Clouds: noise cache em disco (Perlin-Worley 128³ + Worley 32³, tileável, `.raw`)
@@ -586,7 +588,7 @@ Ordem: fog compute → clouds (sem driveRain) → water → **rain por último**
       Cornette-Shanks com multiple scattering em 3 oitavas. `gate-clouds` 16 frames.
       **+ reprojecção temporal** com profundidade analítica no meio da concha e
       clamp 3×3 (D22): −44.6% de ruído na banda do horizonte.
-      Falta a sombra das nuvens nos froxels do fog (god rays).
+      Falta a sombra das **nuvens** nos froxels (a das malhas já lá está, D23).
 - [ ] Water: point-sample depth no SSR.
 - [ ] Rain: GBuffer wet + post; cones sem HDR SRV; `--frames 16` only.
 - [ ] **Exit:** gates `fog` `clouds` `water` `rain`. Default-on na **Sponza** (`--frames` curto) ou o pass não entra.

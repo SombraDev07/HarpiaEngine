@@ -280,3 +280,36 @@ Desvio consciente ao roadmap §5 («Bruneton LUTs baked na CPU no init»).
   esborratar. É esse par de números que prova que a reprojecção está viva e que
   o clamp funciona; nenhum dos dois se via a olho.
 
+## D23 — Sombras volumétricas: o CSM entra no inject, não num pass novo
+
+- O froxel já é marchado. Dar-lhe **uma tap de comparação no CSM** é o que
+  transforma névoa uniforme em feixes — não é preciso um pass de god rays nem
+  um radial blur. Uma tap, sem PCF: o froxel já é muito mais grosso que um texel
+  de sombra e o integrate suaviza ao longo do raio.
+- `cascade_count == 0` salta a procura inteira, por isso um sample sem atlas paga
+  zero e comporta-se exactamente como antes.
+- `shadow_strength` 0.85, não 1.0: um froxel na sombra ainda recebe céu e
+  ressalto, e uma fronteira de feixe totalmente preta lê-se como uma aresta dura
+  no ar.
+- O gate partilha o `shadow.vs` do gate CSM em vez de ter uma cópia — o layout de
+  vértice/instância é o mesmo e duas cópias divergem.
+- O cenário do `gate-fog` passou a ter uma **grelha com folgas** (a arcada da
+  Sponza reduzida ao que este gate tem). Sem um oclusor grande e com folgas não
+  há feixes nenhuns: com as esferas soltas só 4.6% dos froxels ficavam na sombra
+  e o efeito não chegava a 7/255.
+
+## D24 — A fase de Henyey-Greenstein estava com o sinal trocado
+
+- O ângulo da HG é entre a **direcção de propagação** da luz (sol → froxel) e a
+  direcção dispersada (froxel → olho). No inject os dois vectores partiam do
+  froxel, portanto o produto escalar era o **simétrico** desse cosseno.
+- Consequência: o lóbulo para a frente caía **atrás** da câmara. Olhar para um sol
+  baixo através de neblina ficava escuro, que é o contrário do que a natureza faz
+  — e tornava os feixes impossíveis.
+- Não se via como bug: com o sol atrás da câmara a névoa até parecia bem.
+  Apareceu ao perguntar *porque é que o efeito é tão fraco* e ir ver os números,
+  não a imagem.
+- **As nuvens não têm este bug**: lá o `dir` é olho → ponto, e `dot(dir, sun)` já é
+  o cosseno certo. A diferença é só qual das duas pontas o vector aponta — que é
+  precisamente por isso que este erro passa despercebido.
+
