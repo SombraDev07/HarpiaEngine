@@ -138,13 +138,14 @@ toroidal atlas, octa point shadows.
 
 ## Sessão 2026-09-10 — atmosfera (parcial) antes das nuvens
 
-`gate-sky` verde: 16 frames, validation 0. LUT de transmittance (256×64,
-parameterização de Bruneton) + raymarch por pixel com Rayleigh + Mie + ozono,
-visibilidade do sol pela LUT, integração que conserva energia, ACES + sRGB. O sol
-desce ao longo dos frames — as LUTs são refeitas todos os frames (D19).
+`gate-sky` verde: 16 frames, validation 0. A cadeia do Hillaire inteira —
+transmittance (256×64) → multiscattering (32×32) → sky-view (192×108) →
+composite com **um fetch por pixel**. O sol desce ao longo dos frames; as LUTs
+são refeitas todas as vezes (D19).
 
-Verificado na captura: azul no zénite, quente no horizonte, glow de Mie à volta do
-sol. **Single scattering apenas.** Falta a LUT de multiscattering e a sky-view LUT.
+Prova de que a optimização é fiel: a saída pelo sky-view bate com o raymarch por
+pixel ao bit (±1 num canal no zénite). Falta a aerial perspective (froxel 32³),
+que é integração com a cena, não gate de céu.
 
 Bruneton é o **céu**, não as nuvens — ver D19. As nuvens continuam Schneider.
 
@@ -157,7 +158,7 @@ gerado por regex, não o que eu estava a cortar. O assembler passou a validar id
 Não mesh shaders, RT, FSR, editor. Não VSM.
 
 1. ~~Fog: froxels, 3D GENERAL. Gate `fog`.~~ **feito**
-2. Céu: multiscattering LUT + sky-view LUT (fecha o Hillaire). Gate `sky`.  ← próximo
+2. ~~Céu: Hillaire completo. Gate `sky`.~~ **feito** (falta aerial perspective)
 3. Clouds (sem driveRain). Gate `clouds`.
 3. Water: point-sample depth no SSR.
 4. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).

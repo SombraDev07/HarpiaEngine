@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use harpia_math::{perspective_vk, Mat4, Vec2, Vec3, Vec4};
 use harpia_app::{run, AppConfig, Sample};
 use harpia_render::{
-    color_desc, transmittance_desc, AtmosphereCb, TRANSMITTANCE_H, TRANSMITTANCE_W,
+    color_desc, multiscatter_desc, skyview_desc, transmittance_desc, AtmosphereCb,
+    MULTISCATTER_SIZE, SKYVIEW_H, SKYVIEW_W, TRANSMITTANCE_H, TRANSMITTANCE_W,
 };
 use harpia_rhi::{
     Device, Extent2D, Format, FrameInfo, Gpu, GraphicsPipeline, GraphicsPipelineDesc,
@@ -19,9 +20,13 @@ const COMPOSITE_FORMATS: [Format; 1] = [COMPOSITE];
 
 struct SkyGate {
     transmittance_pso: Option<GraphicsPipeline>,
+    multiscatter_pso: Option<GraphicsPipeline>,
+    skyview_pso: Option<GraphicsPipeline>,
     sky_pso: Option<GraphicsPipeline>,
     blit_pso: Option<GraphicsPipeline>,
     transmittance: Option<Texture>,
+    multiscatter: Option<Texture>,
+    skyview: Option<Texture>,
     composite: Option<Texture>,
     extent: Extent2D,
 }
@@ -30,9 +35,13 @@ impl Default for SkyGate {
     fn default() -> Self {
         Self {
             transmittance_pso: None,
+            multiscatter_pso: None,
+            skyview_pso: None,
             sky_pso: None,
             blit_pso: None,
             transmittance: None,
+            multiscatter: None,
+            skyview: None,
             composite: None,
             extent: Extent2D {
                 width: 0,
@@ -81,6 +90,22 @@ impl Sample for SkyGate {
             )
             .context("transmittance PSO")?,
         );
+        self.multiscatter_pso = Some(
+            fullscreen(
+                gpu,
+                include_bytes!(concat!(env!("OUT_DIR"), "/multiscatter.ps.spv")),
+                &LUT_FORMATS,
+            )
+            .context("multiscatter PSO")?,
+        );
+        self.skyview_pso = Some(
+            fullscreen(
+                gpu,
+                include_bytes!(concat!(env!("OUT_DIR"), "/skyview.ps.spv")),
+                &LUT_FORMATS,
+            )
+            .context("skyview PSO")?,
+        );
         self.sky_pso = Some(
             fullscreen(
                 gpu,
@@ -103,6 +128,8 @@ impl Sample for SkyGate {
             .context("blit PSO")?,
         );
         self.transmittance = Some(gpu.create_texture(&transmittance_desc())?);
+        self.multiscatter = Some(gpu.create_texture(&multiscatter_desc())?);
+        self.skyview = Some(gpu.create_texture(&skyview_desc())?);
         self.recreate(gpu, gpu.extent())?;
         Ok(())
     }
@@ -115,6 +142,12 @@ impl Sample for SkyGate {
         if let Some(t) = self.transmittance {
             out.push(("transmittance-lut", t));
         }
+        if let Some(t) = self.multiscatter {
+            out.push(("multiscatter-lut", t));
+        }
+        if let Some(t) = self.skyview {
+            out.push(("skyview-lut", t));
+        }
         out
     }
 
@@ -124,7 +157,11 @@ impl Sample for SkyGate {
         }
         let composite = self.composite.context("composite")?;
         let transmittance = self.transmittance.context("transmittance")?;
+        let multiscatter = self.multiscatter.context("multiscatter")?;
+        let skyview = self.skyview.context("skyview")?;
         let transmittance_pso = self.transmittance_pso.as_ref().context("lut pso")?;
+        let multiscatter_pso = self.multiscatter_pso.as_ref().context("ms pso")?;
+        let skyview_pso = self.skyview_pso.as_ref().context("skyview pso")?;
         let sky_pso = self.sky_pso.as_ref().context("sky pso")?;
         let blit_pso = self.blit_pso.as_ref().context("blit pso")?;
 
@@ -162,9 +199,36 @@ impl Sample for SkyGate {
         gpu.draw(3, 1, 0, 0)?;
         gpu.end_color_pass()?;
 
-        // 2. sky: raymarch per pixel, sun visibility from the LUT.
+        // 2. multiscattering LUT: needs the transmittance LUT, feeds the sky.
+        let mut ms_cb = base;
+        ms_cb.transmittance_lut = gpu.bindless_index(transmittance)?;
+        ms_cb.inv_extent = Vec2::new(
+            1.0 / MULTISCATTER_SIZE as f32,
+            1.0 / MULTISCATTER_SIZE as f32,
+        );
+        gpu.write_frame_bytes(ms_cb.as_bytes())?;
+        gpu.begin_color_pass(&[multiscatter], None, &[[0.0, 0.0, 0.0, 1.0]], None)?;
+        gpu.set_pipeline(multiscatter_pso)?;
+        gpu.bind_graphics_bindless()?;
+        gpu.draw(3, 1, 0, 0)?;
+        gpu.end_color_pass()?;
+
+        // 3. sky-view LUT: the raymarch happens here, 192x108 times instead of
+        //    once per pixel.
+        let mut skyview_cb = base;
+        skyview_cb.transmittance_lut = gpu.bindless_index(transmittance)?;
+        skyview_cb.multiscatter_lut = gpu.bindless_index(multiscatter)?;
+        skyview_cb.inv_extent = Vec2::new(1.0 / SKYVIEW_W as f32, 1.0 / SKYVIEW_H as f32);
+        gpu.write_frame_bytes(skyview_cb.as_bytes())?;
+        gpu.begin_color_pass(&[skyview], None, &[[0.0, 0.0, 0.0, 1.0]], None)?;
+        gpu.set_pipeline(skyview_pso)?;
+        gpu.bind_graphics_bindless()?;
+        gpu.draw(3, 1, 0, 0)?;
+        gpu.end_color_pass()?;
+
+        // 4. composite: one fetch per pixel, plus the sun disc and the tonemap.
         let mut sky_cb = base;
-        sky_cb.transmittance_lut = gpu.bindless_index(transmittance)?;
+        sky_cb.skyview_lut = gpu.bindless_index(skyview)?;
         sky_cb.inv_extent = Vec2::new(1.0 / w, 1.0 / h);
         gpu.write_frame_bytes(sky_cb.as_bytes())?;
         gpu.begin_color_pass(&[composite], None, &[[0.0, 0.0, 0.0, 1.0]], None)?;
@@ -173,7 +237,7 @@ impl Sample for SkyGate {
         gpu.draw(3, 1, 0, 0)?;
         gpu.end_color_pass()?;
 
-        // 3. present. A fresh chunk re-points the index at the composite.
+        // 5. present. A fresh chunk re-points the index at the composite.
         let mut blit_cb = sky_cb;
         blit_cb.transmittance_lut = gpu.bindless_index(composite)?;
         gpu.write_frame_bytes(blit_cb.as_bytes())?;

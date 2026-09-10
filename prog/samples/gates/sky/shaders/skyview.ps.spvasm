@@ -1,0 +1,409 @@
+; Sky-view LUT (192x108), Hillaire 2020. Same raymarch through Rayleigh + Mie + ozone,
+; sun visibility from the transmittance LUT, energy-conserving accumulation
+;   T_seg = exp(-extinction*dt);  S_int = (S - S*T_seg)/extinction
+; Single scattering with the Rayleigh/Mie phases, plus the second-and-higher
+; orders from the multiscattering LUT (isotropic, no phase).
+;
+; Ends with ACES + sRGB: the swapchain is UNORM.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %heap %samp_c
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %itr NonUniform
+OpDecorate %Atmos Block
+OpMemberDecorate %Atmos 0 Offset 0
+OpMemberDecorate %Atmos 0 ColMajor
+OpMemberDecorate %Atmos 0 MatrixStride 16
+OpMemberDecorate %Atmos 1 Offset 64
+OpMemberDecorate %Atmos 2 Offset 80
+OpMemberDecorate %Atmos 3 Offset 96
+OpMemberDecorate %Atmos 4 Offset 112
+OpMemberDecorate %Atmos 5 Offset 128
+OpMemberDecorate %Atmos 6 Offset 144
+OpMemberDecorate %Atmos 7 Offset 160
+OpMemberDecorate %Atmos 8 Offset 176
+OpMemberDecorate %Atmos 9 Offset 192
+OpMemberDecorate %Atmos 10 Offset 208
+OpMemberDecorate %Atmos 11 Offset 212
+OpMemberDecorate %Atmos 12 Offset 216
+OpMemberDecorate %Atmos 13 Offset 220
+OpMemberDecorate %Atmos 14 Offset 224
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Atmos = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %uint %uint %uint %uint %v2
+%ptr_cb = OpTypePointer Uniform %Atmos
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uu = OpTypePointer Uniform %uint
+%ptr_uv2 = OpTypePointer Uniform %v2
+%ptr_uv4 = OpTypePointer Uniform %v4
+%ptr_umat = OpTypePointer Uniform %mat4
+
+%img = OpTypeImage %float 2D 0 0 0 1 Unknown
+%img_arr = OpTypeRuntimeArray %img
+%ptr_arr = OpTypePointer UniformConstant %img_arr
+%heap = OpVariable %ptr_arr UniformConstant
+%ptr_img = OpTypePointer UniformConstant %img
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
+%sampled = OpTypeSampledImage %img
+
+%u0 = OpConstant %uint 0
+; loop bound is a constant: it pairs with SKYVIEW_STEPS in atmosphere.rs
+%nstepsu = OpConstant %uint 32
+%u1 = OpConstant %uint 1
+%u2 = OpConstant %uint 2
+%u3 = OpConstant %uint 3
+%u4 = OpConstant %uint 4
+%u5 = OpConstant %uint 5
+%u6 = OpConstant %uint 6
+%u7 = OpConstant %uint 7
+%u8 = OpConstant %uint 8
+%u9 = OpConstant %uint 9
+%u10 = OpConstant %uint 10
+%u11 = OpConstant %uint 11
+%u14 = OpConstant %uint 14
+
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%f05 = OpConstant %float 0.5
+%f2 = OpConstant %float 2.0
+%f3 = OpConstant %float 3.0
+%fn1 = OpConstant %float -1.0
+%feps = OpConstant %float 0.000001
+%finv4pi = OpConstant %float 0.07957747
+%f8pi = OpConstant %float 0.05968310
+%f15 = OpConstant %float 1.5
+%fpi = OpConstant %float 3.14159265
+%fsun_cos = OpConstant %float 0.99995
+%v3_zero = OpConstantComposite %v3 %f0 %f0 %f0
+%v3_epsv = OpConstantComposite %v3 %feps %feps %feps
+%v3_one = OpConstantComposite %v3 %f1 %f1 %f1
+%f251 = OpConstant %float 2.51
+%f003 = OpConstant %float 0.03
+%f243 = OpConstant %float 2.43
+%f059 = OpConstant %float 0.59
+%f014 = OpConstant %float 0.14
+%v3_003 = OpConstantComposite %v3 %f003 %f003 %f003
+%v3_059 = OpConstantComposite %v3 %f059 %f059 %f059
+%v3_014 = OpConstantComposite %v3 %f014 %f014 %f014
+%finvg = OpConstant %float 0.41666666
+%v3_invg = OpConstantComposite %v3 %finvg %finvg %finvg
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u14
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%uvu = OpCompositeExtract %float %uv 0
+%uvv = OpCompositeExtract %float %uv 1
+
+%pcam = OpAccessChain %ptr_uv4 %cb %u1
+%cam4 = OpLoad %v4 %pcam
+%alt = OpCompositeExtract %float %cam4 3
+%psun = OpAccessChain %ptr_uv4 %cb %u2
+%sun4 = OpLoad %v4 %psun
+%sunw0 = OpVectorShuffle %v3 %sun4 %sun4 0 1 2
+%sunw = OpExtInst %v3 %glsl Normalize %sunw0
+%pill = OpAccessChain %ptr_uv4 %cb %u3
+%ill4 = OpLoad %v4 %pill
+%ill = OpVectorShuffle %v3 %ill4 %ill4 0 1 2
+%prad = OpAccessChain %ptr_uv4 %cb %u4
+%radii = OpLoad %v4 %prad
+%bottom = OpCompositeExtract %float %radii 0
+%top = OpCompositeExtract %float %radii 1
+%mie_g = OpCompositeExtract %float %radii 2
+%topsq = OpFMul %float %top %top
+%botsq = OpFMul %float %bottom %bottom
+%r0 = OpFAdd %float %bottom %alt
+%origin = OpCompositeConstruct %v3 %f0 %r0 %f0
+%r0sq = OpFMul %float %r0 %r0
+
+; local frame: up is +Y and the sun sits in the XY plane, so the azimuth of the
+; view direction is measured straight against it.
+%sunzen = OpCompositeExtract %float %sunw 1
+%szc = OpExtInst %float %glsl FClamp %sunzen %fn1 %f1
+%sz2 = OpFMul %float %szc %szc
+%szs0 = OpFSub %float %f1 %sz2
+%szs1 = OpExtInst %float %glsl FMax %szs0 %f0
+%szs = OpExtInst %float %glsl Sqrt %szs1
+%sun = OpCompositeConstruct %v3 %szs %szc %f0
+
+; uv -> view zenith, with half the texels spent below the horizon and each half
+; squared so the horizon itself gets the resolution.
+%vhor0 = OpFSub %float %r0sq %botsq
+%vhor1 = OpExtInst %float %glsl FMax %vhor0 %f0
+%vhor = OpExtInst %float %glsl Sqrt %vhor1
+%cosbeta = OpFDiv %float %vhor %r0
+%cbc = OpExtInst %float %glsl FClamp %cosbeta %fn1 %f1
+%beta = OpExtInst %float %glsl Acos %cbc
+%zenhor = OpFSub %float %fpi %beta
+%issky = OpFOrdLessThan %bool %uvv %f05
+OpSelectionMerge %gotzen None
+OpBranchConditional %issky %skyhalf %groundhalf
+
+%skyhalf = OpLabel
+%sh0 = OpFMul %float %uvv %f2
+%sh1 = OpFSub %float %f1 %sh0
+%sh2 = OpFMul %float %sh1 %sh1
+%sh3 = OpFSub %float %f1 %sh2
+%zen_sky = OpFMul %float %zenhor %sh3
+OpBranch %gotzen
+
+%groundhalf = OpLabel
+%gh0 = OpFMul %float %uvv %f2
+%gh1 = OpFSub %float %gh0 %f1
+%gh2 = OpFMul %float %gh1 %gh1
+%gh3 = OpFMul %float %beta %gh2
+%zen_gnd = OpFAdd %float %zenhor %gh3
+OpBranch %gotzen
+
+%gotzen = OpLabel
+%zenith = OpPhi %float %zen_sky %skyhalf %zen_gnd %groundhalf
+%vzcos = OpExtInst %float %glsl Cos %zenith
+%vz2 = OpFMul %float %vzcos %vzcos
+%vzs0 = OpFSub %float %f1 %vz2
+%vzs1 = OpExtInst %float %glsl FMax %vzs0 %f0
+%vzsin = OpExtInst %float %glsl Sqrt %vzs1
+; u is squared as well, so the texels crowd towards the sun
+%lu0 = OpFMul %float %uvu %uvu
+%lu1 = OpFMul %float %lu0 %f2
+%lu2 = OpFSub %float %lu1 %f1
+%lvcos = OpFNegate %float %lu2
+%lv2 = OpFMul %float %lvcos %lvcos
+%lvs0 = OpFSub %float %f1 %lv2
+%lvs1 = OpExtInst %float %glsl FMax %lvs0 %f0
+%lvsin = OpExtInst %float %glsl Sqrt %lvs1
+%dirx = OpFMul %float %vzsin %lvcos
+%dirz = OpFMul %float %vzsin %lvsin
+%dir = OpCompositeConstruct %v3 %dirx %vzcos %dirz
+
+; ray vs the top of the atmosphere, and vs the ground
+%mu = OpDot %float %dir %origin
+%mun = OpFDiv %float %mu %r0
+%b = OpFMul %float %f2 %mu
+%ctop = OpFSub %float %r0sq %topsq
+%dtop0 = OpFMul %float %b %b
+%dtop1 = OpFMul %float %f2 %ctop
+%dtop2 = OpFMul %float %dtop1 %f2
+%dtop = OpFSub %float %dtop0 %dtop2
+%dtopc = OpExtInst %float %glsl FMax %dtop %f0
+%sqtop = OpExtInst %float %glsl Sqrt %dtopc
+%nb = OpFNegate %float %b
+%ttop0 = OpFAdd %float %nb %sqtop
+%t_top = OpFMul %float %ttop0 %f05
+%cbot = OpFSub %float %r0sq %botsq
+%dbot0 = OpFMul %float %b %b
+%dbot1 = OpFMul %float %cbot %f2
+%dbot2 = OpFMul %float %dbot1 %f2
+%dbot = OpFSub %float %dbot0 %dbot2
+%hitground = OpFOrdGreaterThan %bool %dbot %f0
+%dbotc = OpExtInst %float %glsl FMax %dbot %f0
+%sqbot = OpExtInst %float %glsl Sqrt %dbotc
+%tbot0 = OpFSub %float %nb %sqbot
+%t_bot = OpFMul %float %tbot0 %f05
+%bot_ahead = OpFOrdGreaterThan %bool %t_bot %f0
+%use_bot = OpLogicalAnd %bool %hitground %bot_ahead
+%t_max = OpSelect %float %use_bot %t_bot %t_top
+%t_maxc = OpExtInst %float %glsl FMax %t_max %f0
+
+%psteps = OpAccessChain %ptr_uv4 %cb %u9
+%stepsv = OpLoad %v4 %psteps
+%nsteps = OpCompositeExtract %float %stepsv 3
+
+%dt = OpFDiv %float %t_maxc %nsteps
+
+%pray = OpAccessChain %ptr_uv4 %cb %u5
+%rayv = OpLoad %v4 %pray
+%ray_rgb = OpVectorShuffle %v3 %rayv %rayv 0 1 2
+%ray_h = OpCompositeExtract %float %rayv 3
+%pmie = OpAccessChain %ptr_uv4 %cb %u6
+%miev = OpLoad %v4 %pmie
+%mie_s = OpCompositeExtract %float %miev 0
+%mie_a = OpCompositeExtract %float %miev 1
+%mie_e = OpFAdd %float %mie_s %mie_a
+%mie_h = OpCompositeExtract %float %miev 2
+%poz = OpAccessChain %ptr_uv4 %cb %u7
+%ozv = OpLoad %v4 %poz
+%oz_rgb = OpVectorShuffle %v3 %ozv %ozv 0 1 2
+%pozt = OpAccessChain %ptr_uv4 %cb %u8
+%oztv = OpLoad %v4 %pozt
+%oz_c = OpCompositeExtract %float %oztv 0
+%oz_w = OpCompositeExtract %float %oztv 1
+
+; phases, constant along the ray
+%cos_t = OpDot %float %dir %sun
+%cos2 = OpFMul %float %cos_t %cos_t
+%rp0 = OpFAdd %float %f1 %cos2
+%phase_r = OpFMul %float %rp0 %f8pi
+%g2 = OpFMul %float %mie_g %mie_g
+%mp_num0 = OpFSub %float %f1 %g2
+%mp_num = OpFMul %float %mp_num0 %rp0
+%mp_d0 = OpFAdd %float %f2 %g2
+%mp_d1 = OpFMul %float %f2 %mie_g
+%mp_d2 = OpFMul %float %mp_d1 %cos_t
+%mp_d3 = OpFAdd %float %f1 %g2
+%mp_d4 = OpFSub %float %mp_d3 %mp_d2
+%mp_d5 = OpExtInst %float %glsl FMax %mp_d4 %feps
+%mp_d6 = OpExtInst %float %glsl Pow %mp_d5 %f15
+%mp_d7 = OpFMul %float %mp_d0 %mp_d6
+%mp_den = OpFMul %float %mp_d7 %f2
+%mp0 = OpFDiv %float %mp_num %mp_den
+%phase_m = OpFMul %float %mp0 %f3
+
+%ptr_idx = OpAccessChain %ptr_uu %cb %u10
+%itr = OpLoad %uint %ptr_idx
+%pimg = OpAccessChain %ptr_img %heap %itr
+%iimg = OpLoad %img %pimg
+%sc = OpLoad %samp_ty %samp_c
+
+%Hh = OpFSub %float %topsq %botsq
+%Hatm = OpExtInst %float %glsl Sqrt %Hh
+OpBranch %head
+
+%head = OpLabel
+%i = OpPhi %uint %u0 %gotzen %inext %cont
+%lum = OpPhi %v3 %v3_zero %gotzen %lumn %cont
+%thr = OpPhi %v3 %v3_one %gotzen %thrn %cont
+%more = OpULessThan %bool %i %nstepsu
+OpLoopMerge %merge %cont None
+OpBranchConditional %more %body %merge
+
+%body = OpLabel
+%fi = OpConvertUToF %float %i
+%fi5 = OpFAdd %float %fi %f05
+%t = OpFMul %float %fi5 %dt
+%step = OpVectorTimesScalar %v3 %dir %t
+%pos = OpFAdd %v3 %origin %step
+%ri = OpExtInst %float %glsl Length %pos
+%h = OpFSub %float %ri %bottom
+%hc = OpExtInst %float %glsl FMax %h %f0
+%rex0 = OpFDiv %float %hc %ray_h
+%rex = OpFNegate %float %rex0
+%dens_r = OpExtInst %float %glsl Exp %rex
+%mex0 = OpFDiv %float %hc %mie_h
+%mex = OpFNegate %float %mex0
+%dens_m = OpExtInst %float %glsl Exp %mex
+%odh = OpFSub %float %hc %oz_c
+%odha = OpExtInst %float %glsl FAbs %odh
+%odn = OpFDiv %float %odha %oz_w
+%od1 = OpFSub %float %f1 %odn
+%dens_o = OpExtInst %float %glsl FMax %od1 %f0
+%sc_r = OpVectorTimesScalar %v3 %ray_rgb %dens_r
+%sc_m0 = OpFMul %float %mie_s %dens_m
+%sc_m = OpCompositeConstruct %v3 %sc_m0 %sc_m0 %sc_m0
+%ex_m0 = OpFMul %float %mie_e %dens_m
+%ex_m = OpCompositeConstruct %v3 %ex_m0 %ex_m0 %ex_m0
+%ex_o = OpVectorTimesScalar %v3 %oz_rgb %dens_o
+%ex0 = OpFAdd %v3 %sc_r %ex_m
+%ex1 = OpFAdd %v3 %ex0 %ex_o
+%ex = OpExtInst %v3 %glsl FMax %ex1 %v3_epsv
+
+; sun transmittance from the LUT at (ri, cos sun zenith)
+%upos = OpExtInst %v3 %glsl Normalize %pos
+%musun = OpDot %float %upos %sun
+%musunc = OpExtInst %float %glsl FClamp %musun %fn1 %f1
+%risq = OpFMul %float %ri %ri
+%rho0 = OpFSub %float %risq %botsq
+%rho1 = OpExtInst %float %glsl FMax %rho0 %f0
+%rhoi = OpExtInst %float %glsl Sqrt %rho1
+%ms2 = OpFMul %float %musunc %musunc
+%ms2m1 = OpFSub %float %ms2 %f1
+%dd0 = OpFMul %float %risq %ms2m1
+%dd1 = OpFAdd %float %dd0 %topsq
+%dd2 = OpExtInst %float %glsl FMax %dd1 %f0
+%dd3 = OpExtInst %float %glsl Sqrt %dd2
+%rmus = OpFMul %float %ri %musunc
+%nrmus = OpFNegate %float %rmus
+%dsun = OpFAdd %float %nrmus %dd3
+%dminl = OpFSub %float %top %ri
+%dmaxl = OpFAdd %float %rhoi %Hatm
+%dspanl0 = OpFSub %float %dmaxl %dminl
+%dspanl = OpExtInst %float %glsl FMax %dspanl0 %feps
+%ulut0 = OpFSub %float %dsun %dminl
+%ulut = OpFDiv %float %ulut0 %dspanl
+%vlut = OpFDiv %float %rhoi %Hatm
+%uvlut = OpCompositeConstruct %v2 %ulut %vlut
+; OpSampledImage has to be consumed in the block that creates it, and
+; explicit LOD because the LUT has one mip and we are inside a loop.
+%smtr = OpSampledImage %sampled %iimg %sc
+%tr4 = OpImageSampleExplicitLod %v4 %smtr %uvlut Lod %f0
+%sun_tr = OpVectorShuffle %v3 %tr4 %tr4 0 1 2
+
+; second-and-higher orders from the multiscattering LUT: isotropic, so it
+; carries the scattering coefficient with no phase term.
+%msu0 = OpFMul %float %musunc %f05
+%msu = OpFAdd %float %msu0 %f05
+%hspan = OpFSub %float %top %bottom
+%msv0 = OpFSub %float %ri %bottom
+%msv = OpFDiv %float %msv0 %hspan
+%msuv = OpCompositeConstruct %v2 %msu %msv
+%pms = OpAccessChain %ptr_uu %cb %u11
+%ims = OpLoad %uint %pms
+%pmsimg = OpAccessChain %ptr_img %heap %ims
+%imsimg = OpLoad %img %pmsimg
+%smms = OpSampledImage %sampled %imsimg %sc
+%ms4 = OpImageSampleExplicitLod %v4 %smms %msuv Lod %f0
+%psi = OpVectorShuffle %v3 %ms4 %ms4 0 1 2
+%scat_all = OpFAdd %v3 %sc_r %sc_m
+%ms_term = OpFMul %v3 %scat_all %psi
+
+; single scattering with the Rayleigh and Mie phases
+%ph_r = OpVectorTimesScalar %v3 %sc_r %phase_r
+%ph_m = OpVectorTimesScalar %v3 %sc_m %phase_m
+%scat = OpFAdd %v3 %ph_r %ph_m
+%S0 = OpFMul %v3 %scat %sun_tr
+%S = OpFAdd %v3 %S0 %ms_term
+%Sill = OpFMul %v3 %S %ill
+; energy-conserving segment integral
+%exdt = OpVectorTimesScalar %v3 %ex %dt
+%nexdt = OpFNegate %v3 %exdt
+%tseg = OpExtInst %v3 %glsl Exp %nexdt
+%sT = OpFMul %v3 %Sill %tseg
+%sdiff = OpFSub %v3 %Sill %sT
+%sint = OpFDiv %v3 %sdiff %ex
+%contrib = OpFMul %v3 %thr %sint
+%lumn = OpFAdd %v3 %lum %contrib
+%thrn = OpFMul %v3 %thr %tseg
+OpBranch %cont
+
+%cont = OpLabel
+%inext = OpIAdd %uint %i %u1
+OpBranch %head
+
+%merge = OpLabel
+%out4 = OpCompositeConstruct %v4 %lum %f1
+OpStore %out_color %out4
+OpReturn
+OpFunctionEnd

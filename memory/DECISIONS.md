@@ -201,8 +201,16 @@ Desvio consciente ao roadmap §5 («Bruneton LUTs baked na CPU no init»).
   temporal. São dois sistemas.
 - LUTs 2D saem por **passes fullscreen**, não compute: são 2D, um output por
   texel, sem partilha de grupo. Só a aerial perspective (3D) precisa de UAV.
-- Estado: LUT de transmittance + raymarch por pixel com **single scattering**.
-  Falta a LUT de multiscattering (o céu está mais escuro do que devia no azul
-  profundo e ao crepúsculo) e a sky-view LUT, que é a optimização que troca o
-  march por um fetch. Não chamar a isto «Hillaire completo» até essas duas
-  entrarem.
+- **Fechado para o céu**: transmittance (256×64) → multiscattering (32×32) →
+  sky-view (192×108) → composite. O composite faz **um fetch por pixel**, não um
+  march. A LUT bate com o raymarch por pixel ao bit (±1 num canal no zénite) —
+  é assim que se prova que a optimização é fiel.
+- A LUT de multiscattering integra sobre a esfera com **um loop achatado**
+  (direcção × passo, índices por `UDiv`/`UMod`, throughput a reiniciar quando o
+  passo dá a volta) em vez de dois loops aninhados: mesma integral, muito menos
+  SPIR-V à mão para errar. Direcções em espiral de ângulo dourado, melhor
+  distribuídas que a grelha 8×8 do Hillaire para a mesma contagem.
+- **Sem bounce do chão** na LUT de multiscattering (albedo 0). Falta-lhe a luz que
+  volta do solo, o que aparece como um horizonte ligeiramente mais escuro.
+- Falta a **aerial perspective** (froxel 32³). Não é do gate do céu — é integração
+  com a cena, entra quando a Sponza receber atmosfera.
