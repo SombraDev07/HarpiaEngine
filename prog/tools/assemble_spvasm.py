@@ -245,6 +245,38 @@ def assemble(text: str) -> bytes:
             if a.startswith("%") and a[1:] not in defined:
                 raise ValueError(f"{op} uses %{a[1:]}, which nothing defines")
 
+    # OpPhi names the block each value arrives from, and that block has to be a
+    # real predecessor. Getting it wrong is silently accepted here and rejected
+    # by spirv-val with an empty message, so check it while the text is at hand.
+    preds: dict[str, set[str]] = {}
+    block = None
+    for result, op, args in lines:
+        if op == "OpLabel":
+            block = result.lstrip("%")
+            preds.setdefault(block, set())
+        elif op in ("OpBranch", "OpBranchConditional", "OpSwitch") and block:
+            targets = [a[1:] for a in args if a.startswith("%")]
+            if op == "OpBranchConditional":
+                targets = targets[1:]  # first operand is the condition
+            for t in targets:
+                preds.setdefault(t, set()).add(block)
+    block = None
+    for result, op, args in lines:
+        if op == "OpLabel":
+            block = result.lstrip("%")
+        elif op == "OpPhi" and block:
+            # value, block, value, block, ... after the result type
+            for a in args[1::2]:
+                if not a.startswith("%"):
+                    continue
+                name = a[1:]
+                if name in preds and name not in preds[block]:
+                    raise ValueError(
+                        f"OpPhi in %{block} names %{name} as an incoming block, "
+                        f"but %{block}'s predecessors are "
+                        f"{sorted('%' + p for p in preds[block])}"
+                    )
+
     bound = max(ids.values(), default=0) + 1
     words = [0x07230203, 0x00010500, 0, bound, 0]
     float_types = {result.lstrip("%") for result, op, _ in lines if op == "OpTypeFloat" and result}

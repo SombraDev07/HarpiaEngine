@@ -1,0 +1,115 @@
+; Copy the composite RT to the swapchain. Values are already tonemapped and
+; sRGB-encoded, so this must not tonemap again.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %heap %samp_c
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %irt NonUniform
+OpDecorate %Cloud Block
+OpMemberDecorate %Cloud 0 Offset 0
+OpMemberDecorate %Cloud 0 ColMajor
+OpMemberDecorate %Cloud 0 MatrixStride 16
+OpMemberDecorate %Cloud 1 Offset 64
+OpMemberDecorate %Cloud 2 Offset 80
+OpMemberDecorate %Cloud 3 Offset 96
+OpMemberDecorate %Cloud 4 Offset 112
+OpMemberDecorate %Cloud 5 Offset 128
+OpMemberDecorate %Cloud 6 Offset 144
+OpMemberDecorate %Cloud 7 Offset 160
+OpMemberDecorate %Cloud 8 Offset 176
+OpMemberDecorate %Cloud 9 Offset 192
+OpMemberDecorate %Cloud 10 Offset 200
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Cloud = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint
+%ptr_cb = OpTypePointer Uniform %Cloud
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uu = OpTypePointer Uniform %uint
+%ptr_uv2 = OpTypePointer Uniform %v2
+%ptr_uv4 = OpTypePointer Uniform %v4
+%ptr_umat = OpTypePointer Uniform %mat4
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u2 = OpConstant %uint 2
+%u3 = OpConstant %uint 3
+%u8 = OpConstant %uint 8
+%u9 = OpConstant %uint 9
+%u10 = OpConstant %uint 10
+
+%img = OpTypeImage %float 2D 0 0 0 1 Unknown
+%img_arr = OpTypeRuntimeArray %img
+%ptr_arr = OpTypePointer UniformConstant %img_arr
+%heap = OpVariable %ptr_arr UniformConstant
+%ptr_img = OpTypePointer UniformConstant %img
+%sampled = OpTypeSampledImage %img
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
+
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%f05 = OpConstant %float 0.5
+%f2 = OpConstant %float 2.0
+%feps = OpConstant %float 0.000001
+%f251 = OpConstant %float 2.51
+%f003 = OpConstant %float 0.03
+%f243 = OpConstant %float 2.43
+%f059 = OpConstant %float 0.59
+%f014 = OpConstant %float 0.14
+%fhz = OpConstant %float 0.35
+%fsun_cos = OpConstant %float 0.9995
+%v3_003 = OpConstantComposite %v3 %f003 %f003 %f003
+%v3_059 = OpConstantComposite %v3 %f059 %f059 %f059
+%v3_014 = OpConstantComposite %v3 %f014 %f014 %f014
+%v3_zero = OpConstantComposite %v3 %f0 %f0 %f0
+%v3_one = OpConstantComposite %v3 %f1 %f1 %f1
+%finvg = OpConstant %float 0.41666666
+%v3_invg = OpConstantComposite %v3 %finvg %finvg %finvg
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u9
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%prt = OpAccessChain %ptr_uu %cb %u10
+%irt = OpLoad %uint %prt
+%pa = OpAccessChain %ptr_img %heap %irt
+%ia = OpLoad %img %pa
+%s = OpLoad %samp_ty %samp_c
+%sm = OpSampledImage %sampled %ia %s
+%col = OpImageSampleImplicitLod %v4 %sm %uv
+OpStore %out_color %col
+OpReturn
+OpFunctionEnd

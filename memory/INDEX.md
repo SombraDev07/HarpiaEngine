@@ -4,7 +4,7 @@ Persistência entre sessões da IA. **Não** é o allocator (`prog/engine/memory
 
 ## Onde estás (lê isto primeiro)
 
-**Fase 4 fechada. Próxima = fase 5 (clima: fog → clouds → water → rain).** Não comecees mesh shaders, RT, FSR, editor. Cena de referência: **Sponza** (`docs/Rust-Rewrite-Roadmap.md` §0.1).
+**Fase 5 (clima) em curso: fog, céu e clouds feitos; falta water e rain.** Não comecees mesh shaders, RT, FSR, editor. Cena de referência: **Sponza** (`docs/Rust-Rewrite-Roadmap.md` §0.1).
 
 Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abaixo em `PROGRESS.md`. Sem gate verde, a fase não está feita.
 
@@ -15,7 +15,7 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 | 2 bindless | `gate-bindless` (16 frames) | feito |
 | 3 PBR | `gate-pbr-grid` 90 frames | feito |
 | **4 CSM+TAA** | **`csm` + `taa` 16; Sponza 90** | **feito** |
-| **5 clima** | fog → clouds → water → rain | **agora** (fog feito) |
+| **5 clima** | fog → clouds → water → rain | **agora** (fog, céu, clouds feitos) |
 | 6…9 | ver roadmap §15 | não |
 
 ## Ordem de leitura (início de sessão)

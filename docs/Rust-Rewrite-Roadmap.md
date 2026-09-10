@@ -528,8 +528,8 @@ Cada fase: código + **um binário que corre N frames e sai 0**. Sem pixel-ident
 | 1 | Triângulo GPU | `hello-triangle --frames 90` | **feito** (RADV, validation 0) |
 | 2 | Bindless + upload | `gate-bindless` 16 frames | **feito** (RADV, validation 0) |
 | 3 | Deferred PBR | `pbr-grid` 90 frames | **feito** (RADV, validation 0) |
-| 4 | Sombras + TAA | `csm` + `taa` 16; **Sponza** 90 (integração) | **próximo** |
-| 5 | Clima | `fog` `clouds` `water` `rain` | — |
+| 4 | Sombras + TAA | `csm` + `taa` 16; **Sponza** 90 (integração) | **feito** (RADV, validation 0, PCSS) |
+| 5 | Clima | `fog` `clouds` `water` `rain` | **em curso** (fog, céu, clouds feitos) |
 | 6 | Terreno + veg + mundo | `terrain` `heightquery` `veg` `instances` | — |
 | 7 | GI + post extra | `ssr` `probes` (+ occupancy honesta ou 0 bytes) | — |
 | 8 | Editor | docking + viewport `--frames 8` | — |
@@ -570,7 +570,7 @@ Barra: `docs/Rust-Rewrite-Quality-Bar.md` §4.1 e §4.8. Cena de olho: **Sponza*
 - [x] CSM 4 cascades atlas 2×2 com **frustum da câmara real** (FOV, aspect, near/far). Snap de texels no eixo da luz. PCF Vogel 8. Texel = `1/atlasSize` no CB — **não** `1/2048` hardcoded, **não** FOV 60°/16:9.
 - [x] Motion vectors (object X slide + câmara) + **TAA** (history + neighbourhood clamp 3×3).
 - [x] Loader glTF mínimo (`gltf` crate) + `cargo run -p sponza -- --frames 90`: albedo maps + sol + CSM no atrium. Fetch: `prog/tools/fetch_sponza.py`. ORM/IBL no Sponza fica para polish — o gate BRDF continua `pbr-grid`.
-- [ ] Depois: PCSS. Octa só se houver point lights de teste.
+- [x] Depois: PCSS (blocker search + PCF adaptativo, sampler de comparação). Octa só se houver point lights de teste.
 - [x] **Não** portar VSM, ESM, nem contact nesta fase.
 - [x] **Exit:** `gate-csm` e `gate-taa` 16 frames (resize 6/12). **Mais** `cargo run -p sponza -- --frames 90`, validation 0. Aspect mudado nos três.
 
@@ -581,7 +581,10 @@ Ordem: fog compute → clouds (sem driveRain) → water → **rain por último**
 - [x] Fog: froxels, 3D GENERAL. `gate-fog` 16 frames, validation 0.
 - [x] Céu: **Hillaire 2020** em vez do bake do Bruneton (ver `memory/DECISIONS.md` D19).
       transmittance → multiscattering → sky-view → composite. `gate-sky` 16 frames.
-- [~] Clouds: noise cache em disco **feito** (Perlin-Worley 128³ + Worley 32³, tileável, `.raw`, upload 3D provado). Falta o raymarch, o temporal e a sombra no chão.
+- [x] Clouds: noise cache em disco (Perlin-Worley 128³ + Worley 32³, tileável, `.raw`)
+      **+ raymarch Nubis a meia resolução** — 64 passos, march de luz de 6 passos,
+      Cornette-Shanks com multiple scattering em 3 oitavas. `gate-clouds` 16 frames.
+      Falta o temporal e a sombra das nuvens nos froxels do fog (D21).
 - [ ] Water: point-sample depth no SSR.
 - [ ] Rain: GBuffer wet + post; cones sem HDR SRV; `--frames 16` only.
 - [ ] **Exit:** gates `fog` `clouds` `water` `rain`. Default-on na **Sponza** (`--frames` curto) ou o pass não entra.

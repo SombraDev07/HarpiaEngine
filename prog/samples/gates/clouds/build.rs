@@ -9,7 +9,9 @@ fn main() {
 
     for (src_name, dst_name) in [
         ("fullscreen.vs.spvasm", "fullscreen.vs.spv"),
-        ("slice.ps.spvasm", "slice.ps.spv"),
+        ("clouds.ps.spvasm", "clouds.ps.spv"),
+        ("composite.ps.spvasm", "composite.ps.spv"),
+        ("blit.ps.spvasm", "blit.ps.spv"),
     ] {
         let src = shader_dir.join(src_name);
         let dst = out.join(dst_name);

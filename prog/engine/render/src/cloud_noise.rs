@@ -19,7 +19,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use harpia_math::Vec2;
+use harpia_math::{Mat4, Vec2, Vec4};
 use harpia_rhi::{Format, TextureDesc, TextureDim};
 
 pub const BASE_SIZE: u32 = 128;
@@ -71,6 +71,65 @@ pub struct CloudSliceCb {
 }
 
 impl CloudSliceCb {
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                (self as *const Self).cast::<u8>(),
+                std::mem::size_of::<Self>(),
+            )
+        }
+    }
+}
+
+/// Per-frame cloud constants. Matches `clouds.ps.spvasm`.
+///
+/// The layer is a shell between `layer.x` and `layer.y` km above the ground,
+/// centred on the planet, so it curves away and meets the horizon instead of
+/// ending at a flat plane.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CloudCb {
+    pub inv_view_proj: Mat4,
+    /// World camera; `w` is the altitude in km.
+    pub camera_pos: Vec4,
+    pub sun_dir: Vec4,
+    pub sun_color: Vec4,
+    /// bottom km, top km, coverage `[0,1]`, density scale.
+    pub layer: Vec4,
+    /// base noise scale, detail noise scale, detail strength, phase `g`.
+    pub shape: Vec4,
+    /// wind offset xyz (km), unused.
+    pub wind: Vec4,
+    /// march steps, light steps, light march length km, extinction km⁻¹.
+    pub steps: Vec4,
+    /// ambient rgb, planet bottom radius km.
+    pub ambient: Vec4,
+    pub inv_extent: Vec2,
+    /// Bindless index of the half-res cloud target, for the composite pass.
+    pub cloud_rt: u32,
+    pub _pad: u32,
+}
+
+impl Default for CloudCb {
+    fn default() -> Self {
+        Self {
+            inv_view_proj: Mat4::IDENTITY,
+            camera_pos: Vec4::new(0.0, 0.0, 0.0, 0.5),
+            sun_dir: Vec4::Y,
+            sun_color: Vec4::new(3.4, 3.25, 3.0, 1.0),
+            layer: Vec4::new(1.5, 4.0, 0.36, 0.8),
+            shape: Vec4::new(0.11, 1.1, 0.32, 0.72),
+            wind: Vec4::ZERO,
+            steps: Vec4::new(64.0, 6.0, 1.6, 6.0),
+            ambient: Vec4::new(0.16, 0.21, 0.32, 6360.0),
+            inv_extent: Vec2::ONE,
+            cloud_rt: 0,
+            _pad: 0,
+        }
+    }
+}
+
+impl CloudCb {
     pub fn as_bytes(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(
@@ -330,6 +389,22 @@ mod tests {
             hi = hi.max(v);
         }
         assert!(hi - lo > 0.2, "worley_fbm is flat: {lo}..{hi}");
+    }
+
+    #[test]
+    fn cloud_cb_layout_matches_the_spvasm() {
+        assert_eq!(std::mem::size_of::<CloudCb>(), 208);
+        assert_eq!(std::mem::offset_of!(CloudCb, camera_pos), 64);
+        assert_eq!(std::mem::offset_of!(CloudCb, sun_dir), 80);
+        assert_eq!(std::mem::offset_of!(CloudCb, sun_color), 96);
+        assert_eq!(std::mem::offset_of!(CloudCb, layer), 112);
+        assert_eq!(std::mem::offset_of!(CloudCb, shape), 128);
+        assert_eq!(std::mem::offset_of!(CloudCb, wind), 144);
+        assert_eq!(std::mem::offset_of!(CloudCb, steps), 160);
+        assert_eq!(std::mem::offset_of!(CloudCb, ambient), 176);
+        assert_eq!(std::mem::offset_of!(CloudCb, inv_extent), 192);
+        assert_eq!(std::mem::offset_of!(CloudCb, cloud_rt), 200);
+        assert!(std::mem::size_of::<CloudCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
     }
 
     #[test]

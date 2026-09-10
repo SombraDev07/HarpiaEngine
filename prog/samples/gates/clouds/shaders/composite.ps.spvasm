@@ -1,0 +1,186 @@
+; Cloud composite: an analytic sky behind, the half-res cloud target over it.
+;   out = sky * transmittance + scattered
+; The gate judges the clouds, so the sky here is a gradient, not the Hillaire
+; chain — that integration belongs with the scene, not with a one-feature gate.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %heap %samp_c
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %irt NonUniform
+OpDecorate %Cloud Block
+OpMemberDecorate %Cloud 0 Offset 0
+OpMemberDecorate %Cloud 0 ColMajor
+OpMemberDecorate %Cloud 0 MatrixStride 16
+OpMemberDecorate %Cloud 1 Offset 64
+OpMemberDecorate %Cloud 2 Offset 80
+OpMemberDecorate %Cloud 3 Offset 96
+OpMemberDecorate %Cloud 4 Offset 112
+OpMemberDecorate %Cloud 5 Offset 128
+OpMemberDecorate %Cloud 6 Offset 144
+OpMemberDecorate %Cloud 7 Offset 160
+OpMemberDecorate %Cloud 8 Offset 176
+OpMemberDecorate %Cloud 9 Offset 192
+OpMemberDecorate %Cloud 10 Offset 200
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Cloud = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint
+%ptr_cb = OpTypePointer Uniform %Cloud
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uu = OpTypePointer Uniform %uint
+%ptr_uv2 = OpTypePointer Uniform %v2
+%ptr_uv4 = OpTypePointer Uniform %v4
+%ptr_umat = OpTypePointer Uniform %mat4
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u2 = OpConstant %uint 2
+%u3 = OpConstant %uint 3
+%u8 = OpConstant %uint 8
+%u9 = OpConstant %uint 9
+%u10 = OpConstant %uint 10
+
+%img = OpTypeImage %float 2D 0 0 0 1 Unknown
+%img_arr = OpTypeRuntimeArray %img
+%ptr_arr = OpTypePointer UniformConstant %img_arr
+%heap = OpVariable %ptr_arr UniformConstant
+%ptr_img = OpTypePointer UniformConstant %img
+%sampled = OpTypeSampledImage %img
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
+
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%f05 = OpConstant %float 0.5
+%f2 = OpConstant %float 2.0
+%feps = OpConstant %float 0.000001
+%f251 = OpConstant %float 2.51
+%f003 = OpConstant %float 0.03
+%f243 = OpConstant %float 2.43
+%f059 = OpConstant %float 0.59
+%f014 = OpConstant %float 0.14
+%fhz = OpConstant %float 0.35
+%fskyk = OpConstant %float 0.16
+%fsun_cos = OpConstant %float 0.9995
+%v3_003 = OpConstantComposite %v3 %f003 %f003 %f003
+%v3_059 = OpConstantComposite %v3 %f059 %f059 %f059
+%v3_014 = OpConstantComposite %v3 %f014 %f014 %f014
+%v3_zero = OpConstantComposite %v3 %f0 %f0 %f0
+%v3_one = OpConstantComposite %v3 %f1 %f1 %f1
+%finvg = OpConstant %float 0.41666666
+%v3_invg = OpConstantComposite %v3 %finvg %finvg %finvg
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u9
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%uvx = OpCompositeExtract %float %uv 0
+%uvy = OpCompositeExtract %float %uv 1
+%ndx0 = OpFMul %float %uvx %f2
+%ndx = OpFSub %float %ndx0 %f1
+%ndy0 = OpFMul %float %uvy %f2
+%ndy = OpFSub %float %ndy0 %f1
+%pivp = OpAccessChain %ptr_umat %cb %u0
+%ivp = OpLoad %mat4 %pivp
+%farclip = OpCompositeConstruct %v4 %ndx %ndy %f1 %f1
+%farw = OpMatrixTimesVector %v4 %ivp %farclip
+%fw = OpCompositeExtract %float %farw 3
+%fwc = OpExtInst %float %glsl FMax %fw %feps
+%invfw = OpFDiv %float %f1 %fwc
+%fx = OpCompositeExtract %float %farw 0
+%fy = OpCompositeExtract %float %farw 1
+%fz = OpCompositeExtract %float %farw 2
+%fpx = OpFMul %float %fx %invfw
+%fpy = OpFMul %float %fy %invfw
+%fpz = OpFMul %float %fz %invfw
+%farpos = OpCompositeConstruct %v3 %fpx %fpy %fpz
+%pcam = OpAccessChain %ptr_uv4 %cb %u1
+%cam4 = OpLoad %v4 %pcam
+%camw = OpVectorShuffle %v3 %cam4 %cam4 0 1 2
+%rawd = OpFSub %v3 %farpos %camw
+%dir = OpExtInst %v3 %glsl Normalize %rawd
+
+; analytic sky: zenith tint towards the ambient, warm near the horizon
+%pamb = OpAccessChain %ptr_uv4 %cb %u8
+%ambv = OpLoad %v4 %pamb
+%amb = OpVectorShuffle %v3 %ambv %ambv 0 1 2
+%dy = OpCompositeExtract %float %dir 1
+%dyc = OpExtInst %float %glsl FClamp %dy %f0 %f1
+%hz0 = OpFDiv %float %dyc %fhz
+%hz = OpExtInst %float %glsl FClamp %hz0 %f0 %f1
+%pscol = OpAccessChain %ptr_uv4 %cb %u3
+%scol4 = OpLoad %v4 %pscol
+%scol = OpVectorShuffle %v3 %scol4 %scol4 0 1 2
+%warm = OpVectorTimesScalar %v3 %scol %fskyk
+%skylo = OpFMul %v3 %warm %v3_one
+%mixv = OpCompositeConstruct %v3 %hz %hz %hz
+%sky = OpExtInst %v3 %glsl FMix %skylo %amb %mixv
+
+; sun disc behind the clouds
+%psun = OpAccessChain %ptr_uv4 %cb %u2
+%sun4 = OpLoad %v4 %psun
+%sun0 = OpVectorShuffle %v3 %sun4 %sun4 0 1 2
+%sun = OpExtInst %v3 %glsl Normalize %sun0
+%cost = OpDot %float %dir %sun
+%issun = OpFOrdGreaterThan %bool %cost %fsun_cos
+%discv = OpSelect %v3 %issun %scol %v3_zero
+%skysun = OpFAdd %v3 %sky %discv
+
+%prt = OpAccessChain %ptr_uu %cb %u10
+%irt = OpLoad %uint %prt
+%pa = OpAccessChain %ptr_img %heap %irt
+%ia = OpLoad %img %pa
+%s = OpLoad %samp_ty %samp_c
+%sm = OpSampledImage %sampled %ia %s
+%cl = OpImageSampleImplicitLod %v4 %sm %uv
+%scat = OpVectorShuffle %v3 %cl %cl 0 1 2
+%tr = OpCompositeExtract %float %cl 3
+%behind = OpVectorTimesScalar %v3 %skysun %tr
+%total = OpFAdd %v3 %behind %scat
+
+%x251 = OpVectorTimesScalar %v3 %total %f251
+%numt = OpFAdd %v3 %x251 %v3_003
+%num = OpFMul %v3 %total %numt
+%x243 = OpVectorTimesScalar %v3 %total %f243
+%dent = OpFAdd %v3 %x243 %v3_059
+%denA = OpFMul %v3 %total %dent
+%denC = OpFAdd %v3 %denA %v3_014
+%toned0 = OpFDiv %v3 %num %denC
+%toned = OpExtInst %v3 %glsl FClamp %toned0 %v3_zero %v3_one
+%srgb = OpExtInst %v3 %glsl Pow %toned %v3_invg
+%out4 = OpCompositeConstruct %v4 %srgb %f1
+OpStore %out_color %out4
+OpReturn
+OpFunctionEnd

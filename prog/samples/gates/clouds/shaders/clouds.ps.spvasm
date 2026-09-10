@@ -1,0 +1,518 @@
+; Cloud raymarch (roadmap §9), Schneider/Nubis shape with Hillaire's multiple
+; scattering approximation.
+;
+; The layer is a spherical shell, not a slab: it curves away and meets the
+; horizon. Density is the Perlin-Worley shape remapped against its own Worley
+; FBM, gated by a height gradient and the coverage, then eroded at the edges by
+; the 32^3 detail volume.
+;
+; Lighting is a 6-step march towards the sun for optical depth, then three
+; octaves of Hillaire's approximation — each octave halves the attenuation, the
+; contribution and the phase eccentricity. That is what gives the bright rim and
+; the dark base instead of flat Beer's law cotton.
+;
+; Renders at half resolution into (scattered rgb, transmittance a).
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %vol %samp
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %vol DescriptorSet 5
+OpDecorate %vol Binding 0
+OpDecorate %samp DescriptorSet 2
+OpDecorate %samp Binding 0
+OpDecorate %Cloud Block
+OpMemberDecorate %Cloud 0 Offset 0
+OpMemberDecorate %Cloud 0 ColMajor
+OpMemberDecorate %Cloud 0 MatrixStride 16
+OpMemberDecorate %Cloud 1 Offset 64
+OpMemberDecorate %Cloud 2 Offset 80
+OpMemberDecorate %Cloud 3 Offset 96
+OpMemberDecorate %Cloud 4 Offset 112
+OpMemberDecorate %Cloud 5 Offset 128
+OpMemberDecorate %Cloud 6 Offset 144
+OpMemberDecorate %Cloud 7 Offset 160
+OpMemberDecorate %Cloud 8 Offset 176
+OpMemberDecorate %Cloud 9 Offset 192
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Cloud = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2
+%ptr_cb = OpTypePointer Uniform %Cloud
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv2 = OpTypePointer Uniform %v2
+%ptr_uv4 = OpTypePointer Uniform %v4
+%ptr_umat = OpTypePointer Uniform %mat4
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u2 = OpConstant %uint 2
+%u3 = OpConstant %uint 3
+%u4 = OpConstant %uint 4
+%u5 = OpConstant %uint 5
+%u6 = OpConstant %uint 6
+%u7 = OpConstant %uint 7
+%u8 = OpConstant %uint 8
+%u9 = OpConstant %uint 9
+%uslots = OpConstant %uint 8
+%umarch = OpConstant %uint 64
+%ulight = OpConstant %uint 6
+
+%img3 = OpTypeImage %float 3D 0 0 0 1 Unknown
+%arr3 = OpTypeArray %img3 %uslots
+%ptr_arr3 = OpTypePointer UniformConstant %arr3
+%vol = OpVariable %ptr_arr3 UniformConstant
+%ptr_img3 = OpTypePointer UniformConstant %img3
+%sampled3 = OpTypeSampledImage %img3
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp = OpVariable %ptr_samp UniformConstant
+
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%f05 = OpConstant %float 0.5
+%f025 = OpConstant %float 0.25
+%f0125 = OpConstant %float 0.125
+%f0625 = OpConstant %float 0.625
+%f2 = OpConstant %float 2.0
+%fn1 = OpConstant %float -1.0
+%feps = OpConstant %float 0.0001
+%f15 = OpConstant %float 1.5
+%f8pi = OpConstant %float 0.07957747
+; Cornette-Shanks normalisation, 3/(8*pi) over the 2 already in the denominator
+%fcs = OpConstant %float 0.23873241
+%igna = OpConstant %float 0.06711056
+%ignb = OpConstant %float 0.00583715
+%ignc = OpConstant %float 52.9829189
+%fgbot = OpConstant %float 0.15
+%fgtop = OpConstant %float 0.45
+%fmarch = OpConstant %float 64.0
+; cap the marched distance so grazing rays do not band
+%fmaxspan = OpConstant %float 28.0
+%ffar = OpConstant %float 34.0
+%ffade = OpConstant %float 15.0
+%fcovnear = OpConstant %float 6.0
+%fcovrange = OpConstant %float 18.0
+%fcovfar = OpConstant %float 0.66
+%fdetfar = OpConstant %float 24.0
+%fdetfade = OpConstant %float 13.0
+%flight = OpConstant %float 6.0
+%v3_zero = OpConstantComposite %v3 %f0 %f0 %f0
+%v3_one = OpConstantComposite %v3 %f1 %f1 %f1
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u9
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%uvx = OpCompositeExtract %float %uv 0
+%uvy = OpCompositeExtract %float %uv 1
+%ndx0 = OpFMul %float %uvx %f2
+%ndx = OpFSub %float %ndx0 %f1
+%ndy0 = OpFMul %float %uvy %f2
+%ndy = OpFSub %float %ndy0 %f1
+
+%pivp = OpAccessChain %ptr_umat %cb %u0
+%ivp = OpLoad %mat4 %pivp
+%farclip = OpCompositeConstruct %v4 %ndx %ndy %f1 %f1
+%farw = OpMatrixTimesVector %v4 %ivp %farclip
+%fw = OpCompositeExtract %float %farw 3
+%fwc = OpExtInst %float %glsl FMax %fw %feps
+%invfw = OpFDiv %float %f1 %fwc
+%fx = OpCompositeExtract %float %farw 0
+%fy = OpCompositeExtract %float %farw 1
+%fz = OpCompositeExtract %float %farw 2
+%fpx = OpFMul %float %fx %invfw
+%fpy = OpFMul %float %fy %invfw
+%fpz = OpFMul %float %fz %invfw
+%farpos = OpCompositeConstruct %v3 %fpx %fpy %fpz
+%pcam = OpAccessChain %ptr_uv4 %cb %u1
+%cam4 = OpLoad %v4 %pcam
+%camw = OpVectorShuffle %v3 %cam4 %cam4 0 1 2
+%alt = OpCompositeExtract %float %cam4 3
+%rawd = OpFSub %v3 %farpos %camw
+%dir = OpExtInst %v3 %glsl Normalize %rawd
+
+%psun = OpAccessChain %ptr_uv4 %cb %u2
+%sun4 = OpLoad %v4 %psun
+%sun0 = OpVectorShuffle %v3 %sun4 %sun4 0 1 2
+%sun = OpExtInst %v3 %glsl Normalize %sun0
+%pscol = OpAccessChain %ptr_uv4 %cb %u3
+%scol4 = OpLoad %v4 %pscol
+%scol = OpVectorShuffle %v3 %scol4 %scol4 0 1 2
+%play = OpAccessChain %ptr_uv4 %cb %u4
+%layv = OpLoad %v4 %play
+%lay_b = OpCompositeExtract %float %layv 0
+%lay_t = OpCompositeExtract %float %layv 1
+%coverage = OpCompositeExtract %float %layv 2
+%dens_k = OpCompositeExtract %float %layv 3
+%pshp = OpAccessChain %ptr_uv4 %cb %u5
+%shpv = OpLoad %v4 %pshp
+%base_s = OpCompositeExtract %float %shpv 0
+%det_s = OpCompositeExtract %float %shpv 1
+%det_k = OpCompositeExtract %float %shpv 2
+%gph = OpCompositeExtract %float %shpv 3
+%pwind = OpAccessChain %ptr_uv4 %cb %u6
+%windv = OpLoad %v4 %pwind
+%wind = OpVectorShuffle %v3 %windv %windv 0 1 2
+%pstp = OpAccessChain %ptr_uv4 %cb %u7
+%stpv = OpLoad %v4 %pstp
+%light_len = OpCompositeExtract %float %stpv 2
+%sigma = OpCompositeExtract %float %stpv 3
+%pamb = OpAccessChain %ptr_uv4 %cb %u8
+%ambv = OpLoad %v4 %pamb
+%amb = OpVectorShuffle %v3 %ambv %ambv 0 1 2
+%ground_r = OpCompositeExtract %float %ambv 3
+
+%r0 = OpFAdd %float %ground_r %alt
+%origin = OpCompositeConstruct %v3 %f0 %r0 %f0
+%r0sq = OpFMul %float %r0 %r0
+%r_in = OpFAdd %float %ground_r %lay_b
+%r_out = OpFAdd %float %ground_r %lay_t
+%thick = OpFSub %float %r_out %r_in
+%thickc = OpExtInst %float %glsl FMax %thick %feps
+
+; shell entry and exit: the far root of each sphere, since the camera is below
+%dotdo = OpDot %float %dir %origin
+%bq = OpFMul %float %f2 %dotdo
+%nbq = OpFNegate %float %bq
+%rinsq = OpFMul %float %r_in %r_in
+%routsq = OpFMul %float %r_out %r_out
+%bq2 = OpFMul %float %bq %bq
+%cin = OpFSub %float %r0sq %rinsq
+%cin4 = OpFMul %float %cin %f2
+%cin4b = OpFMul %float %cin4 %f2
+%din = OpFSub %float %bq2 %cin4b
+%dinc = OpExtInst %float %glsl FMax %din %f0
+%sqin = OpExtInst %float %glsl Sqrt %dinc
+%tin0 = OpFAdd %float %nbq %sqin
+%t_in = OpFMul %float %tin0 %f05
+%cout = OpFSub %float %r0sq %routsq
+%cout4 = OpFMul %float %cout %f2
+%cout4b = OpFMul %float %cout4 %f2
+%dout = OpFSub %float %bq2 %cout4b
+%doutc = OpExtInst %float %glsl FMax %dout %f0
+%sqout = OpExtInst %float %glsl Sqrt %doutc
+%tout0 = OpFAdd %float %nbq %sqout
+%t_out = OpFMul %float %tout0 %f05
+
+; the ground occludes: if the planet is hit before the shell, no clouds
+%rgsq = OpFMul %float %ground_r %ground_r
+%cgr = OpFSub %float %r0sq %rgsq
+%cgr4 = OpFMul %float %cgr %f2
+%cgr4b = OpFMul %float %cgr4 %f2
+%dgr = OpFSub %float %bq2 %cgr4b
+%hitg = OpFOrdGreaterThan %bool %dgr %f0
+%dgrc = OpExtInst %float %glsl FMax %dgr %f0
+%sqgr = OpExtInst %float %glsl Sqrt %dgrc
+%tgr0 = OpFSub %float %nbq %sqgr
+%t_gr = OpFMul %float %tgr0 %f05
+%grahead = OpFOrdGreaterThan %bool %t_gr %f0
+%blocked = OpLogicalAnd %bool %hitg %grahead
+
+%span0 = OpFSub %float %t_out %t_in
+%span = OpExtInst %float %glsl FMin %span0 %fmaxspan
+%haslen = OpFOrdGreaterThan %bool %span %f0
+%notblocked = OpLogicalNot %bool %blocked
+%domarch = OpLogicalAnd %bool %haslen %notblocked
+OpSelectionMerge %done None
+OpBranchConditional %domarch %march %skip
+
+%skip = OpLabel
+OpBranch %done
+
+%march = OpLabel
+%dt = OpFDiv %float %span %fmarch
+%ldt = OpFDiv %float %light_len %flight
+%fcx = OpCompositeExtract %float %fc 0
+%fcy = OpCompositeExtract %float %fc 1
+%iga = OpFMul %float %fcx %igna
+%igb = OpFMul %float %fcy %ignb
+%igab = OpFAdd %float %iga %igb
+%igf1 = OpExtInst %float %glsl Fract %igab
+%igm = OpFMul %float %igf1 %ignc
+%jitter = OpExtInst %float %glsl Fract %igm
+OpBranch %head
+
+%head = OpLabel
+%i = OpPhi %uint %u0 %march %inext %cont
+%scatter = OpPhi %v3 %v3_zero %march %scatn %cont
+%trans = OpPhi %float %f1 %march %transn %cont
+%more = OpULessThan %bool %i %umarch
+OpLoopMerge %merge %cont None
+OpBranchConditional %more %body %merge
+
+%body = OpLabel
+%fi = OpConvertUToF %float %i
+%fi5 = OpFAdd %float %fi %jitter
+%tt = OpFMul %float %fi5 %dt
+%t = OpFAdd %float %t_in %tt
+%stepv = OpVectorTimesScalar %v3 %dir %t
+%pos = OpFAdd %v3 %origin %stepv
+%pd = OpDot %float %pos %pos
+%ri = OpExtInst %float %glsl Sqrt %pd
+%hh0 = OpFSub %float %ri %r_in
+%hf0 = OpFDiv %float %hh0 %thickc
+%hf = OpExtInst %float %glsl FClamp %hf0 %f0 %f1
+
+; height gradient: soft base, softer anvil
+%gb0 = OpFDiv %float %hf %fgbot
+%gb = OpExtInst %float %glsl FClamp %gb0 %f0 %f1
+%gt0 = OpFSub %float %f1 %hf
+%gt1 = OpFDiv %float %gt0 %fgtop
+%gt = OpExtInst %float %glsl FClamp %gt1 %f0 %f1
+%grad = OpFMul %float %gb %gt
+
+; shape: Perlin-Worley remapped against its own Worley FBM
+%bp0 = OpVectorTimesScalar %v3 %pos %base_s
+%bp = OpFAdd %v3 %bp0 %wind
+%pbv = OpAccessChain %ptr_img3 %vol %u0
+%ibv = OpLoad %img3 %pbv
+%sm0 = OpLoad %samp_ty %samp
+%smb = OpSampledImage %sampled3 %ibv %sm0
+%bt = OpImageSampleExplicitLod %v4 %smb %bp Lod %f0
+%b_r = OpCompositeExtract %float %bt 0
+%b_g = OpCompositeExtract %float %bt 1
+%b_b = OpCompositeExtract %float %bt 2
+%b_a = OpCompositeExtract %float %bt 3
+%f_g = OpFMul %float %b_g %f0625
+%f_b = OpFMul %float %b_b %f025
+%f_a = OpFMul %float %b_a %f0125
+%fbm0 = OpFAdd %float %f_g %f_b
+%fbm = OpFAdd %float %fbm0 %f_a
+%lo = OpFSub %float %fbm %f1
+%sn0 = OpFSub %float %b_r %lo
+%sn1 = OpFSub %float %f1 %lo
+%sn1c = OpExtInst %float %glsl FMax %sn1 %feps
+%sn2 = OpFDiv %float %sn0 %sn1c
+%shape = OpExtInst %float %glsl FClamp %sn2 %f0 %f1
+%sg = OpFMul %float %shape %grad
+%cdf0 = OpFSub %float %t %fcovnear
+%cdf1 = OpFDiv %float %cdf0 %fcovrange
+%cdf = OpExtInst %float %glsl FClamp %cdf1 %f0 %f1
+%covdd = OpFSub %float %fcovfar %coverage
+%covde = OpFMul %float %covdd %cdf
+%covd = OpFAdd %float %coverage %covde
+%cv = OpFSub %float %f1 %covd
+%cd0 = OpFSub %float %sg %cv
+%cd1 = OpFSub %float %f1 %cv
+%cd1c = OpExtInst %float %glsl FMax %cd1 %feps
+%cd2 = OpFDiv %float %cd0 %cd1c
+%dens0 = OpExtInst %float %glsl FClamp %cd2 %f0 %f1
+
+; detail erosion, strongest at the base
+%dp0 = OpVectorTimesScalar %v3 %pos %det_s
+%dp1 = OpVectorTimesScalar %v3 %wind %f2
+%dp = OpFAdd %v3 %dp0 %dp1
+%pdv = OpAccessChain %ptr_img3 %vol %u1
+%idv = OpLoad %img3 %pdv
+%smd = OpSampledImage %sampled3 %idv %sm0
+%dtx = OpImageSampleExplicitLod %v4 %smd %dp Lod %f0
+%d_r = OpCompositeExtract %float %dtx 0
+%d_g = OpCompositeExtract %float %dtx 1
+%d_b = OpCompositeExtract %float %dtx 2
+%df_r = OpFMul %float %d_r %f0625
+%df_g = OpFMul %float %d_g %f025
+%df_b = OpFMul %float %d_b %f0125
+%dfbm0 = OpFAdd %float %df_r %df_g
+%dfbm = OpFAdd %float %dfbm0 %df_b
+%invh = OpFSub %float %f1 %hf
+%er0 = OpFMul %float %dfbm %det_k
+%er1 = OpFMul %float %er0 %invh
+%dl0 = OpFSub %float %fdetfar %t
+%dl1 = OpFDiv %float %dl0 %fdetfade
+%detlod = OpExtInst %float %glsl FClamp %dl1 %f0 %f1
+%er = OpFMul %float %er1 %detlod
+%ed0 = OpFSub %float %dens0 %er
+%ed1 = OpFSub %float %f1 %er
+%ed1c = OpExtInst %float %glsl FMax %ed1 %feps
+%ed2 = OpFDiv %float %ed0 %ed1c
+%dens1 = OpExtInst %float %glsl FClamp %ed2 %f0 %f1
+%dfar0 = OpFSub %float %ffar %t
+%dfar1 = OpFDiv %float %dfar0 %ffade
+%distfade = OpExtInst %float %glsl FClamp %dfar1 %f0 %f1
+%densf = OpFMul %float %dens1 %dens_k
+%dens = OpFMul %float %densf %distfade
+OpBranch %lhead
+
+; ---- light march: optical depth towards the sun ----
+%lhead = OpLabel
+%j = OpPhi %uint %u0 %body %jnext %lcont
+%ltau = OpPhi %float %f0 %body %ltaun %lcont
+%lmore = OpULessThan %bool %j %ulight
+OpLoopMerge %lmerge %lcont None
+OpBranchConditional %lmore %lbody %lmerge
+
+%lbody = OpLabel
+%fj = OpConvertUToF %float %j
+%fj5 = OpFAdd %float %fj %f05
+%lt = OpFMul %float %fj5 %ldt
+%lstep = OpVectorTimesScalar %v3 %sun %lt
+%lpos = OpFAdd %v3 %pos %lstep
+%lpd = OpDot %float %lpos %lpos
+%lri = OpExtInst %float %glsl Sqrt %lpd
+%lhh = OpFSub %float %lri %r_in
+%lhf0 = OpFDiv %float %lhh %thickc
+%lhf = OpExtInst %float %glsl FClamp %lhf0 %f0 %f1
+%lgb0 = OpFDiv %float %lhf %fgbot
+%lgb = OpExtInst %float %glsl FClamp %lgb0 %f0 %f1
+%lgt0 = OpFSub %float %f1 %lhf
+%lgt1 = OpFDiv %float %lgt0 %fgtop
+%lgt = OpExtInst %float %glsl FClamp %lgt1 %f0 %f1
+%lgrad = OpFMul %float %lgb %lgt
+%lbp0 = OpVectorTimesScalar %v3 %lpos %base_s
+%lbp = OpFAdd %v3 %lbp0 %wind
+%lpbv = OpAccessChain %ptr_img3 %vol %u0
+%libv = OpLoad %img3 %lpbv
+%lsmb = OpSampledImage %sampled3 %libv %sm0
+%lbt = OpImageSampleExplicitLod %v4 %lsmb %lbp Lod %f0
+%lb_r = OpCompositeExtract %float %lbt 0
+%lb_g = OpCompositeExtract %float %lbt 1
+%lb_b = OpCompositeExtract %float %lbt 2
+%lb_a = OpCompositeExtract %float %lbt 3
+%lf_g = OpFMul %float %lb_g %f0625
+%lf_b = OpFMul %float %lb_b %f025
+%lf_a = OpFMul %float %lb_a %f0125
+%lfbm0 = OpFAdd %float %lf_g %lf_b
+%lfbm = OpFAdd %float %lfbm0 %lf_a
+%llo = OpFSub %float %lfbm %f1
+%lsn0 = OpFSub %float %lb_r %llo
+%lsn1 = OpFSub %float %f1 %llo
+%lsn1c = OpExtInst %float %glsl FMax %lsn1 %feps
+%lsn2 = OpFDiv %float %lsn0 %lsn1c
+%lshape = OpExtInst %float %glsl FClamp %lsn2 %f0 %f1
+%lsg = OpFMul %float %lshape %lgrad
+%lcd0 = OpFSub %float %lsg %cv
+%lcd2 = OpFDiv %float %lcd0 %cd1c
+%ldens0 = OpExtInst %float %glsl FClamp %lcd2 %f0 %f1
+%ldens = OpFMul %float %ldens0 %dens_k
+%ldtau = OpFMul %float %ldens %ldt
+%ltaun = OpFAdd %float %ltau %ldtau
+OpBranch %lcont
+
+%lcont = OpLabel
+%jnext = OpIAdd %uint %j %u1
+OpBranch %lhead
+
+%lmerge = OpLabel
+%od = OpFMul %float %ltau %sigma
+; Hillaire's multiple scattering approximation, three octaves: each halves the
+; attenuation, the contribution and the phase eccentricity.
+%cost = OpDot %float %dir %sun
+%ph0 = OpFMul %float %cost %cost
+%ph1 = OpFAdd %float %f1 %ph0
+; octave 0: a=1, b=1, c=1
+%g0 = OpFMul %float %gph %f1
+%e0 = OpFNegate %float %od
+%x0 = OpExtInst %float %glsl Exp %e0
+%hg0 = OpFMul %float %g0 %g0
+%hn0 = OpFSub %float %f1 %hg0
+%hnn0 = OpFMul %float %hn0 %ph1
+%hd0a = OpFAdd %float %f2 %hg0
+%hd0b = OpFMul %float %f2 %g0
+%hd0c = OpFMul %float %hd0b %cost
+%hd0d = OpFAdd %float %f1 %hg0
+%hd0e = OpFSub %float %hd0d %hd0c
+%hd0f = OpExtInst %float %glsl FMax %hd0e %feps
+%hd0g = OpExtInst %float %glsl Pow %hd0f %f15
+%hd0h = OpFMul %float %hd0a %hd0g
+%hd0i = OpFMul %float %hd0h %f2
+%phg0u = OpFDiv %float %hnn0 %hd0i
+%phg0 = OpFMul %float %phg0u %fcs
+%o0 = OpFMul %float %phg0 %x0
+; octave 1: a=b=c=0.5
+%g1 = OpFMul %float %gph %f05
+%e1a = OpFMul %float %od %f05
+%e1 = OpFNegate %float %e1a
+%x1 = OpExtInst %float %glsl Exp %e1
+%hg1 = OpFMul %float %g1 %g1
+%hn1 = OpFSub %float %f1 %hg1
+%hnn1 = OpFMul %float %hn1 %ph1
+%hd1a = OpFAdd %float %f2 %hg1
+%hd1b = OpFMul %float %f2 %g1
+%hd1c = OpFMul %float %hd1b %cost
+%hd1d = OpFAdd %float %f1 %hg1
+%hd1e = OpFSub %float %hd1d %hd1c
+%hd1f = OpExtInst %float %glsl FMax %hd1e %feps
+%hd1g = OpExtInst %float %glsl Pow %hd1f %f15
+%hd1h = OpFMul %float %hd1a %hd1g
+%hd1i = OpFMul %float %hd1h %f2
+%phg1u = OpFDiv %float %hnn1 %hd1i
+%phg1 = OpFMul %float %phg1u %fcs
+%o1a = OpFMul %float %phg1 %x1
+%o1 = OpFMul %float %o1a %f05
+; octave 2: a=b=c=0.25
+%g2 = OpFMul %float %gph %f025
+%e2a = OpFMul %float %od %f025
+%e2 = OpFNegate %float %e2a
+%x2 = OpExtInst %float %glsl Exp %e2
+%hg2 = OpFMul %float %g2 %g2
+%hn2 = OpFSub %float %f1 %hg2
+%hnn2 = OpFMul %float %hn2 %ph1
+%hd2a = OpFAdd %float %f2 %hg2
+%hd2b = OpFMul %float %f2 %g2
+%hd2c = OpFMul %float %hd2b %cost
+%hd2d = OpFAdd %float %f1 %hg2
+%hd2e = OpFSub %float %hd2d %hd2c
+%hd2f = OpExtInst %float %glsl FMax %hd2e %feps
+%hd2g = OpExtInst %float %glsl Pow %hd2f %f15
+%hd2h = OpFMul %float %hd2a %hd2g
+%hd2i = OpFMul %float %hd2h %f2
+%phg2u = OpFDiv %float %hnn2 %hd2i
+%phg2 = OpFMul %float %phg2u %fcs
+%o2a = OpFMul %float %phg2 %x2
+%o2 = OpFMul %float %o2a %f025
+%lum0 = OpFAdd %float %o0 %o1
+%lum = OpFAdd %float %lum0 %o2
+
+%sig_t0 = OpFMul %float %dens %sigma
+%sig_t = OpExtInst %float %glsl FMax %sig_t0 %feps
+%sunlit = OpVectorTimesScalar %v3 %scol %lum
+%Ssum = OpFAdd %v3 %sunlit %amb
+%S = OpVectorTimesScalar %v3 %Ssum %sig_t
+%negs = OpFMul %float %sig_t %dt
+%negsn = OpFNegate %float %negs
+%tseg = OpExtInst %float %glsl Exp %negsn
+%StT = OpVectorTimesScalar %v3 %S %tseg
+%Sdiff = OpFSub %v3 %S %StT
+%invsig = OpFDiv %float %f1 %sig_t
+%Sint = OpVectorTimesScalar %v3 %Sdiff %invsig
+%contrib = OpVectorTimesScalar %v3 %Sint %trans
+%scatn = OpFAdd %v3 %scatter %contrib
+%transn = OpFMul %float %trans %tseg
+OpBranch %cont
+
+%cont = OpLabel
+%inext = OpIAdd %uint %i %u1
+OpBranch %head
+
+%merge = OpLabel
+OpBranch %done
+
+%done = OpLabel
+%out_scatter = OpPhi %v3 %v3_zero %skip %scatter %merge
+%out_trans = OpPhi %float %f1 %skip %trans %merge
+%out4 = OpCompositeConstruct %v4 %out_scatter %out_trans
+OpStore %out_color %out4
+OpReturn
+OpFunctionEnd

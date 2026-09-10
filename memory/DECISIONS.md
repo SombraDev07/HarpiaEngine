@@ -231,3 +231,28 @@ Desvio consciente ao roadmap §5 («Bruneton LUTs baked na CPU no init»).
   de física abrir.
 - `rayon` entra para trabalho offline (bake de noise, clipmap, mips), **não** para
   o frame graph — esse continua single-thread por D0.
+
+## D21 — Nuvens: Nubis a meia resolução, e o horizonte resolve-se por cobertura
+
+- **Raymarch a meia resolução** para um RT `Rgba16Float` que leva `(scattering.rgb,
+  transmitância.a)`; o composite full-res faz `céu * tr + scat`. Meia resolução é
+  o padrão do Nubis e é o que torna 64 passos × 6 de luz acessível.
+- Densidade à Schneider: Perlin-Worley remapeado **contra o seu próprio FBM de
+  Worley**, gradiente de altura (base dura, topo mole), cobertura, e só então a
+  erosão pelo volume de detalhe 32³ — mais forte na base.
+- Fase **Cornette-Shanks com a normalização `3/(8π)`**. Sem ela a fase valia ~4×
+  a mais e tudo saía branco lavado. Multiple scattering pela aproximação do
+  Hillaire: 3 oitavas com extinção/scattering/anisotropia a decair.
+- **O horizonte não se arranja com mais passos.** Num raio rasante o span é dezenas
+  de km e o passo passa dos 500 m, muito acima da escala do detalhe — dá um leque
+  de aliasing e depois confetti. Três medidas, por esta ordem de efeito:
+  1. **cobertura a subir com a distância** (0.36 → 0.66 entre 6 e 24 km): as nuvens
+     distantes fundem-se num **banco contínuo**, que é o que um horizonte real é.
+  2. LOD do detalhe — a erosão do volume 32³ desvanece até 24 km e fica só a forma.
+  3. span limitado a 28 km + densidade a esbater até 34 km.
+  O resto do ruído que sobra é trabalho da **reprojecção temporal**, não de tuning.
+- O ambiente do `CloudCb` é **radiância, não cor**: com o sol a ~3.4 o céu tem de
+  ficar bem abaixo disso ou o ACES leva tudo a branco. O sample não pode
+  sobrepor-se ao default do `cloud_noise.rs` — foi o que escondeu uma ronda inteira
+  de afinação.
+

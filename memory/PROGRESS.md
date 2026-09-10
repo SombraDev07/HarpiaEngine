@@ -1,6 +1,7 @@
 # Progress
 
-**Fase actual:** 4 **verde** (Linux / RADV, 2026-09), sombras CSM incluídas e vistas em pixels. A fase 5 (clima) é outra sessão.
+**Fase actual:** 5 (clima) **em curso** (Linux / RADV, 2026-09) — fog, céu e nuvens
+verdes e vistos em pixels. Falta water e rain. Fase 4 fechada com PCSS.
 
 Quadro: `docs/Rust-Rewrite-Roadmap.md` §15. Este ficheiro é o diário; o roadmap é o mapa.
 
@@ -11,7 +12,7 @@ Quadro: `docs/Rust-Rewrite-Roadmap.md` §15. Este ficheiro é o diário; o roadm
 - [x] Fase 2 — `cargo run -p gate-bindless` — 16 frames, resize 6/12, validation 0; Null `--frames 8`
 - [x] Fase 3 — deferred PBR, `cargo run -p gate-pbr-grid -- --frames 90`, validation 0, resize 30/60; Null `--frames 8`
 - [x] Fase 4 — CSM câmara real + TAA + Sponza 90
-- [ ] Fase 5 — fog → clouds → water → rain
+- [~] Fase 5 — fog → clouds → water → rain (fog, céu, clouds **feitos**; falta water, rain)
 - [ ] Fase 6 — um clipmap + veg + mundo
 - [ ] Fase 7 — GI honesta (occupancy no lighting ou 0 bytes)
 - [ ] Fase 8 — editor
@@ -28,6 +29,7 @@ cargo run -p gate-csm
 cargo run -p gate-taa
 cargo run -p gate-fog
 cargo run -p gate-sky
+cargo run -p gate-clouds
 cargo run -p sponza -- --frames 90
 # assets: python3 prog/tools/fetch_sponza.py  (glTF gitignored)
 # pixels, não screenshots:
@@ -38,6 +40,9 @@ cargo run -p gate-bindless -- --backend null --frames 8
 cargo run -p gate-pbr-grid -- --backend null --frames 8
 cargo run -p gate-csm -- --backend null --frames 8
 cargo run -p gate-taa -- --backend null --frames 8
+cargo run -p gate-fog -- --backend null --frames 8
+cargo run -p gate-sky -- --backend null --frames 8
+cargo run -p gate-clouds -- --backend null --frames 8
 ```
 
 ## Feito (para não redescobrir)
@@ -179,13 +184,51 @@ coisas por resolver antes de lá chegar: qual ECS (fase 6, decidir com um gate d
 1e6 instâncias) e o que é «box3d» na frase «jolt ou box3d» — não existe crate com
 esse nome.
 
+## Sessão 2026-09-10 (parte 3) — o raymarch das nuvens
+
+`gate-clouds` verde com nuvens a sério: 16 frames, validation 0, e a captura mostra
+céu azul, disco do sol, e cúmulos brancos com a base sombreada. Detalhe em D21.
+
+O que está lá: intersecção da concha esférica, oclusão pelo chão, 64 passos com um
+march de luz de 6 passos por amostra, densidade Nubis (Perlin-Worley remapeado
+contra o próprio FBM → cobertura → erosão pelo detalhe), Cornette-Shanks com a
+normalização `3/(8π)` e multiple scattering em 3 oitavas, jitter IGN no arranque.
+Meia resolução para um RT `Rgba16Float` `(scatter.rgb, transmitância.a)`; o
+composite full-res faz `céu * tr + scat` e só aí ACES + sRGB.
+
+O problema que custou foi o **horizonte**, não a nuvem. Num raio rasante o passo
+passa dos 500 m e o resultado foi primeiro um leque de aliasing e depois confetti.
+O que resolveu não foi tuning de passos: foi **subir a cobertura com a distância**
+para as nuvens distantes fundirem num banco contínuo — que é o que um horizonte
+real é. LOD do detalhe e limite de span ajudaram; medi cada um em pixels (o LOD
+sozinho mexeu 33/255 e só na faixa do horizonte).
+
+Uma ronda inteira de afinação do céu não fez nada porque o `main.rs` do gate
+sobrepunha o `ambient` ao default do `cloud_noise.rs`. Só apareceu ao sondar o
+valor cru em vez de raciocinar sobre ele.
+
+Sweep verde depois da mudança: `cargo test --workspace` (34 testes), os **9**
+samples Vulkan a 32 frames com validation 0, e os 8 gates no backend Null.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.
 
 1. ~~Fog: froxels, 3D GENERAL. Gate `fog`.~~ **feito**
 2. ~~Céu: Hillaire completo. Gate `sky`.~~ **feito** (falta aerial perspective)
-3. Clouds (sem driveRain). Gate `clouds`.
-3. Water: point-sample depth no SSR.
-4. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).
-5. Default-on na Sponza (`--frames` curto) ou o pass não entra. Marcar fase 5 `[x]` no roadmap §15 **neste mesmo PR**.
+3. ~~Clouds: raymarch Nubis a meia resolução. Gate `clouds`.~~ **feito**
+4. **Reprojecção temporal das nuvens** — é o que come o ruído que sobra no
+   horizonte, e sem ela a meia resolução nota-se em movimento.
+5. **Sombra das nuvens nos froxels do fog.** É daqui que vêm os god rays **sem
+   acrescentar um pass** — o fog já marcha, só lhe falta ler a transmitância das
+   nuvens.
+6. Water: point-sample depth no SSR.
+7. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).
+8. Default-on na Sponza (`--frames` curto) ou o pass não entra. Marcar fase 5 `[x]`
+   no roadmap §15 **neste mesmo PR**.
+
+### Dívida conhecida (documentada, não esquecida)
+
+- Multiscattering do céu sem bounce do chão (albedo 0) → horizonte um pouco escuro.
+- Aerial perspective (froxel 32³) por fazer — entra quando a Sponza receber céu.
+- Sponza ainda não tem céu nem nuvens: os gates provam os passes isolados.

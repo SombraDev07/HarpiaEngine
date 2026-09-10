@@ -19,7 +19,7 @@ pub use atmosphere::{
 };
 pub use cloud_noise::{
     base as cloud_noise_base, detail as cloud_noise_detail, volume_desc as cloud_volume_desc,
-    CloudSliceCb, NoiseError, NoiseVolume, BASE_SIZE, DETAIL_SIZE,
+    CloudCb, CloudSliceCb, NoiseError, NoiseVolume, BASE_SIZE, DETAIL_SIZE,
 };
 pub use csm::{compute as compute_csm, Camera, Csm, CASCADE_COUNT, DEFAULT_ATLAS_SIZE};
 pub use fog::{

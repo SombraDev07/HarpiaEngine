@@ -192,4 +192,18 @@ output.**
 - Staging do heap: **64 MiB**. 1 MiB rebentava no primeiro albedo 2k da Sponza (`row pitch 256`).
 - Sponza: `python3 prog/tools/fetch_sponza.py` (jsDelivr). Sem `assets/sponza/glTF/Sponza.gltf` o sample sai com erro claro, não GPUVM.
 
+## Fase 5 (fog / céu / nuvens)
+
+- PSO fullscreen com `PipelineTargets::default()` = formato da swapchain (BGRA). A
+  desenhar para um RT `Rgba8Unorm` dá
+  `VUID-vkCmdDraw-dynamicRenderingUnusedAttachments-08910`. **Declara sempre
+  `color_formats`** do RT de destino. Apanhado duas vezes: fog e clouds.
+- O `blit` final **não** volta a fazer tonemap: quem compôs já fez ACES + sRGB.
+  Dois tonemaps dão um céu leitoso que parece bug de exposição e não é.
+- `--capture` de um volume sai como grelha de slices num PNG — é o único modo
+  honesto de ver um froxel ou o Perlin-Worley antes de acreditar na composição.
+- Gates: o pacote da Sponza chama-se **`sponza`**, não `harpia-sponza`. E o
+  `validation_errors=…` do `tracing` vem com escapes ANSI no meio — `grep
+  'validation_errors=0'` **falha sempre** num pipe; tira os escapes primeiro
+  (`sed 's/\x1b\[[0-9;]*m//g'`). Já deu um falso vermelho num sweep inteiro.
 
