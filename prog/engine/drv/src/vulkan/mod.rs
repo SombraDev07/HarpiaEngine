@@ -317,7 +317,7 @@ impl VulkanGpu {
             .min_uniform_buffer_offset_alignment;
         let heap = bindless::Bindless::create(&device, alloc, min_ubo_align)?;
         let mut dummy = bindless::create_dummy(&device, alloc)?;
-        let packed = resources::pack_mip(1, 1, 4, &bindless::dummy_pixel())?;
+        let packed = resources::pack_mip(1, 1, 1, 4, &bindless::dummy_pixel())?;
         resources::write_staging(&heap.staging, &packed)?;
         unsafe {
             device.reset_command_buffer(upload_cmd, vk::CommandBufferResetFlags::empty())?;
@@ -343,6 +343,7 @@ impl VulkanGpu {
                 heap.staging.buffer,
                 dummy.image,
                 0,
+                1,
                 1,
                 1,
                 4,
@@ -1074,7 +1075,7 @@ impl VulkanGpu {
     }
 
     pub fn upload_texture_mip(&mut self, tex: Texture, mip: u32, rgba: &[u8]) -> Result<()> {
-        let (w, h, image, bpp) = {
+        let (w, h, d, image, bpp) = {
             let img = self
                 .images
                 .get(tex.id as usize)
@@ -1083,10 +1084,16 @@ impl VulkanGpu {
                 return Err(RhiError::msg("mip out of range"));
             }
             let (w, h) = resources::mip_extent(img.width, img.height, mip);
+            // A volume uploads every slice at once: one mip is the whole texture.
+            let d = if img.dim == TextureDim::D3 {
+                (img.depth_slices >> mip).max(1)
+            } else {
+                1
+            };
             let bpp = resources::bytes_per_pixel(img.engine_format)?;
-            (w, h, img.image, bpp)
+            (w, h, d, img.image, bpp)
         };
-        let packed = resources::pack_mip(w, h, bpp, rgba)?;
+        let packed = resources::pack_mip(w, h, d, bpp, rgba)?;
         let heap = self
             .bindless
             .as_ref()
@@ -1112,7 +1119,7 @@ impl VulkanGpu {
                     vk::PipelineStageFlags::TRANSFER,
                 );
             }
-            resources::cmd_copy_mip(device, cmd, staging, image, mip, w, h, bpp);
+            resources::cmd_copy_mip(device, cmd, staging, image, mip, w, h, d, bpp);
         };
         if self.in_frame {
             record(&self.device, self.frames[self.slot].cmd);
@@ -1142,6 +1149,7 @@ impl VulkanGpu {
         let image = img.image;
         let view = img.sampled_view;
         let slot = img.bindless_slot;
+        let dim = img.dim;
         let barrier = |device: &ash::Device, cmd: vk::CommandBuffer| unsafe {
             resources::image_barrier(
                 device,
@@ -1163,16 +1171,18 @@ impl VulkanGpu {
                 Ok(())
             })?;
         }
-        let heap = self
-            .bindless
-            .as_ref()
-            .ok_or_else(|| RhiError::msg("bindless missing"))?;
-        heap.write_sampled(
-            &self.device,
-            slot,
-            view,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        );
+        if dim == TextureDim::D2 {
+            let heap = self
+                .bindless
+                .as_ref()
+                .ok_or_else(|| RhiError::msg("bindless missing"))?;
+            heap.write_sampled(
+                &self.device,
+                slot,
+                view,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            );
+        }
         if let Some(img) = self.images.get_mut(tex.id as usize) {
             img.ready = true;
             img.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;

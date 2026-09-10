@@ -10,3 +10,4 @@ description = "GBuffer packing, MaterialGPU, IBL CPU, CSM math, meshes. No vk::*
 harpia-math.workspace = true
 harpia-rhi.workspace = true
 gltf.workspace = true
+tracing.workspace = true

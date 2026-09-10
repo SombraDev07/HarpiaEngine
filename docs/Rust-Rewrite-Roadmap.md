@@ -581,7 +581,7 @@ Ordem: fog compute → clouds (sem driveRain) → water → **rain por último**
 - [x] Fog: froxels, 3D GENERAL. `gate-fog` 16 frames, validation 0.
 - [x] Céu: **Hillaire 2020** em vez do bake do Bruneton (ver `memory/DECISIONS.md` D19).
       transmittance → multiscattering → sky-view → composite. `gate-sky` 16 frames.
-- [ ] Clouds: noise cache em disco.
+- [~] Clouds: noise cache em disco **feito** (Perlin-Worley 128³ + Worley 32³, tileável, `.raw`, upload 3D provado). Falta o raymarch, o temporal e a sombra no chão.
 - [ ] Water: point-sample depth no SSR.
 - [ ] Rain: GBuffer wet + post; cones sem HDR SRV; `--frames 16` only.
 - [ ] **Exit:** gates `fog` `clouds` `water` `rain`. Default-on na **Sponza** (`--frames` curto) ou o pass não entra.

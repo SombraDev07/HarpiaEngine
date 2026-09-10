@@ -1,0 +1,98 @@
+; Cloud noise slice viewer. Samples the base volume (set 5 binding 0 slot 0) at
+; (uv, slice) and shows one channel. This exists to prove the whole path — CPU
+; bake, .raw cache, 3D upload, volume SRV, trilinear sample — before the raymarch
+; is written on top of it. A wrong volume is much cheaper to see here.
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %vol %samp
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %vol DescriptorSet 5
+OpDecorate %vol Binding 0
+OpDecorate %samp DescriptorSet 2
+OpDecorate %samp Binding 0
+OpDecorate %Slice Block
+OpMemberDecorate %Slice 0 Offset 0
+OpMemberDecorate %Slice 1 Offset 8
+OpMemberDecorate %Slice 2 Offset 12
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Slice = OpTypeStruct %v2 %float %float
+%ptr_cb = OpTypePointer Uniform %Slice
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv2 = OpTypePointer Uniform %v2
+%ptr_uf = OpTypePointer Uniform %float
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u2 = OpConstant %uint 2
+%uslots = OpConstant %uint 8
+
+%img3 = OpTypeImage %float 3D 0 0 0 1 Unknown
+%arr3 = OpTypeArray %img3 %uslots
+%ptr_arr3 = OpTypePointer UniformConstant %arr3
+%vol = OpVariable %ptr_arr3 UniformConstant
+%ptr_img3 = OpTypePointer UniformConstant %img3
+%sampled3 = OpTypeSampledImage %img3
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp = OpVariable %ptr_samp UniformConstant
+
+%f0 = OpConstant %float 0.0
+%f05 = OpConstant %float 0.5
+%f1 = OpConstant %float 1.0
+%f15 = OpConstant %float 1.5
+%f25 = OpConstant %float 2.5
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u0
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%uvx = OpCompositeExtract %float %uv 0
+%uvy = OpCompositeExtract %float %uv 1
+%psl = OpAccessChain %ptr_uf %cb %u1
+%slice = OpLoad %float %psl
+%uvw = OpCompositeConstruct %v3 %uvx %uvy %slice
+%pv = OpAccessChain %ptr_img3 %vol %u0
+%iv = OpLoad %img3 %pv
+%s = OpLoad %samp_ty %samp
+%sm = OpSampledImage %sampled3 %iv %s
+%tex = OpImageSampleImplicitLod %v4 %sm %uvw
+
+%pch = OpAccessChain %ptr_uf %cb %u2
+%ch = OpLoad %float %pch
+%r = OpCompositeExtract %float %tex 0
+%g = OpCompositeExtract %float %tex 1
+%b = OpCompositeExtract %float %tex 2
+%a = OpCompositeExtract %float %tex 3
+%is0 = OpFOrdLessThan %bool %ch %f05
+%is1 = OpFOrdLessThan %bool %ch %f15
+%is2 = OpFOrdLessThan %bool %ch %f25
+%p2 = OpSelect %float %is2 %b %a
+%p1 = OpSelect %float %is1 %g %p2
+%v = OpSelect %float %is0 %r %p1
+%rgb = OpCompositeConstruct %v3 %v %v %v
+%out4 = OpCompositeConstruct %v4 %rgb %f1
+OpStore %out_color %out4
+OpReturn
+OpFunctionEnd

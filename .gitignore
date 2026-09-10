@@ -20,4 +20,5 @@ TucanoEngine/
 # Downloaded reference assets (run prog/tools/fetch_sponza.py)
 /assets/sponza/glTF/
 
-
+# Derived cloud noise bake (prog/engine/render/src/cloud_noise.rs)
+/assets/cache/

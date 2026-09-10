@@ -11,6 +11,7 @@ members = [
     "prog/samples/hello-triangle",
     "prog/samples/gates/bindless",
     "prog/samples/gates/pbr-grid",
+    "prog/samples/gates/clouds",
     "prog/samples/gates/csm",
     "prog/samples/gates/fog",
     "prog/samples/gates/sky",

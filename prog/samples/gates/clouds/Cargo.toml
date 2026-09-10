@@ -1,0 +1,20 @@
+[package]
+name = "gate-clouds"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Harpia phase 5 gate: cloud noise bake, cache and 3D upload, --frames 16"
+
+[[bin]]
+name = "gate-clouds"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+harpia-app.workspace = true
+harpia-math.workspace = true
+harpia-memory.workspace = true
+harpia-render.workspace = true
+harpia-rhi.workspace = true
+tracing.workspace = true

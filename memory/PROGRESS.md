@@ -153,6 +153,25 @@ Uma hora perdida por bissectar o shader errado: o módulo inválido era um `blit
 gerado por regex, não o que eu estava a cortar. O assembler passou a validar ids e
 `LANDMINES.md` tem a regra: descobre qual módulo falha **antes** de bissectar.
 
+## Sessão 2026-09-10 (parte 2) — nuvens arrancaram pelo noise
+
+`gate-clouds` verde: 16 frames, validation 0. Ainda **não há raymarch** — o que
+está feito é o caminho todo até à GPU, provado em pixels:
+
+- Bake CPU do Perlin-Worley 128³ (RGBA8: R forma, G/B/A Worley FBM a subir de
+  frequência) e do Worley 32³ de detalhe. **Tileável** — costura num volume 128³
+  é uma risca em todo o céu, e há teste que o fixa.
+- Cache `.raw` em `assets/cache/` (gitignored). O bake leva **2.1 s** em debug com
+  threads do `std` sobre slices; depois é leitura de disco. `rayon` só na fase 6
+  (§14.1).
+- RHI: `upload_texture_mip` e `pack_mip` passaram a saber de slices — um volume
+  sobe inteiro num mip. `finalize_sampled` já não mete volumes no heap 2D.
+- Um `slice.ps` mostra o volume no ecrã e os dois volumes são alvos de `--capture`
+  (grelha de slices). Foi assim que se confirmou que os canais estão certos.
+
+Falta o que interessa: o raymarch (meia resolução, 64 passos, march de luz),
+reprojecção temporal, e a sombra das nuvens a alimentar os froxels do fog.
+
 ## Dependências
 
 `docs/Rust-Rewrite-Roadmap.md` §14.1 diz o que entra em que fase (D20). Duas

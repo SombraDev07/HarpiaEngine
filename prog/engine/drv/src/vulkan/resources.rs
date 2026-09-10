@@ -272,21 +272,26 @@ pub fn destroy_image(device: &Device, allocator: &mut Allocator, img: GpuImage) 
     let _ = allocator.free(img.allocation);
 }
 
-pub fn pack_mip(width: u32, height: u32, bpp: u32, rgba: &[u8]) -> Result<Vec<u8>> {
-    let expected = width as usize * height as usize * bpp as usize;
+/// Row-pad a mip for `cmd_copy_mip`. `depth` is 1 for a 2D image and the slice
+/// count for a volume; slices follow one another, each already row-padded.
+pub fn pack_mip(width: u32, height: u32, depth: u32, bpp: u32, rgba: &[u8]) -> Result<Vec<u8>> {
+    let depth = depth.max(1);
+    let expected = width as usize * height as usize * depth as usize * bpp as usize;
     if rgba.len() != expected {
         return Err(RhiError::msg(format!(
-            "mip size {} != {}x{}x{}",
+            "mip size {} != {}x{}x{}x{}",
             rgba.len(),
             width,
             height,
+            depth,
             bpp
         )));
     }
     let pitch = row_pitch_bytes(width, bpp) as usize;
     let src_row = width as usize * bpp as usize;
-    let mut out = vec![0u8; pitch * height as usize];
-    for y in 0..height as usize {
+    let rows = height as usize * depth as usize;
+    let mut out = vec![0u8; pitch * rows];
+    for y in 0..rows {
         let s = y * src_row;
         let d = y * pitch;
         out[d..d + src_row].copy_from_slice(&rgba[s..s + src_row]);
@@ -322,6 +327,7 @@ pub unsafe fn cmd_copy_mip(
     mip: u32,
     width: u32,
     height: u32,
+    depth: u32,
     bpp: u32,
 ) {
     let pitch = row_pitch_bytes(width, bpp);
@@ -339,7 +345,7 @@ pub unsafe fn cmd_copy_mip(
         image_extent: vk::Extent3D {
             width,
             height,
-            depth: 1,
+            depth: depth.max(1),
         },
     };
     unsafe {
