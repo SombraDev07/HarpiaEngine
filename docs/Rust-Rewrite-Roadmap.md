@@ -529,8 +529,8 @@ Cada fase: código + **um binário que corre N frames e sai 0**. Sem pixel-ident
 | 2 | Bindless + upload | `gate-bindless` 16 frames | **feito** (RADV, validation 0) |
 | 3 | Deferred PBR | `pbr-grid` 90 frames | **feito** (RADV, validation 0) |
 | 4 | Sombras + TAA | `csm` + `taa` 16; **Sponza** 90 (integração) | **feito** (RADV, validation 0, PCSS) |
-| 5 | Clima | `fog` `clouds` `water` `rain` | **em curso** (fog+sombras, céu, clouds, water base) |
-| 6 | Terreno + veg + mundo | `terrain` `heightquery` `veg` `instances` | — |
+| 5 | Clima | `fog` `clouds` `water` `rain` | **feito** (RADV, validation 0) |
+| 6 | Terreno + veg + mundo | `terrain` `heightquery` `veg` `instances` | **próximo** |
 | 7 | GI + post extra | `ssr` `probes` (+ occupancy honesta ou 0 bytes) | — |
 | 8 | Editor | docking + viewport `--frames 8` | — |
 | 9 | Opcional | mesh shaders / RT / OIT / física | depois do editor |
@@ -574,7 +574,7 @@ Barra: `docs/Rust-Rewrite-Quality-Bar.md` §4.1 e §4.8. Cena de olho: **Sponza*
 - [x] **Não** portar VSM, ESM, nem contact nesta fase.
 - [x] **Exit:** `gate-csm` e `gate-taa` 16 frames (resize 6/12). **Mais** `cargo run -p sponza -- --frames 90`, validation 0. Aspect mudado nos três.
 
-### Fase 5 — Clima — [ ] em curso
+### Fase 5 — Clima — [x] feito
 
 Ordem: fog compute → clouds (sem driveRain) → water → **rain por último** (é o mais perigoso).
 
@@ -592,10 +592,14 @@ Ordem: fog compute → clouds (sem driveRain) → water → **rain por último**
 - [x] Water: Gerstner + Fresnel + absorção (D26) **+ SSR e espuma** (D29).
       `gate-water` 16 frames, validation 0. SSR marchado no mundo com espessura
       adaptativa; espuma na contacto e nas cristas.
-- [ ] Rain: GBuffer wet + post; cones sem HDR SRV; `--frames 16` only.
+- [x] Rain: material molhado + ondulações + bátegas em espaço de ecrã (D30).
+      `gate-rain` 16 frames, validation 0. **Default-on na Sponza** com mapa de
+      chuva top-down (D31), que é o que impede que chova dentro da arcada.
 - [x] Fog default-on na **Sponza**: cena em HDR linear + view depth no 2.º MRT,
       tonemap no apply, shaders partilhados com o gate (D25).
-- [ ] **Exit:** gates `fog` `clouds` `water` `rain`. Default-on na **Sponza** (`--frames` curto) ou o pass não entra.
+- [x] **Exit:** os quatro gates verdes a 32 frames com validation 0. Na **Sponza**
+      entram fog e chuva (medidos lá); céu e nuvens ficam para a fase 6 porque um
+      interior não os vê, e não há água na Sponza — ver D32.
 
 ### Fase 6 — Terreno + vegetação + mundo — [ ]
 

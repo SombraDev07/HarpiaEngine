@@ -1,5 +1,6 @@
-; Copy the composite to the swapchain. rain.ps already tonemapped and encoded,
-; so this must not do it again.
+; Tonemap the linear composite onto the swapchain. rain.ps writes linear
+; radiance so that Sponza can reuse it inside its own chain, which means the
+; encode happens here.
 ;
 ; The rain gate needs the composite as a real target rather than drawing straight
 ; to the swapchain: `--capture` cannot read the swapchain, and a capture that
@@ -63,6 +64,22 @@ OpMemberDecorate %Rain 13 Offset 272
 %ptr_uu = OpTypePointer Uniform %uint
 %u10 = OpConstant %uint 10
 %u11 = OpConstant %uint 11
+%u13 = OpConstant %uint 13
+%ptr_uv4 = OpTypePointer Uniform %v4
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%f251 = OpConstant %float 2.51
+%f243 = OpConstant %float 2.43
+%f003 = OpConstant %float 0.03
+%f059 = OpConstant %float 0.59
+%f014 = OpConstant %float 0.14
+%finvg = OpConstant %float 0.45454545
+%v3_003 = OpConstantComposite %v3 %f003 %f003 %f003
+%v3_059 = OpConstantComposite %v3 %f059 %f059 %f059
+%v3_014 = OpConstantComposite %v3 %f014 %f014 %f014
+%v3_zero = OpConstantComposite %v3 %f0 %f0 %f0
+%v3_one = OpConstantComposite %v3 %f1 %f1 %f1
+%v3_invg = OpConstantComposite %v3 %finvg %finvg %finvg
 %img2 = OpTypeImage %float 2D 0 0 0 1 Unknown
 %arr2 = OpTypeRuntimeArray %img2
 %ptr_arr2 = OpTypePointer UniformConstant %arr2
@@ -87,6 +104,22 @@ OpMemberDecorate %Rain 13 Offset 272
 %s = OpLoad %samp_ty %samp_c
 %sm = OpSampledImage %sampled2 %im %s
 %col = OpImageSampleImplicitLod %v4 %sm %uv
-OpStore %out_color %col
+%rgb = OpVectorShuffle %v3 %col %col 0 1 2
+%pmisc = OpAccessChain %ptr_uv4 %cb %u13
+%misc = OpLoad %v4 %pmisc
+%exposure = OpCompositeExtract %float %misc 0
+%x = OpVectorTimesScalar %v3 %rgb %exposure
+%x251 = OpVectorTimesScalar %v3 %x %f251
+%numt = OpFAdd %v3 %x251 %v3_003
+%num = OpFMul %v3 %x %numt
+%x243 = OpVectorTimesScalar %v3 %x %f243
+%dent = OpFAdd %v3 %x243 %v3_059
+%denA = OpFMul %v3 %x %dent
+%denC = OpFAdd %v3 %denA %v3_014
+%toned0 = OpFDiv %v3 %num %denC
+%toned = OpExtInst %v3 %glsl FClamp %toned0 %v3_zero %v3_one
+%srgb = OpExtInst %v3 %glsl Pow %toned %v3_invg
+%out4 = OpCompositeConstruct %v4 %srgb %f1
+OpStore %out_color %out4
 OpReturn
 OpFunctionEnd

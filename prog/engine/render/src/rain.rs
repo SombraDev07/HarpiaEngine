@@ -10,7 +10,27 @@
 //!   far more than it shows at these speeds — a streak crosses the frame in a few
 //!   frames and is never seen still.
 
-use harpia_math::{Mat4, Vec2, Vec4};
+use harpia_math::{Mat4, Vec2, Vec3, Vec4};
+
+/// Side of the top-down rain map, in texels.
+pub const RAIN_MAP_SIZE: u32 = 1024;
+
+/// Orthographic view-projection looking straight down over `centre`.
+///
+/// Screen-space streaks fall through a roof, because a screen-space pass has no
+/// idea there is one. This is the standard answer: render depth from above once,
+/// and a pixel whose surface is not the topmost thing at its position is under
+/// cover — no streaks, and no wetness either.
+///
+/// Looking straight down makes `up` degenerate, so the basis uses `-Z`.
+pub fn rain_map_view_proj(centre: Vec3, half_extent: f32, height: f32) -> Mat4 {
+    let eye = Vec3::new(centre.x, centre.y + height, centre.z);
+    let view = Mat4::look_at_rh(eye, centre, Vec3::NEG_Z);
+    let half = half_extent.max(0.001);
+    // Reverse-less ortho into Vulkan's [0,1] depth, matching `perspective_vk`.
+    let proj = Mat4::orthographic_rh(-half, half, -half, half, 0.0, height * 2.0);
+    proj * view
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -33,8 +53,12 @@ pub struct RainCb {
     pub inv_extent: Vec2,
     pub scene_color: u32,
     pub scene_depth: u32,
-    /// exposure, unused, unused, unused.
+    /// exposure, rain-map texel size, bias in world units, unused.
     pub misc: Vec4,
+    /// Top-down depth of the scene. 0 = everything is exposed.
+    pub rain_map: u32,
+    pub _pad: [u32; 3],
+    pub rain_map_vp: Mat4,
 }
 
 impl Default for RainCb {
@@ -55,7 +79,10 @@ impl Default for RainCb {
             inv_extent: Vec2::ONE,
             scene_color: 0,
             scene_depth: 0,
-            misc: Vec4::new(1.0, 0.0, 0.0, 0.0),
+            misc: Vec4::new(1.0, 1.0 / RAIN_MAP_SIZE as f32, 0.15, 0.0),
+            rain_map: 0,
+            _pad: [0; 3],
+            rain_map_vp: Mat4::IDENTITY,
         }
     }
 }
@@ -88,7 +115,7 @@ mod tests {
     #[test]
     fn cb_layout_matches_the_spvasm() {
         use std::mem::offset_of;
-        assert_eq!(std::mem::size_of::<RainCb>(), 288);
+        assert_eq!(std::mem::size_of::<RainCb>(), 368);
         assert!(std::mem::size_of::<RainCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
 
         let expected = [
@@ -106,6 +133,8 @@ mod tests {
             (11, offset_of!(RainCb, scene_color) as u32),
             (12, offset_of!(RainCb, scene_depth) as u32),
             (13, offset_of!(RainCb, misc) as u32),
+            (14, offset_of!(RainCb, rain_map) as u32),
+            (15, offset_of!(RainCb, rain_map_vp) as u32),
         ];
         for shader in [
             "prog/samples/gates/rain/shaders/scene.ps.spvasm",
@@ -114,6 +143,22 @@ mod tests {
         ] {
             crate::spvasm_layout::assert_prefix_matches(shader, "Rain", &expected);
         }
+    }
+
+    /// Looking straight down must still give a usable basis.
+    #[test]
+    fn rain_map_projects_below_the_eye_into_the_middle() {
+        let vp = rain_map_view_proj(Vec3::new(3.0, 0.0, -4.0), 20.0, 30.0);
+        let under = vp * harpia_math::Vec4::new(3.0, 0.0, -4.0, 1.0);
+        assert!(under.w.abs() > 0.0, "ortho keeps w");
+        assert!(under.x.abs() < 1e-4 && under.y.abs() < 1e-4, "{under:?}");
+        // a point 10 units to the +X side must land to one side, not off the map
+        let side = vp * harpia_math::Vec4::new(13.0, 0.0, -4.0, 1.0);
+        assert!(side.x.abs() > 0.4 && side.x.abs() < 1.0, "{side:?}");
+        // higher is nearer the ortho eye, so its depth must be smaller
+        let low = vp * harpia_math::Vec4::new(3.0, 0.0, -4.0, 1.0);
+        let high = vp * harpia_math::Vec4::new(3.0, 8.0, -4.0, 1.0);
+        assert!(high.z < low.z, "high {} vs low {}", high.z, low.z);
     }
 
     /// Wet darkens. Getting this backwards makes rain look like frost.

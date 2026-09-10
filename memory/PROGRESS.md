@@ -1,7 +1,9 @@
 # Progress
 
-**Fase actual:** 5 (clima) **em curso** (Linux / RADV, 2026-09) — fog, céu e nuvens
-verdes e vistos em pixels. Falta water e rain. Fase 4 fechada com PCSS.
+**Fase actual: 5 (clima) FECHADA** (Linux / RADV, 2026-09). Os quatro gates verdes
+a 32 frames com validation 0; fog e chuva **default-on na Sponza** e medidos lá.
+**Próxima: fase 6** (terreno + vegetação + mundo), que é onde céu, nuvens e sombra
+das nuvens entram — precisam de chão para se verem. Decidir o ECS aí (D28).
 
 Quadro: `docs/Rust-Rewrite-Roadmap.md` §15. Este ficheiro é o diário; o roadmap é o mapa.
 
@@ -12,8 +14,8 @@ Quadro: `docs/Rust-Rewrite-Roadmap.md` §15. Este ficheiro é o diário; o roadm
 - [x] Fase 2 — `cargo run -p gate-bindless` — 16 frames, resize 6/12, validation 0; Null `--frames 8`
 - [x] Fase 3 — deferred PBR, `cargo run -p gate-pbr-grid -- --frames 90`, validation 0, resize 30/60; Null `--frames 8`
 - [x] Fase 4 — CSM câmara real + TAA + Sponza 90
-- [~] Fase 5 — fog → clouds → water → rain (fog, céu, clouds **feitos**; falta water, rain)
-- [ ] Fase 6 — um clipmap + veg + mundo
+- [x] Fase 5 — fog → céu → clouds → water → rain, todos verdes; fog e chuva na Sponza
+- [ ] Fase 6 — um clipmap + veg + mundo **(próxima)**
 - [ ] Fase 7 — GI honesta (occupancy no lighting ou 0 bytes)
 - [ ] Fase 8 — editor
 - [ ] Fase 9 — opcional
@@ -31,6 +33,7 @@ cargo run -p gate-fog
 cargo run -p gate-sky
 cargo run -p gate-clouds
 cargo run -p gate-water
+cargo run -p gate-rain
 cargo run -p sponza -- --frames 90
 # assets: python3 prog/tools/fetch_sponza.py  (glTF gitignored)
 # pixels, não screenshots:
@@ -45,6 +48,7 @@ cargo run -p gate-fog -- --backend null --frames 8
 cargo run -p gate-sky -- --backend null --frames 8
 cargo run -p gate-clouds -- --backend null --frames 8
 cargo run -p gate-water -- --backend null --frames 8
+cargo run -p gate-rain -- --backend null --frames 8
 ```
 
 ## Feito (para não redescobrir)
@@ -378,7 +382,54 @@ Medido: ligar o SSR muda **3.7%** dos pixels em mais de 8/255 (máx 157). E os
 outros gates continuam determinísticos — 18 capturas bit-identical, as 3 da Sponza
 são as mesmas 12 pixels de limiar de sombra já explicadas na parte 9.
 
-## Próximo (fase 5) — o que fazer, em ordem
+## Sessão 2026-09-10 (parte 11) — chuva, e a fase 5 fechou
+
+`gate-rain` verde e a chuva **default-on na Sponza**. Detalhe em D30, D31, D32.
+
+O gate: material molhado (escurece *e* aperta o especular — só uma das duas dá
+geada ou verniz), ondulações num anel por célula do mundo em vizinhança 2×2 com
+fade de distância, e bátegas em três camadas, aditivas.
+
+O que fazia falta para a Sponza: bátegas em espaço de ecrã **não sabem que há
+telhado**, e chuva a atravessar a pedra da arcada é um bug óbvio. Fiz um **mapa de
+chuva**: um depth top-down 1024² da mesma geometria, a reutilizar o `shadow.vs` e o
+PSO depth-only que já existiam. Um pixel cuja superfície não é a coisa mais alta
+naquela posição está sob cobertura.
+
+Medido na Sponza: bátegas com delta médio **1.925** na nave aberta, **0.061** sob a
+arcada esquerda e **0.000** sob a direita. Não chove dentro.
+
+O bug que quase passou: gerei as decorações do bloco com `112 + i*16` em vez de
+`96 + i*16`, e **todos os `%v4` ficaram 16 bytes à frente** — o shader lia `ripple`
+onde queria `streak`. **Zero erros de validation**, porque o bloco tem o tamanho
+certo. O `cb_layout_matches_the_spvasm` apanha-o; confirmei a repor o offset errado.
+Lição no LANDMINES: corre os testes antes de ir depurar a imagem.
+
+51 testes; 11 samples Vulkan a 32 frames com validation 0; 10 gates no Null.
+
+## Fase 6 — o que fazer, em ordem
+
+Não mesh shaders, RT, FSR, editor.
+
+1. **Decidir o ECS** com um gate de 1e6 instâncias a medir `bevy_ecs` contra
+   `hecs` (D28 tem os números de hoje e a recomendação; a D20 exige o gate).
+2. **Física por clarificar** — «jolt ou box3d»: `box3d` não existe. Adiado por
+   decisão tua.
+3. Terreno: um clipmap. Depois `heightquery`, vegetação, instâncias.
+4. **Céu Hillaire e nuvens entram aqui** — num interior não se viam (D32). A
+   sombra das nuvens nos froxels do fog também, que é onde passa a haver chão.
+5. Aerial perspective (froxel 32³), a dívida do D19.
+
+### Dívida conhecida (documentada, não esquecida)
+
+- Multiscattering do céu sem bounce do chão (albedo 0) → horizonte um pouco escuro.
+- Aerial perspective (froxel 32³) por fazer.
+- A máscara da chuva usa a superfície **atrás** do pixel, não o ar à frente: uma
+  bátega em frente a uma parede coberta é suprimida. É o que os jogos fazem.
+- Um erro de validation isolado apareceu 4× logo após editar shaders e **não
+  reproduziu em ~47 corridas**. Causa desconhecida — ver LANDMINES.
+
+## Registo: a ordem que a fase 5 seguiu (toda feita)
 
 Não mesh shaders, RT, FSR, editor. Não VSM.
 

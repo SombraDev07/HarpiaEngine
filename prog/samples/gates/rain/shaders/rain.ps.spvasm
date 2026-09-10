@@ -47,6 +47,10 @@ OpMemberDecorate %Rain 10 Offset 256
 OpMemberDecorate %Rain 11 Offset 264
 OpMemberDecorate %Rain 12 Offset 268
 OpMemberDecorate %Rain 13 Offset 272
+OpMemberDecorate %Rain 14 Offset 288
+OpMemberDecorate %Rain 15 Offset 304
+OpMemberDecorate %Rain 15 ColMajor
+OpMemberDecorate %Rain 15 MatrixStride 16
 
 %void = OpTypeVoid
 %fn0 = OpTypeFunction %void
@@ -61,7 +65,7 @@ OpMemberDecorate %Rain 13 Offset 272
 %ptr_out_v4 = OpTypePointer Output %v4
 %frag = OpVariable %ptr_in_v4 Input
 %out_color = OpVariable %ptr_out_v4 Output
-%Rain = OpTypeStruct %mat4 %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint %uint %v4
+%Rain = OpTypeStruct %mat4 %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint %uint %v4 %uint %mat4
 %ptr_cb = OpTypePointer Uniform %Rain
 %cb = OpVariable %ptr_cb Uniform
 %ptr_uv2 = OpTypePointer Uniform %v2
@@ -75,6 +79,10 @@ OpMemberDecorate %Rain 13 Offset 272
 %u11 = OpConstant %uint 11
 %u12 = OpConstant %uint 12
 %u13 = OpConstant %uint 13
+%u0 = OpConstant %uint 0
+%u2 = OpConstant %uint 2
+%u14 = OpConstant %uint 14
+%u15 = OpConstant %uint 15
 %f0 = OpConstant %float 0.0
 %f05 = OpConstant %float 0.5
 %f1 = OpConstant %float 1.0
@@ -89,6 +97,9 @@ OpMemberDecorate %Rain 13 Offset 272
 %fstreaklen = OpConstant %float 0.06
 %fdensity = OpConstant %float 0.66
 %fnear = OpConstant %float 3.0
+%f2 = OpConstant %float 2.0
+%frainbias = OpConstant %float 0.0035
+%ptr_umat = OpTypePointer Uniform %mat4
 %v3_003 = OpConstantComposite %v3 %f003 %f003 %f003
 %v3_059 = OpConstantComposite %v3 %f059 %f059 %f059
 %v3_014 = OpConstantComposite %v3 %f014 %f014 %f014
@@ -274,32 +285,119 @@ OpMemberDecorate %Rain 13 Offset 272
 %str2 = OpFMul %float %str52 %lb2
 %sacc2 = OpFAdd %float %sacc1 %str2
 
+; ---- how exposed to the sky is the surface behind this pixel? ----
+; Screen-space streaks have no idea a roof exists. Reconstruct the world point
+; behind the pixel, look it up in the top-down depth, and if something else is
+; above it there is no rain here.
+%prm = OpAccessChain %ptr_uu %cb %u14
+%irm = OpLoad %uint %prm
+%hasrm = OpUGreaterThan %bool %irm %u0
+OpSelectionMerge %rm_done None
+OpBranchConditional %hasrm %rm_yes %rm_no
+
+%rm_no = OpLabel
+OpBranch %rm_done
+
+%rm_yes = OpLabel
+%ndx0 = OpFMul %float %sux %f2
+%ndx = OpFSub %float %ndx0 %f1
+%ndy0 = OpFMul %float %suy %f2
+%ndy = OpFSub %float %ndy0 %f1
+%pivp = OpAccessChain %ptr_umat %cb %u0
+%ivp = OpLoad %mat4 %pivp
+%fc4 = OpCompositeConstruct %v4 %ndx %ndy %f1 %f1
+%fw4 = OpMatrixTimesVector %v4 %ivp %fc4
+%fw = OpCompositeExtract %float %fw4 3
+%fwc = OpExtInst %float %glsl FMax %fw %frainbias
+%ifw = OpFDiv %float %f1 %fwc
+%fx = OpCompositeExtract %float %fw4 0
+%fy = OpCompositeExtract %float %fw4 1
+%fz = OpCompositeExtract %float %fw4 2
+%fpx = OpFMul %float %fx %ifw
+%fpy = OpFMul %float %fy %ifw
+%fpz = OpFMul %float %fz %ifw
+%farp = OpCompositeConstruct %v3 %fpx %fpy %fpz
+%pcam = OpAccessChain %ptr_uv4 %cb %u2
+%cam4 = OpLoad %v4 %pcam
+%camw = OpVectorShuffle %v3 %cam4 %cam4 0 1 2
+%rawd = OpFSub %v3 %farp %camw
+%dir = OpExtInst %v3 %glsl Normalize %rawd
+; the centre ray gives the forward axis, so view depth converts to a distance
+%cc4 = OpCompositeConstruct %v4 %f0 %f0 %f1 %f1
+%cw4 = OpMatrixTimesVector %v4 %ivp %cc4
+%cww = OpCompositeExtract %float %cw4 3
+%cwc = OpExtInst %float %glsl FMax %cww %frainbias
+%icw = OpFDiv %float %f1 %cwc
+%ccx = OpCompositeExtract %float %cw4 0
+%ccy = OpCompositeExtract %float %cw4 1
+%ccz = OpCompositeExtract %float %cw4 2
+%cpx = OpFMul %float %ccx %icw
+%cpy = OpFMul %float %ccy %icw
+%cpz = OpFMul %float %ccz %icw
+%ccp = OpCompositeConstruct %v3 %cpx %cpy %cpz
+%cdir0 = OpFSub %v3 %ccp %camw
+%fwd = OpExtInst %v3 %glsl Normalize %cdir0
+%cosf0 = OpDot %float %dir %fwd
+%cosf = OpExtInst %float %glsl FMax %cosf0 %frainbias
+%tdist = OpFDiv %float %scenez %cosf
+%stepw = OpVectorTimesScalar %v3 %dir %tdist
+%wpos = OpFAdd %v3 %camw %stepw
+%wpos4 = OpCompositeConstruct %v4 %wpos %f1
+%prmvp = OpAccessChain %ptr_umat %cb %u15
+%rmvp = OpLoad %mat4 %prmvp
+%rclip = OpMatrixTimesVector %v4 %rmvp %wpos4
+%rw = OpCompositeExtract %float %rclip 3
+%rwc = OpExtInst %float %glsl FMax %rw %frainbias
+%irw = OpFDiv %float %f1 %rwc
+%rx = OpCompositeExtract %float %rclip 0
+%ry = OpCompositeExtract %float %rclip 1
+%rz = OpCompositeExtract %float %rclip 2
+%rnx = OpFMul %float %rx %irw
+%rny = OpFMul %float %ry %irw
+%rnz = OpFMul %float %rz %irw
+%rux0 = OpFMul %float %rnx %f05
+%rux = OpFAdd %float %rux0 %f05
+%ruy0 = OpFMul %float %rny %f05
+%ruy = OpFAdd %float %ruy0 %f05
+%ruv = OpCompositeConstruct %v2 %rux %ruy
+%prmim = OpAccessChain %ptr_img2 %heap %irm
+%rmim = OpLoad %img2 %prmim
+%smrm = OpSampledImage %sampled2 %rmim %s
+%rmtex = OpImageSampleExplicitLod %v4 %smrm %ruv Lod %f0
+%mapz = OpCompositeExtract %float %rmtex 0
+%mapb = OpFAdd %float %mapz %frainbias
+%openv = OpFOrdLessThanEqual %bool %rnz %mapb
+; outside the map is open sky, not a roof
+%rinx0 = OpFOrdGreaterThanEqual %bool %rux %f0
+%rinx1 = OpFOrdLessThanEqual %bool %rux %f1
+%riny0 = OpFOrdGreaterThanEqual %bool %ruy %f0
+%riny1 = OpFOrdLessThanEqual %bool %ruy %f1
+%rinx = OpLogicalAnd %bool %rinx0 %rinx1
+%riny = OpLogicalAnd %bool %riny0 %riny1
+%rin = OpLogicalAnd %bool %rinx %riny
+%outside = OpLogicalNot %bool %rin
+%open = OpLogicalOr %bool %openv %outside
+%expv = OpSelect %float %open %f1 %f0
+OpBranch %rm_done
+
+%rm_done = OpLabel
+%exposure_sky = OpPhi %float %f1 %rm_no %expv %rm_yes
+
 ; a streak in front of a very near surface would be inside it
 %nearf0 = OpFDiv %float %scenez %fnear
 %nearf = OpExtInst %float %glsl FClamp %nearf0 %f0 %f1
 %sw0 = OpFMul %float %sacc2 %sbright
 %sw1 = OpFMul %float %sw0 %intensity
-%sw = OpFMul %float %sw1 %nearf
+%sw2 = OpFMul %float %sw1 %nearf
+%sw = OpFMul %float %sw2 %exposure_sky
 %swv = OpCompositeConstruct %v3 %sw %sw %sw
 ; rain scatters sky light towards the eye: it veils, it does not occlude
 %streakc = OpFMul %v3 %zenith %swv
 %total = OpFAdd %v3 %scene %streakc
 
-%pmisc = OpAccessChain %ptr_uv4 %cb %u13
-%misc = OpLoad %v4 %pmisc
-%exposure = OpCompositeExtract %float %misc 0
-%x = OpVectorTimesScalar %v3 %total %exposure
-%x251 = OpVectorTimesScalar %v3 %x %f251
-%numt = OpFAdd %v3 %x251 %v3_003
-%num = OpFMul %v3 %x %numt
-%x243 = OpVectorTimesScalar %v3 %x %f243
-%dent = OpFAdd %v3 %x243 %v3_059
-%denA = OpFMul %v3 %x %dent
-%denC = OpFAdd %v3 %denA %v3_014
-%toned0 = OpFDiv %v3 %num %denC
-%toned = OpExtInst %v3 %glsl FClamp %toned0 %v3_zero %v3_one
-%srgb = OpExtInst %v3 %glsl Pow %toned %v3_invg
-%out4 = OpCompositeConstruct %v4 %srgb %f1
+; linear out: whoever owns the frame does the tonemap. That is what lets Sponza
+; drop this pass into its chain before the fog composite.
+%out4 = OpCompositeConstruct %v4 %total %f1
 OpStore %out_color %out4
 OpReturn
 OpFunctionEnd

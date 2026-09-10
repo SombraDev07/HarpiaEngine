@@ -23,7 +23,8 @@ static ALLOC: harpia_memory::Allocator = harpia_memory::Allocator::new();
 const HDR: Format = Format::Rgba16Float;
 const VIEW_DEPTH: Format = Format::R32Float;
 const SCENE_FORMATS: [Format; 2] = [HDR, VIEW_DEPTH];
-const COMPOSITE: Format = Format::Rgba8Unorm;
+/// Linear: rain.ps writes radiance, the blit encodes.
+const COMPOSITE: Format = Format::Rgba16Float;
 const COMPOSITE_FORMATS: [Format; 1] = [COMPOSITE];
 const FOV_Y: f32 = 55.0;
 const GROUND_HALF: f32 = 60.0;

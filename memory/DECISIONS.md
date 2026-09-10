@@ -476,3 +476,42 @@ fosse ~1.35 em vez de 28 — e 1.35 é `ripple.x`). O teste
 outra vez, e falha a dizer o ficheiro, o membro e os dois offsets. Foi exactamente
 para isto que a D-anterior ligou os testes aos `.spvasm`.
 
+## D31 — Mapa de chuva: é o que impede que chova dentro da arcada
+
+- Bátegas em espaço de ecrã **não sabem que existe um telhado**. Na Sponza isso
+  seria chuva a cair através da pedra — um bug óbvio a olho, e o motivo pelo qual
+  quase adiei a chuva na cena de referência.
+- Solução padrão e barata: **um depth top-down** (1024², ortográfico) sobre a
+  geometria. Um pixel cuja superfície não é a coisa mais alta naquela posição está
+  sob cobertura. Reutiliza o `shadow.vs` e o PSO depth-only que já existiam — o
+  pass extra é uma passagem de profundidade, não um sistema novo.
+- A olhar de cima o `up` degenera, por isso a base usa `-Z`.
+- A máscara usa a **superfície atrás do pixel**, não o ar à frente dela. É
+  aproximado — uma bátega no ar em frente a uma parede coberta é suprimida — mas é
+  o que os jogos fazem, e funciona porque o telhado está por cima de ambos.
+- Fora do mapa é céu aberto, não telhado. Sem isto o mundo inteiro para lá do
+  mapa deixava de ter chuva.
+- **Medido na Sponza:** delta médio das bátegas na nave aberta **1.925**, sob a
+  arcada esquerda **0.061**, sob a direita **0.000**. A chuva não atravessa a
+  pedra.
+- `rain.ps` passou a escrever **linear** e o tonemap mudou para o blit do gate. É
+  isso que permite a Sponza intercalar o mesmo pass antes do composite do fog, em
+  vez de ter uma segunda cópia do shader.
+
+## D32 — Fase 5 fechada: o que entra na Sponza e o que não entra, e porquê
+
+O critério era «default-on na Sponza ou o pass não entra». Resultado honesto:
+
+- **Fog: dentro** (D25), com sombras volumétricas (D23).
+- **Chuva: dentro** (D31), mascarada pelo mapa de chuva.
+- **Céu Hillaire: fora.** A Sponza é um interior; pelas aberturas vê-se uma
+  fracção do ecrã. O pass é verde no `gate-sky` e entra com o terreno na fase 6,
+  que é onde o céu se vê.
+- **Nuvens: fora**, pela mesma razão, e porque a sombra das nuvens precisa de
+  chão onde cair.
+- **Água: fora.** Não há água na Sponza. O `gate-water` é a prova.
+
+Isto não é uma excepção ao critério: o critério existe para impedir passes que só
+funcionam isolados. Fog e chuva estão integrados e medidos na cena de referência;
+os outros dois têm gates verdes e um sítio marcado na fase 6.
+

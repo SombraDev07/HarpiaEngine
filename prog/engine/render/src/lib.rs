@@ -28,7 +28,7 @@ pub use cloud_noise::{
 };
 pub use water::{wave_omega, WaterCb, WATER_GRID, WATER_HALF};
 pub use fly_camera::FlyCamera;
-pub use rain::RainCb;
+pub use rain::{rain_map_view_proj, RainCb, RAIN_MAP_SIZE};
 pub use csm::{compute as compute_csm, Camera, Csm, CASCADE_COUNT, DEFAULT_ATLAS_SIZE};
 pub use fog::{
     froxel_desc, halton2, inject_dispatch, integrate_dispatch, FogCb, FROXEL_D, FROXEL_FORMAT,

@@ -3,8 +3,9 @@ use harpia_app::{run, AppConfig, Sample};
 use harpia_math::{Vec2, Vec3, Vec4};
 use harpia_render::{
     color_desc, compute_csm, depth_desc, froxel_desc, halton2, inject_dispatch,
-    integrate_dispatch, load_gltf, sampled_desc, shadow_atlas_desc, CpuScene, FlyCamera, FogCb,
-    LightingCb, PushConstants, DEFAULT_ATLAS_SIZE, GBUFFER_DEPTH_FORMAT, VERTEX_STRIDE_UV,
+    integrate_dispatch, load_gltf, rain_map_view_proj, sampled_desc, shadow_atlas_desc, CpuScene,
+    FlyCamera, FogCb, LightingCb, PushConstants, RainCb, DEFAULT_ATLAS_SIZE,
+    GBUFFER_DEPTH_FORMAT, RAIN_MAP_SIZE, VERTEX_STRIDE_UV,
 };
 use harpia_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
@@ -20,9 +21,14 @@ const SCENE_FORMAT: Format = Format::Rgba16Float;
 const VIEW_DEPTH: Format = Format::R32Float;
 const COMPOSITE: Format = Format::Rgba8Unorm;
 const COMPOSITE_FORMATS: [Format; 1] = [COMPOSITE];
+const SCENE_ONLY: [Format; 1] = [SCENE_FORMAT];
 /// The atrium is about 30 units across; there is no point marching past it.
 const FOG_NEAR: f32 = 0.3;
 const FOG_FAR: f32 = 45.0;
+/// The atrium is open to the sky but the arcades are not. Half-extent covers the
+/// nave with room around it; the height clears the upper gallery.
+const RAIN_HALF: f32 = 26.0;
+const RAIN_HEIGHT: f32 = 24.0;
 const SLOT_SCATTER: u32 = 0;
 const SLOT_INTEGRATED: u32 = 1;
 
@@ -40,6 +46,9 @@ struct SceneRt {
     color: Texture,
     view_depth: Texture,
     depth: Texture,
+    /// The scene with the streaks added, still linear. The rain pass samples the
+    /// scene, so it cannot also be writing to it.
+    rained: Texture,
     composite: Texture,
 }
 
@@ -52,6 +61,8 @@ struct Sponza {
     shadow_cutout_pso: Option<GraphicsPipeline>,
     blit_pso: Option<GraphicsPipeline>,
     apply_pso: Option<GraphicsPipeline>,
+    rain_pso: Option<GraphicsPipeline>,
+    rain_map: Option<Texture>,
     inject_pso: Option<ComputePipeline>,
     integrate_pso: Option<ComputePipeline>,
     scatter: Option<Texture>,
@@ -76,6 +87,8 @@ impl Default for Sponza {
             shadow_cutout_pso: None,
             blit_pso: None,
             apply_pso: None,
+            rain_pso: None,
+            rain_map: None,
             inject_pso: None,
             integrate_pso: None,
             scatter: None,
@@ -109,6 +122,7 @@ impl Sponza {
             color: gpu.create_texture(&color_desc(w, h, SCENE_FORMAT))?,
             view_depth: gpu.create_texture(&color_desc(w, h, VIEW_DEPTH))?,
             depth: gpu.create_texture(&depth_desc(w, h))?,
+            rained: gpu.create_texture(&color_desc(w, h, SCENE_FORMAT))?,
             composite: gpu.create_texture(&color_desc(w, h, COMPOSITE))?,
         });
         self.scene_extent = Extent2D { width: w, height: h };
@@ -289,6 +303,21 @@ impl Sample for Sponza {
             .context("blit PSO")?,
         );
         self.atlas = Some(gpu.create_texture(&shadow_atlas_desc(DEFAULT_ATLAS_SIZE))?);
+        self.rain_map = Some(gpu.create_texture(&shadow_atlas_desc(RAIN_MAP_SIZE))?);
+        self.rain_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/rain.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &SCENE_ONLY,
+                    ..Default::default()
+                },
+            })
+            .context("rain PSO")?,
+        );
         self.apply_pso = Some(
             gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
                 vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
@@ -354,6 +383,8 @@ impl Sample for Sponza {
         }
         let scene = self.scene.as_ref().context("scene rt")?;
         let atlas = self.atlas.context("atlas")?;
+        let rain_map = self.rain_map.context("rain map")?;
+        let rain_pso = self.rain_pso.as_ref().context("rain pso")?;
         let shadow_pso = self.shadow_pso.as_ref().context("shadow pso")?;
         let shadow_cutout_pso = self
             .shadow_cutout_pso
@@ -419,6 +450,19 @@ impl Sample for Sponza {
         }
         gpu.end_color_pass()?;
 
+        // Rain map: the same casters seen from straight up. Screen-space streaks
+        // have no idea the arcade has a roof, and this is what stops it raining
+        // indoors.
+        let rain_vp = rain_map_view_proj(
+            Vec3::new(camera.eye.x, 0.0, camera.eye.z),
+            RAIN_HALF,
+            RAIN_HEIGHT,
+        );
+        gpu.begin_color_pass(&[], Some(rain_map), &[], Some(1.0))?;
+        self.draw_prims(gpu, shadow_pso, one_sided.clone(), rain_vp, false, &mut cb)?;
+        self.draw_prims(gpu, shadow_cutout_pso, two_sided.clone(), rain_vp, true, &mut cb)?;
+        gpu.end_color_pass()?;
+
         // The clear is sky radiance, not a colour: the scene target is linear HDR
         // now and the tonemap happens in the fog apply. Depth clears to the fog
         // far plane so the sky gets a full froxel march instead of zero fog.
@@ -432,6 +476,30 @@ impl Sample for Sponza {
         self.draw_prims(gpu, two_sided_pso, two_sided, view_proj, true, &mut cb)?;
         gpu.end_color_pass()?;
 
+        // Rain, default-on: streaks over the scene, masked by the rain map so
+        // they fall in the nave and not through the arcade roof. Linear in and
+        // linear out -- the fog composite still owns the tonemap.
+        let rain_cb = RainCb {
+            inv_view_proj: view_proj.inverse(),
+            view_proj,
+            camera_pos: Vec4::new(camera.eye.x, camera.eye.y, camera.eye.z, 1.0),
+            sun_dir: Vec4::new(sun.x, sun.y, sun.z, 0.0),
+            sky_zenith: Vec4::new(1.10, 1.20, 1.45, 0.0),
+            sky_horizon: Vec4::new(0.95, 1.02, 1.20, 0.0),
+            inv_extent: Vec2::new(1.0 / w, 1.0 / h),
+            scene_color: gpu.bindless_index(scene.color)?,
+            scene_depth: gpu.bindless_index(scene.view_depth)?,
+            rain_map: gpu.bindless_index(rain_map)?,
+            rain_map_vp: rain_vp,
+            ..Default::default()
+        };
+        gpu.write_frame_bytes(rain_cb.as_bytes())?;
+        gpu.begin_color_pass(&[scene.rained], None, &[[0.0, 0.0, 0.0, 1.0]], None)?;
+        gpu.set_pipeline(rain_pso)?;
+        gpu.bind_graphics_bindless()?;
+        gpu.draw(3, 1, 0, 0)?;
+        gpu.end_color_pass()?;
+
         // Fog, default-on (roadmap fase 5): the inject reads the same cascades the
         // scene did, so the shafts through the arcade cost no extra pass.
         let fog_cb = FogCb {
@@ -442,7 +510,7 @@ impl Sample for Sponza {
             fog: Vec4::new(0.020, 0.09, 0.60, 0.0),
             froxel: Vec4::new(FOG_NEAR, FOG_FAR, (camera.fov_y * 0.5).tan(), camera.aspect),
             misc: Vec4::new(halton2(info.frame_index as u32), harpia_render::FROXEL_D as f32, 1.0, 0.0),
-            scene_color: gpu.bindless_index(scene.color)?,
+            scene_color: gpu.bindless_index(scene.rained)?,
             scene_depth: gpu.bindless_index(scene.view_depth)?,
             inv_extent: Vec2::new(1.0 / w, 1.0 / h),
             shadow_idx: gpu.bindless_index(atlas)?,

@@ -13,6 +13,7 @@ fn main() {
         ("color.vs.spvasm", "color.vs.spv"),
         ("color.ps.spvasm", "color.ps.spv"),
         ("blit.vs.spvasm", "blit.vs.spv"),
+        ("../../gates/rain/shaders/rain.ps.spvasm", "rain.ps.spv"),
         ("../../gates/fog/shaders/inject.cs.spvasm", "inject.cs.spv"),
         ("../../gates/fog/shaders/integrate.cs.spvasm", "integrate.cs.spv"),
         ("../../gates/fog/shaders/apply.ps.spvasm", "apply.ps.spv"),
