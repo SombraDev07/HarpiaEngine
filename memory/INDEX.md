@@ -34,6 +34,10 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 - Repo GitHub: `https://github.com/SombraDev07/HarpiaEngine` (`main`). `gh` autenticado; SSH host key neste host falhou — push por HTTPS.
 - Sem `git config user.*` no repo: commits com `GIT_AUTHOR_*` / `GIT_COMMITTER_*` da conta GitHub.
 - **DXC não está no PATH.** Shaders: HLSL como spec + `.spvasm` + `prog/tools/assemble_spvasm.py` (ou `spirv-as` se existir).
+  **Mas isto está desactualizado como justificação:** `glslang-tools` 15.1.0 e
+  `spirv-tools` 2025.1 estão no apt deste host, por instalar. Ver
+  `docs/AAA-Gap-Analysis.md` §3.1 — escrever SPIR-V à mão é a maior dívida do
+  projecto e resolve-se com um comando.
 - Validation: JSON em `/usr/share/vulkan/explicit_layer.d` neste host. `harpia-rhi` ainda procura fallbacks (ver LANDMINES).
 - Doutrina canónica em `docs/`. Cópias `Rust-Rewrite-*.md` na raiz estão no `.gitignore`.
 
@@ -42,6 +46,12 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 - Código
 - Doutrina (`docs/Rust-Rewrite-*.md`)
 - Layout bindless (`docs/Bindless-Descriptor-Layout.md`) — contrato; o heap já existe na fase 2
+
+## Isto é AAA?
+
+Não, e `docs/AAA-Gap-Analysis.md` diz porquê com números medidos, o que falta por
+ordem de alavancagem, e um roadmap revisto (fases 5.5 e 6.5 novas). Leitura
+obrigatória antes de planear a fase 6.
 
 ## Fim de sessão
 

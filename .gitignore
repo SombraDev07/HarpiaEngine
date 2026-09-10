@@ -22,3 +22,6 @@ TucanoEngine/
 
 # Derived cloud noise bake (prog/engine/render/src/cloud_noise.rs)
 /assets/cache/
+
+# Binários de release colectados por prog/tools/build_demos.sh
+/demos/

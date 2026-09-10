@@ -515,3 +515,25 @@ Isto não é uma excepção ao critério: o critério existe para impedir passes
 funcionam isolados. Fog e chuva estão integrados e medidos na cena de referência;
 os outros dois têm gates verdes e um sítio marcado na fase 6.
 
+## D33 — Correcção: o Box3D existe, e a D20 estava errada nessa parte
+
+Disse duas vezes que «`box3d` não existe». **Errado.** O Erin Catto (autor do
+Box2D) lançou o **Box3D** em **Junho de 2026** — C17, MIT,
+`github.com/erincatto/box3d`: CCD, solver «Soft Step», hulls/cápsulas/esferas/
+malhas/height fields, joints com limites e molas, SIMD multithreaded e
+**determinismo cross-platform**. Saiu depois do meu conhecimento, o que explica o
+erro mas não o desculpa: a verificação era uma pesquisa.
+
+Recomendação com os factos certos: **`rapier3d` para arrancar** (Rust puro, zero
+toolchain externa, e a física não é o gargalo agora), **reavaliar Box3D quando
+houver rede ou replay**, porque aí o determinismo cross-platform deixa de ser
+luxo. O Jolt continua a ser a opção madura em C++ se a toolchain deixar de ser um
+problema. Decisão do Bruno; a D20 fica corrigida nesta parte.
+
+## D34 — Demos compilados numa pasta
+
+`prog/tools/build_demos.sh` compila em release e junta os 11 samples em `demos/`
+com nomes que dizem para que servem (`03-luz-pbr`, `04-sombras`, `sponza`, …),
+mais um README. Os gates já eram um-por-funcionalidade — isto é empacotamento,
+não código novo. A pasta está no `.gitignore`; o script é que é commitado.
+
