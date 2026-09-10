@@ -529,7 +529,7 @@ Cada fase: código + **um binário que corre N frames e sai 0**. Sem pixel-ident
 | 2 | Bindless + upload | `gate-bindless` 16 frames | **feito** (RADV, validation 0) |
 | 3 | Deferred PBR | `pbr-grid` 90 frames | **feito** (RADV, validation 0) |
 | 4 | Sombras + TAA | `csm` + `taa` 16; **Sponza** 90 (integração) | **feito** (RADV, validation 0, PCSS) |
-| 5 | Clima | `fog` `clouds` `water` `rain` | **em curso** (fog, céu, clouds feitos) |
+| 5 | Clima | `fog` `clouds` `water` `rain` | **em curso** (fog+sombras, céu, clouds, water base) |
 | 6 | Terreno + veg + mundo | `terrain` `heightquery` `veg` `instances` | — |
 | 7 | GI + post extra | `ssr` `probes` (+ occupancy honesta ou 0 bytes) | — |
 | 8 | Editor | docking + viewport `--frames 8` | — |
@@ -574,7 +574,7 @@ Barra: `docs/Rust-Rewrite-Quality-Bar.md` §4.1 e §4.8. Cena de olho: **Sponza*
 - [x] **Não** portar VSM, ESM, nem contact nesta fase.
 - [x] **Exit:** `gate-csm` e `gate-taa` 16 frames (resize 6/12). **Mais** `cargo run -p sponza -- --frames 90`, validation 0. Aspect mudado nos três.
 
-### Fase 5 — Clima — [ ] próximo
+### Fase 5 — Clima — [ ] em curso
 
 Ordem: fog compute → clouds (sem driveRain) → water → **rain por último** (é o mais perigoso).
 
