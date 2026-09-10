@@ -322,6 +322,40 @@ Provado que as ondas andam: entre o frame 20 e o 40 a faixa do céu tem delta
 **0.00** (câmara parada) e a faixa da água **22.25**. Se o termo do tempo estivesse
 morto os dois seriam zero e a imagem continuava bonita.
 
+## Sessão 2026-09-10 (parte 9) — câmara e input
+
+Não havia câmara: só `Camera` (eye/target/fov → matrizes) e zero input — o app
+tratava três eventos e nenhum era de teclado. Todas as câmaras dos samples eram
+literais. Para a fase 6 isso é bloqueante: não se valida um clipmap que não se
+pode sobrevoar.
+
+Agora há `harpia_core::Input` (sem winit), `FlyCamera` no `render` (WASD, Q/E,
+Shift para acelerar, botão direito ou setas para olhar), e `Sample::update(&Input,
+dt)` com implementação vazia por omissão — nenhum dos 10 samples existentes mudou
+uma linha por causa disto. Sponza e água já voam. Detalhe em D27.
+
+**A regra que não se quebra:** gates não vêem input e o `dt` é fixo em 1/60. Um
+`--capture` é uma medição; se dependesse do relógio ou de uma tecla, toda a
+verificação desta árvore ia abaixo.
+
+Provado com números, não com fé: das 22 capturas de referência, **18 ficaram
+bit-identical**. As duas amostras convertidas diferem em **12 e 2 pixels** de
+921 600, todos em cima do limiar da comparação de sombra. E que o `update()` está
+mesmo a ser chamado: a subir a câmara 1 unidade/s mudam 515 740 pixels.
+
+48 testes a passar.
+
+## ECS investigado (D28) — recomendação: `bevy_ecs`
+
+Números do crates.io a 2026-09-10. `bevy_ecs` 0.19.1 (1.84M downloads recentes,
+actualizado em Agosto) **não traz `wgpu` nem `winit`** — era o único motivo sério
+para o excluir por causa da D0, e não se aplica. `hecs` é o plano B (3
+dependências contra 18). `flecs_ecs` fora: parado desde Nov 2025 e traz toolchain
+C++. O `ecs_bench_suite` está arquivado desde 2022, portanto **não há benchmark
+mantido** — o gate de 1e6 instâncias da D20 é a única forma de decidir.
+
+Decisão fica em aberto até à fase 6, como a D20 manda. Física continua adiada.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.

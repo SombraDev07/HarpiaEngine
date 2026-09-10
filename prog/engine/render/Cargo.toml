@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "GBuffer packing, MaterialGPU, IBL CPU, CSM math, meshes. No vk::*."
 
 [dependencies]
+harpia-core.workspace = true
 harpia-math.workspace = true
 harpia-rhi.workspace = true
 gltf.workspace = true

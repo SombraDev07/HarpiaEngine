@@ -3,7 +3,7 @@ use harpia_app::{run, AppConfig, Sample};
 use harpia_math::{Vec2, Vec3, Vec4};
 use harpia_render::{
     color_desc, compute_csm, depth_desc, froxel_desc, halton2, inject_dispatch,
-    integrate_dispatch, load_gltf, sampled_desc, shadow_atlas_desc, Camera, CpuScene, FogCb,
+    integrate_dispatch, load_gltf, sampled_desc, shadow_atlas_desc, CpuScene, FlyCamera, FogCb,
     LightingCb, PushConstants, DEFAULT_ATLAS_SIZE, GBUFFER_DEPTH_FORMAT, VERTEX_STRIDE_UV,
 };
 use harpia_rhi::{
@@ -56,6 +56,7 @@ struct Sponza {
     integrate_pso: Option<ComputePipeline>,
     scatter: Option<Texture>,
     integrated: Option<Texture>,
+    cam: FlyCamera,
     /// Sorted: plain opaque first, then everything that needs the cutout /
     /// no-cull path (glTF `MASK` or `doubleSided` — in Sponza the same three
     /// materials). One partition serves both the shadow and the colour pass.
@@ -79,6 +80,15 @@ impl Default for Sponza {
             integrate_pso: None,
             scatter: None,
             integrated: None,
+            // The shot phase 4 validated, now flyable. Slow, because the atrium
+            // is about thirty units end to end.
+            cam: FlyCamera {
+                speed: 3.5,
+                fov_y: 55.0_f32.to_radians(),
+                near: 0.2,
+                far: 80.0,
+                ..FlyCamera::looking_at(Vec3::new(-9.5, 1.8, 0.0), Vec3::new(0.0, 1.6, 0.0))
+            },
             prims: Vec::new(),
             two_sided_from: 0,
             atlas: None,
@@ -318,6 +328,10 @@ impl Sample for Sponza {
         Ok(())
     }
 
+    fn update(&mut self, input: &harpia_app::SampleInput, dt: f32) {
+        self.cam.update(input, dt);
+    }
+
     fn capture_targets(&self) -> Vec<(&'static str, Texture)> {
         let mut out = Vec::new();
         if let Some(t) = self.scene.as_ref().map(|s| s.color) {
@@ -361,15 +375,7 @@ impl Sample for Sponza {
 
         let w = info.extent.width.max(1) as f32;
         let h = info.extent.height.max(1) as f32;
-        let camera = Camera {
-            eye: Vec3::new(-9.5, 1.8, 0.0),
-            target: Vec3::new(0.0, 1.6, 0.0),
-            up: Vec3::Y,
-            fov_y: 55.0_f32.to_radians(),
-            aspect: w / h,
-            near: 0.2,
-            far: 80.0,
-        };
+        let camera = self.cam.camera(w / h);
         let sun = Vec3::new(0.35, 0.85, 0.28).normalize();
         let csm = compute_csm(&camera, sun, DEFAULT_ATLAS_SIZE);
         let view = camera.view();

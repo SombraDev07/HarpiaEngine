@@ -9,13 +9,16 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use harpia_core::{Input, Key, MouseButton};
+pub use harpia_core::{Input as SampleInput, Key as SampleKey, MouseButton as SampleMouseButton};
 use harpia_rhi::{
     create, Backend, Device, DeviceDesc, FrameInfo, Gpu, Texture, WindowHandles,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
@@ -106,8 +109,18 @@ impl AppConfig {
     }
 }
 
+/// Fixed step for `--frames N`. 60 Hz because that is what the samples that
+/// animate off `frame_index` already assume.
+const GATE_DT: f32 = 1.0 / 60.0;
+
 pub trait Sample {
     fn init(&mut self, gpu: &mut Gpu) -> Result<()>;
+    /// Simulation, before the frame is recorded. `dt` is in seconds.
+    ///
+    /// Under `--frames N` the input is always empty and `dt` is always
+    /// `1/60`, so a gate is reproducible whatever the machine or the user is
+    /// doing. Live input and a real clock only happen in `--interactive`.
+    fn update(&mut self, _input: &Input, _dt: f32) {}
     fn frame(&mut self, gpu: &mut Gpu, info: FrameInfo) -> Result<()>;
     /// Render targets `--capture` should write out. Empty = nothing to dump.
     fn capture_targets(&self) -> Vec<(&'static str, Texture)> {
@@ -181,6 +194,8 @@ fn run_winit(config: AppConfig, sample: impl Sample) -> Result<ExitCode> {
         frames_done: 0,
         exit_code: 0,
         ready: false,
+        input: Input::new(),
+        last_frame: None,
     };
     event_loop.run_app(&mut app).context("winit run")?;
     match app.exit_code {
@@ -197,6 +212,8 @@ struct WinitApp<S> {
     frames_done: u32,
     exit_code: i32,
     ready: bool,
+    input: Input,
+    last_frame: Option<std::time::Instant>,
 }
 
 impl<S: Sample> WinitApp<S> {
@@ -245,12 +262,30 @@ impl<S: Sample> WinitApp<S> {
     }
 
     fn draw(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        // A gate is a measurement, so it gets a fixed step and no input at all.
+        // Wall-clock dt would make every `--capture` depend on how busy the
+        // machine was, and the whole verification loop rests on those being
+        // reproducible.
+        let dt = if self.config.max_frames.is_some() {
+            GATE_DT
+        } else {
+            let now = std::time::Instant::now();
+            let dt = self
+                .last_frame
+                .map_or(GATE_DT, |t| now.duration_since(t).as_secs_f32());
+            self.last_frame = Some(now);
+            // A breakpoint or a dragged window must not teleport the camera.
+            dt.clamp(1.0 / 1000.0, 0.1)
+        };
+        self.sample.update(&self.input, dt);
+
         let gpu = self.gpu.as_mut().context("gpu")?;
         let info = gpu.begin_frame()?;
         if !info.skipped {
             self.sample.frame(gpu, info)?;
         }
         gpu.end_frame()?;
+        self.input.end_frame();
         self.frames_done += 1;
 
         if let Some(&(at, w, h)) = self
@@ -299,6 +334,14 @@ impl<S: Sample> ApplicationHandler for WinitApp<S> {
         }
     }
 
+    /// Raw motion, not `CursorMoved`: the cursor position clamps at the window
+    /// edge, so a drag that reaches the border would stop turning the camera.
+    fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
+            self.input.add_mouse_delta(dx as f32, dy as f32);
+        }
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if self.exit_code != 0 {
             return;
@@ -323,6 +366,28 @@ impl<S: Sample> ApplicationHandler for WinitApp<S> {
                 }
                 event_loop.exit();
             }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    if let Some(key) = map_key(code) {
+                        self.input.set_key(key, event.state == ElementState::Pressed);
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if let Some(b) = map_button(button) {
+                    self.input.set_button(b, state == ElementState::Pressed);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 60.0,
+                };
+                self.input.add_scroll(lines);
+            }
+            // A key released while another window has focus never reports the
+            // release, so without this the camera keeps flying after alt-tab.
+            WindowEvent::Focused(false) => self.input.clear(),
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = self.gpu.as_mut() {
                     if let Err(e) = gpu.resize(size.width, size.height) {
@@ -349,4 +414,39 @@ impl<S: Sample> ApplicationHandler for WinitApp<S> {
             window.request_redraw();
         }
     }
+}
+
+/// winit key codes the engine reacts to. Anything else is ignored on purpose:
+/// a key that nothing reads should do nothing, not something surprising.
+fn map_key(code: KeyCode) -> Option<Key> {
+    Some(match code {
+        KeyCode::KeyW => Key::W,
+        KeyCode::KeyA => Key::A,
+        KeyCode::KeyS => Key::S,
+        KeyCode::KeyD => Key::D,
+        KeyCode::KeyQ => Key::Q,
+        KeyCode::KeyE => Key::E,
+        KeyCode::Space => Key::Space,
+        KeyCode::ShiftLeft | KeyCode::ShiftRight => Key::Shift,
+        KeyCode::ControlLeft | KeyCode::ControlRight => Key::Control,
+        KeyCode::Escape => Key::Escape,
+        KeyCode::ArrowUp => Key::Up,
+        KeyCode::ArrowDown => Key::Down,
+        KeyCode::ArrowLeft => Key::Left,
+        KeyCode::ArrowRight => Key::Right,
+        KeyCode::Tab => Key::Tab,
+        KeyCode::F1 => Key::F1,
+        KeyCode::F2 => Key::F2,
+        KeyCode::F3 => Key::F3,
+        _ => return None,
+    })
+}
+
+fn map_button(button: winit::event::MouseButton) -> Option<MouseButton> {
+    Some(match button {
+        winit::event::MouseButton::Left => MouseButton::Left,
+        winit::event::MouseButton::Right => MouseButton::Right,
+        winit::event::MouseButton::Middle => MouseButton::Middle,
+        _ => return None,
+    })
 }

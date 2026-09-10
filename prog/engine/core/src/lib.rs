@@ -1,5 +1,8 @@
 //! Shared types. No GPU, no `vk::*`.
 
+mod input;
+pub use input::{Input, Key, MouseButton};
+
 pub const ENGINE_NAME: &str = "harpia";
 pub const ENGINE_VERSION_MAJOR: u32 = 0;
 pub const ENGINE_VERSION_MINOR: u32 = 1;

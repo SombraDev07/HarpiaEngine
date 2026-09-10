@@ -9,9 +9,9 @@
 
 use anyhow::{Context, Result};
 use harpia_app::{run, AppConfig, Sample};
-use harpia_math::{perspective_vk, Mat4, Vec2, Vec3, Vec4};
+use harpia_math::{Vec2, Vec3, Vec4};
 use harpia_render::{
-    color_desc, depth_desc, PushConstants, SphereMesh, WaterCb, GBUFFER_DEPTH_FORMAT,
+    color_desc, depth_desc, FlyCamera, PushConstants, SphereMesh, WaterCb, GBUFFER_DEPTH_FORMAT,
     VERTEX_STRIDE, WATER_GRID, WATER_HALF,
 };
 use harpia_rhi::{
@@ -31,7 +31,6 @@ struct Targets {
     depth: Texture,
 }
 
-#[derive(Default)]
 struct WaterGate {
     sky_pso: Option<GraphicsPipeline>,
     water_pso: Option<GraphicsPipeline>,
@@ -41,6 +40,34 @@ struct WaterGate {
     index_count: u32,
     rt: Option<Targets>,
     extent: Extent2D,
+    cam: FlyCamera,
+}
+
+impl Default for WaterGate {
+    fn default() -> Self {
+        Self {
+            sky_pso: None,
+            water_pso: None,
+            tonemap_pso: None,
+            vb: None,
+            ib: None,
+            index_count: 0,
+            rt: None,
+            extent: Extent2D { width: 0, height: 0 },
+            // Low over the surface: at a grazing angle Fresnel is near 1 and the
+            // reflection carries the image, which is the case worth looking at.
+            cam: FlyCamera {
+                speed: 12.0,
+                fov_y: FOV_Y.to_radians(),
+                near: 0.2,
+                far: 400.0,
+                ..FlyCamera::looking_at(
+                    Vec3::new(0.0, 2.4, 26.0),
+                    Vec3::new(0.0, 2.3, 25.0),
+                )
+            },
+        }
+    }
 }
 
 impl WaterGate {
@@ -135,6 +162,10 @@ impl Sample for WaterGate {
         Ok(())
     }
 
+    fn update(&mut self, input: &harpia_app::SampleInput, dt: f32) {
+        self.cam.update(input, dt);
+    }
+
     fn capture_targets(&self) -> Vec<(&'static str, Texture)> {
         self.rt.as_ref().map_or_else(Vec::new, |rt| vec![("hdr", rt.hdr)])
     }
@@ -150,12 +181,9 @@ impl Sample for WaterGate {
 
         let w = info.extent.width.max(1) as f32;
         let h = info.extent.height.max(1) as f32;
-        // Low over the surface: at a grazing angle Fresnel is near 1 and the
-        // reflection carries the image, which is the case worth looking at.
-        let eye = Vec3::new(0.0, 2.4, 26.0);
-        let view = Mat4::look_at_rh(eye, eye + Vec3::new(0.0, -0.10, -1.0), Vec3::Y);
-        let proj = perspective_vk(FOV_Y.to_radians(), w / h, 0.2, 400.0);
-        let view_proj = proj * view;
+        let camera = self.cam.camera(w / h);
+        let eye = camera.eye;
+        let view_proj = camera.view_proj();
         let sun = Vec3::new(0.16, 0.20, -0.97).normalize();
         let t = info.frame_index as f32 * 0.05;
 

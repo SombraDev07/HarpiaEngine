@@ -915,6 +915,7 @@ name = "harpia-render"
 version = "0.1.0"
 dependencies = [
  "gltf",
+ "harpia-core",
  "harpia-math",
  "harpia-rhi",
  "tracing",

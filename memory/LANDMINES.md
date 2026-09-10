@@ -228,4 +228,9 @@ output.**
   `.spvasm` (`spvasm_layout::assert_prefix_matches`) e comparam membro a membro —
   antes só comparavam os offsets do Rust com números escritos no mesmo ficheiro,
   o que prova que o struct não mexeu, não que ainda casa com o shader.
+- Qualquer coisa que dependa do relógio ou do input **quebra a reprodutibilidade
+  do `--capture`**, que é a base de toda a verificação desta árvore. Por isso o
+  `dt` é fixo e o `Input` fica vazio quando `--frames N` está ligado (D27). Se
+  acrescentares estado que evolui no tempo, verifica-o contra capturas de
+  referência antes e depois.
 

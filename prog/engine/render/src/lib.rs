@@ -5,6 +5,7 @@ mod atmosphere;
 mod spvasm_layout;
 mod cloud_noise;
 mod csm;
+mod fly_camera;
 mod fog;
 mod gltf_scene;
 mod ibl;
@@ -25,6 +26,7 @@ pub use cloud_noise::{
     CloudCb, CloudSliceCb, NoiseError, NoiseVolume, BASE_SIZE, DETAIL_SIZE,
 };
 pub use water::{wave_omega, WaterCb, WATER_GRID, WATER_HALF};
+pub use fly_camera::FlyCamera;
 pub use csm::{compute as compute_csm, Camera, Csm, CASCADE_COUNT, DEFAULT_ATLAS_SIZE};
 pub use fog::{
     froxel_desc, halton2, inject_dispatch, integrate_dispatch, FogCb, FROXEL_D, FROXEL_FORMAT,

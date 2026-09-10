@@ -358,3 +358,57 @@ Desvio consciente ao roadmap §5 («Bruneton LUTs baked na CPU no init»).
 - `pow(cos θ, 90)` para o brilho do sol ainda vale 25% a 10° do disco: um sol do
   tamanho de um punho. 900 põe-no onde deve estar.
 
+## D27 — Câmara e input: os gates continuam a não ver nada
+
+- `Input` vive em **`harpia-core`** e não sabe o que é winit. O `app` (que tem
+  winit) preenche-o, o `render` (que tem a `Camera`) lê-o, e nenhum dos dois
+  precisa de depender do outro.
+- **Gates nunca recebem input, e o `dt` é fixo em `1/60`.** Um sample com
+  `--frames N` é uma medição: uma tecla premida a meio de um `--capture` mudava
+  em surdina os pixels pelos quais ele é julgado, e o `dt` de relógio fazia cada
+  captura depender de quão ocupada estava a máquina. Só `--interactive` tem
+  relógio e input a sério (com `clamp` de 1 ms a 100 ms, para um breakpoint não
+  teletransportar a câmara).
+- `Sample::update(&Input, dt)` é um método com **implementação vazia por
+  omissão**: separa simulação de render sem obrigar nenhum dos 10 samples
+  existentes a mudar uma linha.
+- Olhar exige o **botão direito** premido. Agarrar o cursor sem pedir torna a
+  janela impossível de largar, e uma janela de gate que engole o ponteiro é pior
+  do que uma que o ignora.
+- `WindowEvent::Focused(false)` limpa o estado: uma tecla largada com outra
+  janela em foco nunca reporta o release, e sem isto a câmara continua a voar
+  depois de um alt-tab.
+- Delta do rato vem de `DeviceEvent::MouseMotion`, **não** de `CursorMoved`: a
+  posição do cursor encosta à borda da janela e o arrasto deixava de rodar.
+- **Medido:** 18 das 22 capturas de referência ficaram **bit-identical**. As duas
+  amostras convertidas (Sponza, água) diferem em **12 e 2 pixels** de 921 600 —
+  todos em cima do limiar da comparação de sombra, onde um ulp na direcção faz o
+  snap da cascata cair para o outro texel. E provei que o `update()` não é
+  canalização morta: a subir a câmara 1 unidade/s mudam 515 740 pixels.
+
+## D28 — ECS: `bevy_ecs` é a recomendação, o gate é que decide (D20 continua aberta)
+
+Investigado a 2026-09-10, com o WebSearch em baixo — números tirados directamente
+do crates.io, não de memória:
+
+| crate | versão | downloads recentes | actualizado |
+|---|---|---|---|
+| `bevy_ecs` | 0.19.1 | 1 841 616 | 2026-08-13 |
+| `hecs` | 0.11.1 | 119 304 | 2026-07-28 |
+| `shipyard` | 0.11.5 | 19 578 | 2026-07-10 |
+| `flecs_ecs` | 0.2.2 | 1 385 | 2025-11-17 |
+| `evenio` | 0.6.0 | 448 | 2024-05-19 |
+
+- **O medo da D0 não se confirma:** as dependências não-opcionais do `bevy_ecs`
+  0.19.1 são 18, todas utilitárias (`bevy_platform`, `bevy_ptr`, `bevy_tasks`,
+  `arrayvec`, `bitflags`, `smallvec`, …). **Nenhum `wgpu`, nenhum `winit`,
+  nenhum crate de gráficos.** O `wgpu` mora no `bevy_render`, que não vem atrás.
+  Era esta a única razão séria para o excluir.
+- **Não existe benchmark cross-ECS mantido:** o `ecs_bench_suite` do rust-gamedev
+  está arquivado desde Nov 2022. Ou seja, o gate de 1e6 instâncias que a D20 já
+  exige não é zelo — é a única forma de decidir com números.
+- Recomendação: `bevy_ecs`, com `hecs` (3 dependências contra 18) como plano B se
+  o peso incomodar. `flecs_ecs` fora: parado há 10 meses e traz toolchain C++, o
+  mesmo motivo que travou o Jolt.
+- **A decisão continua por fechar** — abre-se na fase 6 com o gate a medir.
+
