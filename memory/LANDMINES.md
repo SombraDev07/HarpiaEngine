@@ -206,4 +206,8 @@ output.**
   `validation_errors=…` do `tracing` vem com escapes ANSI no meio — `grep
   'validation_errors=0'` **falha sempre** num pipe; tira os escapes primeiro
   (`sed 's/\x1b\[[0-9;]*m//g'`). Já deu um falso vermelho num sweep inteiro.
+- Acumulação temporal sem jitter que mexe por frame é uma média de amostras
+  idênticas: parece que funciona (a imagem não muda) e não reduz ruído nenhum.
+  Prova com números — |laplaciano| na banda do problema, antes e depois — e usa
+  uma **matriz errada de propósito** como controlo.
 

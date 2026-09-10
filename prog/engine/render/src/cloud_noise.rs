@@ -107,7 +107,11 @@ pub struct CloudCb {
     pub inv_extent: Vec2,
     /// Bindless index of the half-res cloud target, for the composite pass.
     pub cloud_rt: u32,
-    pub _pad: u32,
+    /// Bindless index of last frame's resolved clouds, for the reprojection.
+    pub history_rt: u32,
+    /// Last frame's view-projection. The reprojection needs it to find where
+    /// this pixel's cloud sat on screen a frame ago.
+    pub prev_view_proj: Mat4,
 }
 
 impl Default for CloudCb {
@@ -124,7 +128,8 @@ impl Default for CloudCb {
             ambient: Vec4::new(0.16, 0.21, 0.32, 6360.0),
             inv_extent: Vec2::ONE,
             cloud_rt: 0,
-            _pad: 0,
+            history_rt: 0,
+            prev_view_proj: Mat4::IDENTITY,
         }
     }
 }
@@ -393,7 +398,7 @@ mod tests {
 
     #[test]
     fn cloud_cb_layout_matches_the_spvasm() {
-        assert_eq!(std::mem::size_of::<CloudCb>(), 208);
+        assert_eq!(std::mem::size_of::<CloudCb>(), 272);
         assert_eq!(std::mem::offset_of!(CloudCb, camera_pos), 64);
         assert_eq!(std::mem::offset_of!(CloudCb, sun_dir), 80);
         assert_eq!(std::mem::offset_of!(CloudCb, sun_color), 96);
@@ -404,6 +409,8 @@ mod tests {
         assert_eq!(std::mem::offset_of!(CloudCb, ambient), 176);
         assert_eq!(std::mem::offset_of!(CloudCb, inv_extent), 192);
         assert_eq!(std::mem::offset_of!(CloudCb, cloud_rt), 200);
+        assert_eq!(std::mem::offset_of!(CloudCb, history_rt), 204);
+        assert_eq!(std::mem::offset_of!(CloudCb, prev_view_proj), 208);
         assert!(std::mem::size_of::<CloudCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
     }
 

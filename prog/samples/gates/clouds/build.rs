@@ -11,6 +11,7 @@ fn main() {
         ("fullscreen.vs.spvasm", "fullscreen.vs.spv"),
         ("clouds.ps.spvasm", "clouds.ps.spv"),
         ("composite.ps.spvasm", "composite.ps.spv"),
+        ("reproject.ps.spvasm", "reproject.ps.spv"),
         ("blit.ps.spvasm", "blit.ps.spv"),
     ] {
         let src = shader_dir.join(src_name);

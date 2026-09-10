@@ -1,0 +1,278 @@
+;; Cloud temporal reprojection (roadmap fase 5).
+;;
+;; The raymarch runs at half resolution with a per-frame jitter, so a single
+;; frame is noisy -- worst at the horizon, where a grazing ray steps hundreds of
+;; metres. This pass accumulates those frames.
+;;
+;; Clouds have no depth buffer, so the reprojection uses an analytic depth: the
+;; ray is intersected with the *middle* of the spherical shell and that point is
+;; pushed through last frame's view-projection. It is an approximation -- a cloud
+;; is not a surface -- but the error is second order next to camera motion, and
+;; it costs no extra target.
+;;
+;; History is clamped to the 3x3 neighbourhood of the current frame before the
+;; blend, which is what stops a moving camera from smearing (Karis).
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %heap %samp_c
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %icur NonUniform
+OpDecorate %ihist NonUniform
+OpDecorate %Cloud Block
+OpMemberDecorate %Cloud 0 Offset 0
+OpMemberDecorate %Cloud 0 ColMajor
+OpMemberDecorate %Cloud 0 MatrixStride 16
+OpMemberDecorate %Cloud 1 Offset 64
+OpMemberDecorate %Cloud 2 Offset 80
+OpMemberDecorate %Cloud 3 Offset 96
+OpMemberDecorate %Cloud 4 Offset 112
+OpMemberDecorate %Cloud 5 Offset 128
+OpMemberDecorate %Cloud 6 Offset 144
+OpMemberDecorate %Cloud 7 Offset 160
+OpMemberDecorate %Cloud 8 Offset 176
+OpMemberDecorate %Cloud 9 Offset 192
+OpMemberDecorate %Cloud 10 Offset 200
+OpMemberDecorate %Cloud 11 Offset 204
+OpMemberDecorate %Cloud 12 Offset 208
+OpMemberDecorate %Cloud 12 ColMajor
+OpMemberDecorate %Cloud 12 MatrixStride 16
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Cloud = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint %uint %mat4
+%ptr_cb = OpTypePointer Uniform %Cloud
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv2 = OpTypePointer Uniform %v2
+%ptr_uv4 = OpTypePointer Uniform %v4
+%ptr_uu = OpTypePointer Uniform %uint
+%ptr_umat = OpTypePointer Uniform %mat4
+
+%u0 = OpConstant %uint 0
+%u1 = OpConstant %uint 1
+%u4 = OpConstant %uint 4
+%u8 = OpConstant %uint 8
+%u9 = OpConstant %uint 9
+%u10 = OpConstant %uint 10
+%u11 = OpConstant %uint 11
+%u12 = OpConstant %uint 12
+
+%fm1 = OpConstant %float -1.0
+%f0 = OpConstant %float 0.0
+%f05 = OpConstant %float 0.5
+%f1 = OpConstant %float 1.0
+%f2 = OpConstant %float 2.0
+%f4 = OpConstant %float 4.0
+%feps = OpConstant %float 0.0001
+; 0.92 keeps about twelve frames of history: enough to bury the jitter, short
+; enough that the clamp can still catch up when the camera turns.
+%fblend = OpConstant %float 0.92
+
+%img2 = OpTypeImage %float 2D 0 0 0 1 Unknown
+%arr2 = OpTypeRuntimeArray %img2
+%ptr_arr2 = OpTypePointer UniformConstant %arr2
+%heap = OpVariable %ptr_arr2 UniformConstant
+%ptr_img2 = OpTypePointer UniformConstant %img2
+%sampled2 = OpTypeSampledImage %img2
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u9
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+
+%s = OpLoad %samp_ty %samp_c
+%pcur = OpAccessChain %ptr_uu %cb %u10
+%icur = OpLoad %uint %pcur
+%pc2 = OpAccessChain %ptr_img2 %heap %icur
+%icim = OpLoad %img2 %pc2
+%smc = OpSampledImage %sampled2 %icim %s
+%cur = OpImageSampleImplicitLod %v4 %smc %uv
+
+; 3x3 neighbourhood of the current frame -- the clamp box for the history
+%o0 = OpCompositeConstruct %v2 %fm1 %fm1
+%so0 = OpFMul %v2 %o0 %invext
+%tuv0 = OpFAdd %v2 %uv %so0
+%tap0 = OpImageSampleImplicitLod %v4 %smc %tuv0
+%nmin0 = OpExtInst %v4 %glsl FMin %cur %tap0
+%nmax0 = OpExtInst %v4 %glsl FMax %cur %tap0
+%o1 = OpCompositeConstruct %v2 %f0 %fm1
+%so1 = OpFMul %v2 %o1 %invext
+%tuv1 = OpFAdd %v2 %uv %so1
+%tap1 = OpImageSampleImplicitLod %v4 %smc %tuv1
+%nmin1 = OpExtInst %v4 %glsl FMin %nmin0 %tap1
+%nmax1 = OpExtInst %v4 %glsl FMax %nmax0 %tap1
+%o2 = OpCompositeConstruct %v2 %f1 %fm1
+%so2 = OpFMul %v2 %o2 %invext
+%tuv2 = OpFAdd %v2 %uv %so2
+%tap2 = OpImageSampleImplicitLod %v4 %smc %tuv2
+%nmin2 = OpExtInst %v4 %glsl FMin %nmin1 %tap2
+%nmax2 = OpExtInst %v4 %glsl FMax %nmax1 %tap2
+%o3 = OpCompositeConstruct %v2 %fm1 %f0
+%so3 = OpFMul %v2 %o3 %invext
+%tuv3 = OpFAdd %v2 %uv %so3
+%tap3 = OpImageSampleImplicitLod %v4 %smc %tuv3
+%nmin3 = OpExtInst %v4 %glsl FMin %nmin2 %tap3
+%nmax3 = OpExtInst %v4 %glsl FMax %nmax2 %tap3
+%o4 = OpCompositeConstruct %v2 %f1 %f0
+%so4 = OpFMul %v2 %o4 %invext
+%tuv4 = OpFAdd %v2 %uv %so4
+%tap4 = OpImageSampleImplicitLod %v4 %smc %tuv4
+%nmin4 = OpExtInst %v4 %glsl FMin %nmin3 %tap4
+%nmax4 = OpExtInst %v4 %glsl FMax %nmax3 %tap4
+%o5 = OpCompositeConstruct %v2 %fm1 %f1
+%so5 = OpFMul %v2 %o5 %invext
+%tuv5 = OpFAdd %v2 %uv %so5
+%tap5 = OpImageSampleImplicitLod %v4 %smc %tuv5
+%nmin5 = OpExtInst %v4 %glsl FMin %nmin4 %tap5
+%nmax5 = OpExtInst %v4 %glsl FMax %nmax4 %tap5
+%o6 = OpCompositeConstruct %v2 %f0 %f1
+%so6 = OpFMul %v2 %o6 %invext
+%tuv6 = OpFAdd %v2 %uv %so6
+%tap6 = OpImageSampleImplicitLod %v4 %smc %tuv6
+%nmin6 = OpExtInst %v4 %glsl FMin %nmin5 %tap6
+%nmax6 = OpExtInst %v4 %glsl FMax %nmax5 %tap6
+%o7 = OpCompositeConstruct %v2 %f1 %f1
+%so7 = OpFMul %v2 %o7 %invext
+%tuv7 = OpFAdd %v2 %uv %so7
+%tap7 = OpImageSampleImplicitLod %v4 %smc %tuv7
+%nmin7 = OpExtInst %v4 %glsl FMin %nmin6 %tap7
+%nmax7 = OpExtInst %v4 %glsl FMax %nmax6 %tap7
+
+; ---- analytic depth: the middle of the shell ----
+%uvx = OpCompositeExtract %float %uv 0
+%uvy = OpCompositeExtract %float %uv 1
+%ndx0 = OpFMul %float %uvx %f2
+%ndx = OpFSub %float %ndx0 %f1
+%ndy0 = OpFMul %float %uvy %f2
+%ndy = OpFSub %float %ndy0 %f1
+%pivp = OpAccessChain %ptr_umat %cb %u0
+%ivp = OpLoad %mat4 %pivp
+%farclip = OpCompositeConstruct %v4 %ndx %ndy %f1 %f1
+%farw = OpMatrixTimesVector %v4 %ivp %farclip
+%fw = OpCompositeExtract %float %farw 3
+%fwc = OpExtInst %float %glsl FMax %fw %feps
+%invfw = OpFDiv %float %f1 %fwc
+%fx = OpCompositeExtract %float %farw 0
+%fy = OpCompositeExtract %float %farw 1
+%fz = OpCompositeExtract %float %farw 2
+%fpx = OpFMul %float %fx %invfw
+%fpy = OpFMul %float %fy %invfw
+%fpz = OpFMul %float %fz %invfw
+%farpos = OpCompositeConstruct %v3 %fpx %fpy %fpz
+%pcam = OpAccessChain %ptr_uv4 %cb %u1
+%cam4 = OpLoad %v4 %pcam
+%camw = OpVectorShuffle %v3 %cam4 %cam4 0 1 2
+%alt = OpCompositeExtract %float %cam4 3
+%rawd = OpFSub %v3 %farpos %camw
+%dir = OpExtInst %v3 %glsl Normalize %rawd
+
+%pamb = OpAccessChain %ptr_uv4 %cb %u8
+%ambv = OpLoad %v4 %pamb
+%ground_r = OpCompositeExtract %float %ambv 3
+%play = OpAccessChain %ptr_uv4 %cb %u4
+%layv = OpLoad %v4 %play
+%lay_b = OpCompositeExtract %float %layv 0
+%lay_t = OpCompositeExtract %float %layv 1
+%camx = OpCompositeExtract %float %camw 0
+%camz = OpCompositeExtract %float %camw 2
+%oy = OpFAdd %float %ground_r %alt
+%origin = OpCompositeConstruct %v3 %camx %oy %camz
+%laysum = OpFAdd %float %lay_b %lay_t
+%laymid = OpFMul %float %laysum %f05
+%r_mid = OpFAdd %float %ground_r %laymid
+
+%dotdo = OpDot %float %dir %origin
+%bq = OpFMul %float %f2 %dotdo
+%nbq = OpFNegate %float %bq
+%bq2 = OpFMul %float %bq %bq
+%oo = OpDot %float %origin %origin
+%rmsq = OpFMul %float %r_mid %r_mid
+%cq = OpFSub %float %oo %rmsq
+%cq4 = OpFMul %float %cq %f4
+%disc = OpFSub %float %bq2 %cq4
+%discc = OpExtInst %float %glsl FMax %disc %f0
+%sq = OpExtInst %float %glsl Sqrt %discc
+%thit0 = OpFAdd %float %nbq %sq
+%thit = OpFMul %float %thit0 %f05
+
+%step = OpVectorTimesScalar %v3 %dir %thit
+%world = OpFAdd %v3 %origin %step
+%wx = OpCompositeExtract %float %world 0
+%wy0 = OpCompositeExtract %float %world 1
+%wy = OpFSub %float %wy0 %ground_r
+%wz = OpCompositeExtract %float %world 2
+%wv = OpCompositeConstruct %v4 %wx %wy %wz %f1
+
+%ppvp = OpAccessChain %ptr_umat %cb %u12
+%pvp = OpLoad %mat4 %ppvp
+%pclip = OpMatrixTimesVector %v4 %pvp %wv
+%pw = OpCompositeExtract %float %pclip 3
+%pwc = OpExtInst %float %glsl FMax %pw %feps
+%invpw = OpFDiv %float %f1 %pwc
+%px0 = OpCompositeExtract %float %pclip 0
+%py0 = OpCompositeExtract %float %pclip 1
+%pndx = OpFMul %float %px0 %invpw
+%pndy = OpFMul %float %py0 %invpw
+%pux0 = OpFMul %float %pndx %f05
+%pux = OpFAdd %float %pux0 %f05
+%puy0 = OpFMul %float %pndy %f05
+%puy = OpFAdd %float %puy0 %f05
+%puv = OpCompositeConstruct %v2 %pux %puy
+
+%phist = OpAccessChain %ptr_uu %cb %u11
+%ihist = OpLoad %uint %phist
+%ph2 = OpAccessChain %ptr_img2 %heap %ihist
+%ihim = OpLoad %img2 %ph2
+%smh = OpSampledImage %sampled2 %ihim %s
+%hist = OpImageSampleImplicitLod %v4 %smh %puv
+%histc = OpExtInst %v4 %glsl FClamp %hist %nmin7 %nmax7
+
+; the history is only usable if it was on screen last frame
+%okw = OpFOrdGreaterThan %bool %pw %feps
+%okx0 = OpFOrdGreaterThanEqual %bool %pux %f0
+%okx1 = OpFOrdLessThanEqual %bool %pux %f1
+%oky0 = OpFOrdGreaterThanEqual %bool %puy %f0
+%oky1 = OpFOrdLessThanEqual %bool %puy %f1
+%okx = OpLogicalAnd %bool %okx0 %okx1
+%oky = OpLogicalAnd %bool %oky0 %oky1
+%okxy = OpLogicalAnd %bool %okx %oky
+%ok = OpLogicalAnd %bool %okw %okxy
+%alpha = OpSelect %float %ok %fblend %f0
+%alphav = OpCompositeConstruct %v4 %alpha %alpha %alpha %alpha
+%outc = OpExtInst %v4 %glsl FMix %cur %histc %alphav
+OpStore %out_color %outc
+OpReturn
+OpFunctionEnd

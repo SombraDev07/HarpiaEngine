@@ -210,6 +210,32 @@ valor cru em vez de raciocinar sobre ele.
 Sweep verde depois da mudança: `cargo test --workspace` (34 testes), os **9**
 samples Vulkan a 32 frames com validation 0, e os 8 gates no backend Null.
 
+## Sessão 2026-09-10 (parte 4) — reprojecção temporal das nuvens
+
+`gate-clouds` continua verde a 32 frames, agora com um pass temporal a meia
+resolução entre o march e o composite. Ping-pong de dois acumuladores, sem cópia.
+
+Sem depth buffer para as nuvens, a reprojecção usa **profundidade analítica**: o
+raio é intersectado com o meio da concha e esse ponto passa pela view-projection
+do frame anterior. Custa zero render targets. A história é limitada à caixa 3×3
+do frame actual antes de misturar (blend 0.92).
+
+Duas coisas tiveram de mudar no march para isto valer alguma coisa: o jitter
+passou a mexer por frame (índice do frame em `wind.w`), e a origem deixou de
+estar presa a `(0, r0, 0)` — com a câmara sempre no eixo do planeta não havia
+paralaxe nenhuma para reprojectar.
+
+A câmara do gate passou a orbitar **e** a rodar de propósito: com uma câmara
+parada a reprojecção parece certa mesmo quando a matemática está errada.
+
+Números, porque a olho não se via: na banda do horizonte o |laplaciano| médio cai
+de 11.99 para 6.64 (**−44.6%**). Com a matriz do frame anterior substituída por
+identidade a redução é **−2.8%** — o clamp rejeita a história desalinhada em vez
+de a esborratar. Esse par é a prova de que a reprojecção *e* o clamp funcionam.
+
+Sweep verde: `cargo test --workspace`, 9 samples Vulkan a 32 frames com
+validation 0, 8 gates no backend Null.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.
@@ -217,8 +243,7 @@ Não mesh shaders, RT, FSR, editor. Não VSM.
 1. ~~Fog: froxels, 3D GENERAL. Gate `fog`.~~ **feito**
 2. ~~Céu: Hillaire completo. Gate `sky`.~~ **feito** (falta aerial perspective)
 3. ~~Clouds: raymarch Nubis a meia resolução. Gate `clouds`.~~ **feito**
-4. **Reprojecção temporal das nuvens** — é o que come o ruído que sobra no
-   horizonte, e sem ela a meia resolução nota-se em movimento.
+4. ~~Reprojecção temporal das nuvens.~~ **feito** (D22)
 5. **Sombra das nuvens nos froxels do fog.** É daqui que vêm os god rays **sem
    acrescentar um pass** — o fog já marcha, só lhe falta ler a transmitância das
    nuvens.

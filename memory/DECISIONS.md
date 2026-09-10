@@ -256,3 +256,27 @@ Desvio consciente ao roadmap §5 («Bruneton LUTs baked na CPU no init»).
   sobrepor-se ao default do `cloud_noise.rs` — foi o que escondeu uma ronda inteira
   de afinação.
 
+## D22 — Reprojecção das nuvens: profundidade analítica, sem alvo extra
+
+- As nuvens não têm depth buffer e não vale a pena inventar um. A reprojecção
+  intersecta o raio com o **meio da concha** e empurra esse ponto pela
+  view-projection do frame anterior. É aproximado — uma nuvem não é uma
+  superfície — mas o erro é de segunda ordem ao pé do movimento da câmara e
+  **não custa um render target**.
+- História limitada à caixa **3×3 do frame actual** antes da mistura (Karis).
+  Sem isto uma câmara a rodar arrasta rastos.
+- Blend 0.92 ≈ doze frames de história: chega para enterrar o jitter e é curto o
+  suficiente para o clamp recuperar numa curva.
+- O jitter do march tem de **mexer por frame** (rácio dourado sobre o IGN, com o
+  índice do frame em `wind.w`) ou a acumulação temporal está a fazer a média das
+  mesmas amostras.
+- A origem do march deixou de estar presa ao eixo do planeta: era
+  `(0, r0, 0)`, agora é `(cam.x, r0, cam.z)` e `|origin|²` vem do vector. Sem
+  isto a câmara podia andar de lado sem se mexer no campo de nuvens — e a
+  reprojecção não teria paralaxe nenhuma para corrigir.
+- **Medido, não presumido:** na faixa do horizonte o |laplaciano| médio cai de
+  11.99 para 6.64 (−44.6%). Com a matriz anterior trocada por identidade cai
+  para −2.8%, ou seja o clamp **rejeita** a história desalinhada em vez de a
+  esborratar. É esse par de números que prova que a reprojecção está viva e que
+  o clamp funciona; nenhum dos dois se via a olho.
+

@@ -584,7 +584,9 @@ Ordem: fog compute → clouds (sem driveRain) → water → **rain por último**
 - [x] Clouds: noise cache em disco (Perlin-Worley 128³ + Worley 32³, tileável, `.raw`)
       **+ raymarch Nubis a meia resolução** — 64 passos, march de luz de 6 passos,
       Cornette-Shanks com multiple scattering em 3 oitavas. `gate-clouds` 16 frames.
-      Falta o temporal e a sombra das nuvens nos froxels do fog (D21).
+      **+ reprojecção temporal** com profundidade analítica no meio da concha e
+      clamp 3×3 (D22): −44.6% de ruído na banda do horizonte.
+      Falta a sombra das nuvens nos froxels do fog (god rays).
 - [ ] Water: point-sample depth no SSR.
 - [ ] Rain: GBuffer wet + post; cones sem HDR SRV; `--frames 16` only.
 - [ ] **Exit:** gates `fog` `clouds` `water` `rain`. Default-on na **Sponza** (`--frames` curto) ou o pass não entra.

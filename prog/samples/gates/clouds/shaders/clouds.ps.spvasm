@@ -102,6 +102,7 @@ OpMemberDecorate %Cloud 9 Offset 192
 %igna = OpConstant %float 0.06711056
 %ignb = OpConstant %float 0.00583715
 %ignc = OpConstant %float 52.9829189
+%fgolden = OpConstant %float 0.61803399
 %fgbot = OpConstant %float 0.15
 %fgtop = OpConstant %float 0.45
 %fmarch = OpConstant %float 64.0
@@ -185,8 +186,10 @@ OpMemberDecorate %Cloud 9 Offset 192
 %ground_r = OpCompositeExtract %float %ambv 3
 
 %r0 = OpFAdd %float %ground_r %alt
-%origin = OpCompositeConstruct %v3 %f0 %r0 %f0
-%r0sq = OpFMul %float %r0 %r0
+%camx = OpCompositeExtract %float %camw 0
+%camz = OpCompositeExtract %float %camw 2
+%origin = OpCompositeConstruct %v3 %camx %r0 %camz
+%r0sq = OpDot %float %origin %origin
 %r_in = OpFAdd %float %ground_r %lay_b
 %r_out = OpFAdd %float %ground_r %lay_t
 %thick = OpFSub %float %r_out %r_in
@@ -250,7 +253,10 @@ OpBranch %done
 %igb = OpFMul %float %fcy %ignb
 %igab = OpFAdd %float %iga %igb
 %igf1 = OpExtInst %float %glsl Fract %igab
-%igm = OpFMul %float %igf1 %ignc
+%igm0 = OpFMul %float %igf1 %ignc
+%framef = OpCompositeExtract %float %windv 3
+%igg = OpFMul %float %framef %fgolden
+%igm = OpFAdd %float %igm0 %igg
 %jitter = OpExtInst %float %glsl Fract %igm
 OpBranch %head
 
