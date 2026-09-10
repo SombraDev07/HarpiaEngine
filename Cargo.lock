@@ -718,6 +718,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate-rain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-math",
+ "harpia-memory",
+ "harpia-render",
+ "harpia-rhi",
+ "tracing",
+]
+
+[[package]]
 name = "gate-sky"
 version = "0.1.0"
 dependencies = [

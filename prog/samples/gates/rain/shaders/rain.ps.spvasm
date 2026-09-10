@@ -1,0 +1,305 @@
+;; Rain post: streaks over the scene, then the tonemap.
+;;
+;; Screen space, not particles. A drop crosses the frame in a handful of frames
+;; and is never seen still, so geometry would cost a great deal to show something
+;; nobody can resolve. What sells it is the layering: one layer of streaks reads
+;; as a repeating curtain, three at different scales and speeds do not.
+;;
+;; Streaks are additive because rain scatters light towards the eye; they do not
+;; occlude the scene, they veil it.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %heap %samp_c
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %icol NonUniform
+OpDecorate %idep NonUniform
+OpDecorate %Rain Block
+OpMemberDecorate %Rain 0 Offset 0
+OpMemberDecorate %Rain 0 ColMajor
+OpMemberDecorate %Rain 0 MatrixStride 16
+OpMemberDecorate %Rain 1 Offset 64
+OpMemberDecorate %Rain 1 ColMajor
+OpMemberDecorate %Rain 1 MatrixStride 16
+OpMemberDecorate %Rain 2 Offset 128
+OpMemberDecorate %Rain 3 Offset 144
+OpMemberDecorate %Rain 4 Offset 160
+OpMemberDecorate %Rain 5 Offset 176
+OpMemberDecorate %Rain 6 Offset 192
+OpMemberDecorate %Rain 7 Offset 208
+OpMemberDecorate %Rain 8 Offset 224
+OpMemberDecorate %Rain 9 Offset 240
+OpMemberDecorate %Rain 10 Offset 256
+OpMemberDecorate %Rain 11 Offset 264
+OpMemberDecorate %Rain 12 Offset 268
+OpMemberDecorate %Rain 13 Offset 272
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+%Rain = OpTypeStruct %mat4 %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint %uint %v4
+%ptr_cb = OpTypePointer Uniform %Rain
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv2 = OpTypePointer Uniform %v2
+%ptr_uv4 = OpTypePointer Uniform %v4
+%ptr_uu = OpTypePointer Uniform %uint
+
+%u5 = OpConstant %uint 5
+%u7 = OpConstant %uint 7
+%u8 = OpConstant %uint 8
+%u10 = OpConstant %uint 10
+%u11 = OpConstant %uint 11
+%u12 = OpConstant %uint 12
+%u13 = OpConstant %uint 13
+%f0 = OpConstant %float 0.0
+%f05 = OpConstant %float 0.5
+%f1 = OpConstant %float 1.0
+%f251 = OpConstant %float 2.51
+%f243 = OpConstant %float 2.43
+%f003 = OpConstant %float 0.03
+%f059 = OpConstant %float 0.59
+%f014 = OpConstant %float 0.14
+%finvg = OpConstant %float 0.45454545
+%hashm = OpConstant %float 43758.5454
+%hk1 = OpConstant %float 127.1
+%fstreaklen = OpConstant %float 0.06
+%fdensity = OpConstant %float 0.66
+%fnear = OpConstant %float 3.0
+%v3_003 = OpConstantComposite %v3 %f003 %f003 %f003
+%v3_059 = OpConstantComposite %v3 %f059 %f059 %f059
+%v3_014 = OpConstantComposite %v3 %f014 %f014 %f014
+%v3_zero = OpConstantComposite %v3 %f0 %f0 %f0
+%v3_one = OpConstantComposite %v3 %f1 %f1 %f1
+%v3_invg = OpConstantComposite %v3 %finvg %finvg %finvg
+
+; --- streak layer 0 ---
+%ls0 = OpConstant %float 1.0
+%lv0 = OpConstant %float 1.0
+%lb0 = OpConstant %float 1.0
+%lo0 = OpConstant %float 0.0
+; --- streak layer 1 ---
+%ls1 = OpConstant %float 1.9
+%lv1 = OpConstant %float 1.45
+%lb1 = OpConstant %float 0.72
+%lo1 = OpConstant %float 0.37
+; --- streak layer 2 ---
+%ls2 = OpConstant %float 3.3
+%lv2 = OpConstant %float 2.1
+%lb2 = OpConstant %float 0.45
+%lo2 = OpConstant %float 0.71
+
+%img2 = OpTypeImage %float 2D 0 0 0 1 Unknown
+%arr2 = OpTypeRuntimeArray %img2
+%ptr_arr2 = OpTypePointer UniformConstant %arr2
+%heap = OpVariable %ptr_arr2 UniformConstant
+%ptr_img2 = OpTypePointer UniformConstant %img2
+%sampled2 = OpTypeSampledImage %img2
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u10
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%sux = OpCompositeExtract %float %uv 0
+%suy = OpCompositeExtract %float %uv 1
+
+%s = OpLoad %samp_ty %samp_c
+%pcol = OpAccessChain %ptr_uu %cb %u11
+%icol = OpLoad %uint %pcol
+%pcim = OpAccessChain %ptr_img2 %heap %icol
+%cim = OpLoad %img2 %pcim
+%smc = OpSampledImage %sampled2 %cim %s
+%src = OpImageSampleImplicitLod %v4 %smc %uv
+%scene = OpVectorShuffle %v3 %src %src 0 1 2
+%pdep = OpAccessChain %ptr_uu %cb %u12
+%idep = OpLoad %uint %pdep
+%pdim = OpAccessChain %ptr_img2 %heap %idep
+%dim = OpLoad %img2 %pdim
+%smd = OpSampledImage %sampled2 %dim %s
+%dtex = OpImageSampleImplicitLod %v4 %smd %uv
+%scenez = OpCompositeExtract %float %dtex 0
+
+%prain = OpAccessChain %ptr_uv4 %cb %u7
+%rain4 = OpLoad %v4 %prain
+%intensity = OpCompositeExtract %float %rain4 0
+%t = OpCompositeExtract %float %rain4 3
+%pstk = OpAccessChain %ptr_uv4 %cb %u8
+%stk4 = OpLoad %v4 %pstk
+%stx = OpCompositeExtract %float %stk4 0
+%sty = OpCompositeExtract %float %stk4 1
+%fall = OpCompositeExtract %float %stk4 2
+%sbright = OpCompositeExtract %float %stk4 3
+%pzen = OpAccessChain %ptr_uv4 %cb %u5
+%zen4 = OpLoad %v4 %pzen
+%zenith = OpVectorShuffle %v3 %zen4 %zen4 0 1 2
+
+; --- layer 0 ---
+%sx0 = OpFMul %float %sux %ls0
+%sy0 = OpFMul %float %suy %ls0
+%colf0 = OpFMul %float %sx0 %stx
+%col0 = OpExtInst %float %glsl Floor %colf0
+%chd0 = OpFMul %float %col0 %hk1
+%chs0 = OpExtInst %float %glsl Sin %chd0
+%chm0 = OpFMul %float %chs0 %hashm
+%ch0 = OpExtInst %float %glsl Fract %chm0
+%spd0 = OpFMul %float %ch0 %f05
+%spd10 = OpFAdd %float %spd0 %f1
+%tv0 = OpFMul %float %t %fall
+%tv10 = OpFMul %float %tv0 %lv0
+%tv20 = OpFMul %float %tv10 %spd10
+%rowf0 = OpFMul %float %sy0 %sty
+%row00 = OpFAdd %float %rowf0 %tv20
+%row10 = OpFAdd %float %row00 %ch0
+%row20 = OpFAdd %float %row10 %lo0
+%row0 = OpExtInst %float %glsl Fract %row20
+; a streak is a short bright run down the column, not a full-height line
+%str00 = OpFSub %float %fstreaklen %row0
+%str10 = OpFDiv %float %str00 %fstreaklen
+%str20 = OpExtInst %float %glsl FClamp %str10 %f0 %f1
+%str30 = OpFMul %float %str20 %str20
+; and only some columns carry a drop at all
+%carry0 = OpFOrdGreaterThan %bool %ch0 %fdensity
+%str40 = OpSelect %float %carry0 %str30 %f0
+; soft edges across the column
+%cx0 = OpExtInst %float %glsl Fract %colf0
+%cx00 = OpFSub %float %cx0 %f05
+%cxa0 = OpExtInst %float %glsl FAbs %cx00
+%cxe00 = OpFSub %float %f05 %cxa0
+%cxe10 = OpFDiv %float %cxe00 %f05
+%cxe0 = OpExtInst %float %glsl FClamp %cxe10 %f0 %f1
+%str50 = OpFMul %float %str40 %cxe0
+%str0 = OpFMul %float %str50 %lb0
+%sacc0 = OpFAdd %float %f0 %str0
+; --- layer 1 ---
+%sx1 = OpFMul %float %sux %ls1
+%sy1 = OpFMul %float %suy %ls1
+%colf1 = OpFMul %float %sx1 %stx
+%col1 = OpExtInst %float %glsl Floor %colf1
+%chd1 = OpFMul %float %col1 %hk1
+%chs1 = OpExtInst %float %glsl Sin %chd1
+%chm1 = OpFMul %float %chs1 %hashm
+%ch1 = OpExtInst %float %glsl Fract %chm1
+%spd1 = OpFMul %float %ch1 %f05
+%spd11 = OpFAdd %float %spd1 %f1
+%tv1 = OpFMul %float %t %fall
+%tv11 = OpFMul %float %tv1 %lv1
+%tv21 = OpFMul %float %tv11 %spd11
+%rowf1 = OpFMul %float %sy1 %sty
+%row01 = OpFAdd %float %rowf1 %tv21
+%row11 = OpFAdd %float %row01 %ch1
+%row21 = OpFAdd %float %row11 %lo1
+%row1 = OpExtInst %float %glsl Fract %row21
+; a streak is a short bright run down the column, not a full-height line
+%str01 = OpFSub %float %fstreaklen %row1
+%str11 = OpFDiv %float %str01 %fstreaklen
+%str21 = OpExtInst %float %glsl FClamp %str11 %f0 %f1
+%str31 = OpFMul %float %str21 %str21
+; and only some columns carry a drop at all
+%carry1 = OpFOrdGreaterThan %bool %ch1 %fdensity
+%str41 = OpSelect %float %carry1 %str31 %f0
+; soft edges across the column
+%cx1 = OpExtInst %float %glsl Fract %colf1
+%cx01 = OpFSub %float %cx1 %f05
+%cxa1 = OpExtInst %float %glsl FAbs %cx01
+%cxe01 = OpFSub %float %f05 %cxa1
+%cxe11 = OpFDiv %float %cxe01 %f05
+%cxe1 = OpExtInst %float %glsl FClamp %cxe11 %f0 %f1
+%str51 = OpFMul %float %str41 %cxe1
+%str1 = OpFMul %float %str51 %lb1
+%sacc1 = OpFAdd %float %sacc0 %str1
+; --- layer 2 ---
+%sx2 = OpFMul %float %sux %ls2
+%sy2 = OpFMul %float %suy %ls2
+%colf2 = OpFMul %float %sx2 %stx
+%col2 = OpExtInst %float %glsl Floor %colf2
+%chd2 = OpFMul %float %col2 %hk1
+%chs2 = OpExtInst %float %glsl Sin %chd2
+%chm2 = OpFMul %float %chs2 %hashm
+%ch2 = OpExtInst %float %glsl Fract %chm2
+%spd2 = OpFMul %float %ch2 %f05
+%spd12 = OpFAdd %float %spd2 %f1
+%tv2 = OpFMul %float %t %fall
+%tv12 = OpFMul %float %tv2 %lv2
+%tv22 = OpFMul %float %tv12 %spd12
+%rowf2 = OpFMul %float %sy2 %sty
+%row02 = OpFAdd %float %rowf2 %tv22
+%row12 = OpFAdd %float %row02 %ch2
+%row22 = OpFAdd %float %row12 %lo2
+%row2 = OpExtInst %float %glsl Fract %row22
+; a streak is a short bright run down the column, not a full-height line
+%str02 = OpFSub %float %fstreaklen %row2
+%str12 = OpFDiv %float %str02 %fstreaklen
+%str22 = OpExtInst %float %glsl FClamp %str12 %f0 %f1
+%str32 = OpFMul %float %str22 %str22
+; and only some columns carry a drop at all
+%carry2 = OpFOrdGreaterThan %bool %ch2 %fdensity
+%str42 = OpSelect %float %carry2 %str32 %f0
+; soft edges across the column
+%cx2 = OpExtInst %float %glsl Fract %colf2
+%cx02 = OpFSub %float %cx2 %f05
+%cxa2 = OpExtInst %float %glsl FAbs %cx02
+%cxe02 = OpFSub %float %f05 %cxa2
+%cxe12 = OpFDiv %float %cxe02 %f05
+%cxe2 = OpExtInst %float %glsl FClamp %cxe12 %f0 %f1
+%str52 = OpFMul %float %str42 %cxe2
+%str2 = OpFMul %float %str52 %lb2
+%sacc2 = OpFAdd %float %sacc1 %str2
+
+; a streak in front of a very near surface would be inside it
+%nearf0 = OpFDiv %float %scenez %fnear
+%nearf = OpExtInst %float %glsl FClamp %nearf0 %f0 %f1
+%sw0 = OpFMul %float %sacc2 %sbright
+%sw1 = OpFMul %float %sw0 %intensity
+%sw = OpFMul %float %sw1 %nearf
+%swv = OpCompositeConstruct %v3 %sw %sw %sw
+; rain scatters sky light towards the eye: it veils, it does not occlude
+%streakc = OpFMul %v3 %zenith %swv
+%total = OpFAdd %v3 %scene %streakc
+
+%pmisc = OpAccessChain %ptr_uv4 %cb %u13
+%misc = OpLoad %v4 %pmisc
+%exposure = OpCompositeExtract %float %misc 0
+%x = OpVectorTimesScalar %v3 %total %exposure
+%x251 = OpVectorTimesScalar %v3 %x %f251
+%numt = OpFAdd %v3 %x251 %v3_003
+%num = OpFMul %v3 %x %numt
+%x243 = OpVectorTimesScalar %v3 %x %f243
+%dent = OpFAdd %v3 %x243 %v3_059
+%denA = OpFMul %v3 %x %dent
+%denC = OpFAdd %v3 %denA %v3_014
+%toned0 = OpFDiv %v3 %num %denC
+%toned = OpExtInst %v3 %glsl FClamp %toned0 %v3_zero %v3_one
+%srgb = OpExtInst %v3 %glsl Pow %toned %v3_invg
+%out4 = OpCompositeConstruct %v4 %srgb %f1
+OpStore %out_color %out4
+OpReturn
+OpFunctionEnd

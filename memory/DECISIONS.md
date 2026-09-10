@@ -441,3 +441,38 @@ do crates.io, não de memória:
 - **Medido:** ligar o SSR muda **3.7%** dos pixels em mais de 8/255 (máximo 157) —
   forte e localizado exactamente onde estão os reflexos.
 
+## D30 — Chuva: material molhado + post, e o bug de offsets que quase passou
+
+- Duas metades, como o roadmap manda: **material molhado** (albedo escurece
+  *e* o lóbulo especular aperta — fazer só uma das duas dá geada ou verniz) e
+  **bátegas em espaço de ecrã**. Uma gota atravessa o ecrã em meia dúzia de
+  frames e nunca se vê parada: geometria custava muito para mostrar o que
+  ninguém consegue resolver.
+- Superfícies viradas para cima acumulam água: a normal é puxada para cima e
+  leva **ondulações**, um anel por célula do mundo numa vizinhança 2×2. Uma só
+  célula corta os anéis na fronteira e lê-se como uma grelha assim que se repara.
+- As ondulações **desvanecem com a distância**: um anel a 100 m é menor que um
+  pixel e só compra aliasing.
+- Três camadas de bátegas. Uma só lê-se como uma cortina repetida; três a escalas
+  e velocidades diferentes não, e é muito mais barato do que mais amostras.
+- Bátegas são **aditivas**: a chuva dispersa luz do céu para o olho, não tapa a
+  cena — veda-a.
+- O composite é um alvo a sério e não a swapchain directamente: o `--capture` não
+  lê a swapchain, e uma captura sem bátegas não julga este gate.
+- **Medido:** ligar a chuva muda **70.5%** dos pixels em mais de 8/255.
+
+### O bug que interessa registar
+
+Gerei as decorações do bloco com `112 + i*16` em vez de `96 + i*16`, portanto
+**todos os `%v4` ficaram declarados 16 bytes à frente**: o shader lia `ripple`
+onde queria `streak`. Não houve **um único erro de validation** — o bloco tem o
+tamanho certo, a GPU só lia os bytes errados — e o sintoma foi uma faixa branca
+saturada à direita do ecrã, que não parece um problema de layout.
+
+Encontrei-o a despejar os valores intermédios num alvo e a olhar para os números
+(o hash da coluna tinha só dois valores, o que só acontece se o multiplicador
+fosse ~1.35 em vez de 28 — e 1.35 é `ripple.x`). O teste
+`rain::cb_layout_matches_the_spvasm` **apanha-o**: confirmei a pôr o offset errado
+outra vez, e falha a dizer o ficheiro, o membro e os dois offsets. Foi exactamente
+para isto que a D-anterior ligou os testes aos `.spvasm`.
+

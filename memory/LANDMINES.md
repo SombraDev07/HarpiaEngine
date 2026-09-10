@@ -242,4 +242,8 @@ output.**
   `.spv` correcto confirmado dentro do binário). **Não sei a causa.** Regra:
   volta a correr antes de acreditar num falhanço isolado logo após editar um
   shader — mas **nunca** o descartes sem repetir.
+- Ao **gerar** decorações de bloco por fórmula, confere a fórmula contra um
+  membro conhecido. `112 + i*16` em vez de `96 + i*16` deslocou todos os `%v4` da
+  chuva em 16 bytes: zero erros de validation, e o sintoma foi uma faixa branca no
+  ecrã. Corre `cargo test -p harpia-render` **antes** de ir depurar a imagem.
 

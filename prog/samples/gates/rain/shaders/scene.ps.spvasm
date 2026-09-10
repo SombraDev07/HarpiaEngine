@@ -1,0 +1,328 @@
+; Rain gate scene PS: a wet material.
+;
+; Water fills a surface's roughness, so a wet material both darkens (light gets
+; trapped in the film) and sharpens (the film is smooth). Doing only one of the
+; two is what makes CG rain look like frost or like varnish.
+;
+; Up-facing surfaces also collect standing water: the normal is pulled towards
+; straight up and carries ripples. One ring per world cell over a 2x2
+; neighbourhood -- a single cell clips its rings at the cell border, which reads
+; as a grid the moment you look for it.
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %in_world %in_nrm %in_z %out_color %out_depth %cb
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %in_world Location 0
+OpDecorate %in_nrm Location 1
+OpDecorate %in_z Location 2
+OpDecorate %out_color Location 0
+OpDecorate %out_depth Location 1
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %Rain Block
+OpMemberDecorate %Rain 0 Offset 0
+OpMemberDecorate %Rain 0 ColMajor
+OpMemberDecorate %Rain 0 MatrixStride 16
+OpMemberDecorate %Rain 1 Offset 64
+OpMemberDecorate %Rain 1 ColMajor
+OpMemberDecorate %Rain 1 MatrixStride 16
+OpMemberDecorate %Rain 2 Offset 128
+OpMemberDecorate %Rain 3 Offset 144
+OpMemberDecorate %Rain 4 Offset 160
+OpMemberDecorate %Rain 5 Offset 176
+OpMemberDecorate %Rain 6 Offset 192
+OpMemberDecorate %Rain 7 Offset 208
+OpMemberDecorate %Rain 8 Offset 224
+OpMemberDecorate %Rain 9 Offset 240
+OpMemberDecorate %Rain 10 Offset 256
+OpMemberDecorate %Rain 11 Offset 264
+OpMemberDecorate %Rain 12 Offset 268
+OpMemberDecorate %Rain 13 Offset 272
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+%ptr_in_v3 = OpTypePointer Input %v3
+%ptr_in_f = OpTypePointer Input %float
+%ptr_out_v4 = OpTypePointer Output %v4
+%ptr_out_f = OpTypePointer Output %float
+%in_world = OpVariable %ptr_in_v3 Input
+%in_nrm = OpVariable %ptr_in_v3 Input
+%in_z = OpVariable %ptr_in_f Input
+%out_color = OpVariable %ptr_out_v4 Output
+%out_depth = OpVariable %ptr_out_f Output
+%Rain = OpTypeStruct %mat4 %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint %uint %v4
+%ptr_cb = OpTypePointer Uniform %Rain
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv4 = OpTypePointer Uniform %v4
+
+%u2 = OpConstant %uint 2
+%u3 = OpConstant %uint 3
+%u4 = OpConstant %uint 4
+%u5 = OpConstant %uint 5
+%u6 = OpConstant %uint 6
+%u7 = OpConstant %uint 7
+%u9 = OpConstant %uint 9
+%f0 = OpConstant %float 0.0
+%f05 = OpConstant %float 0.5
+%f1 = OpConstant %float 1.0
+%f2 = OpConstant %float 2.0
+%f5 = OpConstant %float 5.0
+%feps = OpConstant %float 0.0001
+%ftau = OpConstant %float 6.28318531
+%finvpi = OpConstant %float 0.31830989
+%fwetk = OpConstant %float 0.55
+%fspecdry = OpConstant %float 24.0
+%fspecwet = OpConstant %float 420.0
+%fpoolthr = OpConstant %float 0.55
+%fripfade = OpConstant %float 34.0
+%ff0dry = OpConstant %float 0.04
+%ff0wet = OpConstant %float 0.02
+%hashm = OpConstant %float 43758.5454
+%hk_x = OpConstant %float 127.1
+%hk_y = OpConstant %float 311.7
+%hashk = OpConstantComposite %v2 %hk_x %hk_y
+%hk2_x = OpConstant %float 269.5
+%hk2_y = OpConstant %float 183.3
+%hashk2 = OpConstantComposite %v2 %hk2_x %hk2_y
+%alb_r = OpConstant %float 0.30
+%alb_g = OpConstant %float 0.29
+%alb_b = OpConstant %float 0.27
+%v3_albedo = OpConstantComposite %v3 %alb_r %alb_g %alb_b
+%gnd_r = OpConstant %float 0.10
+%gnd_g = OpConstant %float 0.10
+%gnd_b = OpConstant %float 0.11
+%v3_ground = OpConstantComposite %v3 %gnd_r %gnd_g %gnd_b
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%world = OpLoad %v3 %in_world
+%nrm0 = OpLoad %v3 %in_nrm
+%N0 = OpExtInst %v3 %glsl Normalize %nrm0
+%selfz = OpLoad %float %in_z
+%prain = OpAccessChain %ptr_uv4 %cb %u7
+%rain4 = OpLoad %v4 %prain
+%wetness = OpCompositeExtract %float %rain4 1
+%ripstr = OpCompositeExtract %float %rain4 2
+%t = OpCompositeExtract %float %rain4 3
+%prip = OpAccessChain %ptr_uv4 %cb %u9
+%rip4 = OpLoad %v4 %prip
+%cellsz = OpCompositeExtract %float %rip4 0
+%rfreq = OpCompositeExtract %float %rip4 1
+%rspeed = OpCompositeExtract %float %rip4 2
+%rdecay = OpCompositeExtract %float %rip4 3
+
+; standing water only where the surface faces up
+%ny = OpCompositeExtract %float %N0 1
+%pool0 = OpFSub %float %ny %fpoolthr
+%pool1 = OpFDiv %float %pool0 %fpoolthr
+%pool2 = OpExtInst %float %glsl FClamp %pool1 %f0 %f1
+%pool = OpFMul %float %pool2 %wetness
+
+%wx = OpCompositeExtract %float %world 0
+%wz = OpCompositeExtract %float %world 2
+%pxz = OpCompositeConstruct %v2 %wx %wz
+%invcell = OpFDiv %float %f1 %cellsz
+%pcell = OpVectorTimesScalar %v2 %pxz %invcell
+%cellbase = OpExtInst %v2 %glsl Floor %pcell
+
+; --- ripple cell 0 ---
+%co0 = OpCompositeConstruct %v2 %f0 %f0
+%cell0 = OpFAdd %v2 %cellbase %co0
+%hd0 = OpDot %float %cell0 %hashk
+%hs0 = OpExtInst %float %glsl Sin %hd0
+%hm0 = OpFMul %float %hs0 %hashm
+%h0 = OpExtInst %float %glsl Fract %hm0
+%hd20 = OpDot %float %cell0 %hashk2
+%hs20 = OpExtInst %float %glsl Sin %hd20
+%hm20 = OpFMul %float %hs20 %hashm
+%h20 = OpExtInst %float %glsl Fract %hm20
+%ctr0 = OpCompositeConstruct %v2 %h0 %h20
+%cabs0 = OpFAdd %v2 %cell0 %ctr0
+%cw0 = OpVectorTimesScalar %v2 %cabs0 %cellsz
+%dv0 = OpFSub %v2 %pxz %cw0
+%dist0 = OpExtInst %float %glsl Length %dv0
+; each cell fires on its own phase, so the rings do not pulse in lockstep
+%ph0 = OpFMul %float %h0 %ftau
+%tw0 = OpFMul %float %t %rspeed
+%arg00 = OpFMul %float %dist0 %rfreq
+%arg10 = OpFSub %float %arg00 %tw0
+%arg0 = OpFAdd %float %arg10 %ph0
+%wave0 = OpExtInst %float %glsl Sin %arg0
+%dk0 = OpFMul %float %dist0 %rdecay
+%dke0 = OpFNegate %float %dk0
+%fall0 = OpExtInst %float %glsl Exp %dke0
+%r0 = OpFMul %float %wave0 %fall0
+%acc0 = OpFAdd %float %f0 %r0
+; --- ripple cell 1 ---
+%co1 = OpCompositeConstruct %v2 %f1 %f0
+%cell1 = OpFAdd %v2 %cellbase %co1
+%hd1 = OpDot %float %cell1 %hashk
+%hs1 = OpExtInst %float %glsl Sin %hd1
+%hm1 = OpFMul %float %hs1 %hashm
+%h1 = OpExtInst %float %glsl Fract %hm1
+%hd21 = OpDot %float %cell1 %hashk2
+%hs21 = OpExtInst %float %glsl Sin %hd21
+%hm21 = OpFMul %float %hs21 %hashm
+%h21 = OpExtInst %float %glsl Fract %hm21
+%ctr1 = OpCompositeConstruct %v2 %h1 %h21
+%cabs1 = OpFAdd %v2 %cell1 %ctr1
+%cw1 = OpVectorTimesScalar %v2 %cabs1 %cellsz
+%dv1 = OpFSub %v2 %pxz %cw1
+%dist1 = OpExtInst %float %glsl Length %dv1
+; each cell fires on its own phase, so the rings do not pulse in lockstep
+%ph1 = OpFMul %float %h1 %ftau
+%tw1 = OpFMul %float %t %rspeed
+%arg01 = OpFMul %float %dist1 %rfreq
+%arg11 = OpFSub %float %arg01 %tw1
+%arg1 = OpFAdd %float %arg11 %ph1
+%wave1 = OpExtInst %float %glsl Sin %arg1
+%dk1 = OpFMul %float %dist1 %rdecay
+%dke1 = OpFNegate %float %dk1
+%fall1 = OpExtInst %float %glsl Exp %dke1
+%r1 = OpFMul %float %wave1 %fall1
+%acc1 = OpFAdd %float %acc0 %r1
+; --- ripple cell 2 ---
+%co2 = OpCompositeConstruct %v2 %f0 %f1
+%cell2 = OpFAdd %v2 %cellbase %co2
+%hd2 = OpDot %float %cell2 %hashk
+%hs2 = OpExtInst %float %glsl Sin %hd2
+%hm2 = OpFMul %float %hs2 %hashm
+%h2 = OpExtInst %float %glsl Fract %hm2
+%hd22 = OpDot %float %cell2 %hashk2
+%hs22 = OpExtInst %float %glsl Sin %hd22
+%hm22 = OpFMul %float %hs22 %hashm
+%h22 = OpExtInst %float %glsl Fract %hm22
+%ctr2 = OpCompositeConstruct %v2 %h2 %h22
+%cabs2 = OpFAdd %v2 %cell2 %ctr2
+%cw2 = OpVectorTimesScalar %v2 %cabs2 %cellsz
+%dv2 = OpFSub %v2 %pxz %cw2
+%dist2 = OpExtInst %float %glsl Length %dv2
+; each cell fires on its own phase, so the rings do not pulse in lockstep
+%ph2 = OpFMul %float %h2 %ftau
+%tw2 = OpFMul %float %t %rspeed
+%arg02 = OpFMul %float %dist2 %rfreq
+%arg12 = OpFSub %float %arg02 %tw2
+%arg2 = OpFAdd %float %arg12 %ph2
+%wave2 = OpExtInst %float %glsl Sin %arg2
+%dk2 = OpFMul %float %dist2 %rdecay
+%dke2 = OpFNegate %float %dk2
+%fall2 = OpExtInst %float %glsl Exp %dke2
+%r2 = OpFMul %float %wave2 %fall2
+%acc2 = OpFAdd %float %acc1 %r2
+; --- ripple cell 3 ---
+%co3 = OpCompositeConstruct %v2 %f1 %f1
+%cell3 = OpFAdd %v2 %cellbase %co3
+%hd3 = OpDot %float %cell3 %hashk
+%hs3 = OpExtInst %float %glsl Sin %hd3
+%hm3 = OpFMul %float %hs3 %hashm
+%h3 = OpExtInst %float %glsl Fract %hm3
+%hd23 = OpDot %float %cell3 %hashk2
+%hs23 = OpExtInst %float %glsl Sin %hd23
+%hm23 = OpFMul %float %hs23 %hashm
+%h23 = OpExtInst %float %glsl Fract %hm23
+%ctr3 = OpCompositeConstruct %v2 %h3 %h23
+%cabs3 = OpFAdd %v2 %cell3 %ctr3
+%cw3 = OpVectorTimesScalar %v2 %cabs3 %cellsz
+%dv3 = OpFSub %v2 %pxz %cw3
+%dist3 = OpExtInst %float %glsl Length %dv3
+; each cell fires on its own phase, so the rings do not pulse in lockstep
+%ph3 = OpFMul %float %h3 %ftau
+%tw3 = OpFMul %float %t %rspeed
+%arg03 = OpFMul %float %dist3 %rfreq
+%arg13 = OpFSub %float %arg03 %tw3
+%arg3 = OpFAdd %float %arg13 %ph3
+%wave3 = OpExtInst %float %glsl Sin %arg3
+%dk3 = OpFMul %float %dist3 %rdecay
+%dke3 = OpFNegate %float %dk3
+%fall3 = OpExtInst %float %glsl Exp %dke3
+%r3 = OpFMul %float %wave3 %fall3
+%acc3 = OpFAdd %float %acc2 %r3
+
+; the rings tilt the normal; strength follows how much water is standing
+%rk0 = OpFMul %float %acc3 %ripstr
+%rk1 = OpFMul %float %rk0 %pool
+; a ring far enough away is smaller than a pixel: keeping it only buys aliasing
+%rfar0 = OpFDiv %float %selfz %fripfade
+%rfar1 = OpExtInst %float %glsl FClamp %rfar0 %f0 %f1
+%rfade = OpFSub %float %f1 %rfar1
+%rk = OpFMul %float %rk1 %rfade
+%rn_x = OpFMul %float %rk %f05
+%rn_z = OpFMul %float %rk %f05
+%nx0 = OpCompositeExtract %float %N0 0
+%nz0 = OpCompositeExtract %float %N0 2
+%nx = OpFAdd %float %nx0 %rn_x
+%nz = OpFAdd %float %nz0 %rn_z
+%npool = OpCompositeConstruct %v3 %nx %f1 %nz
+%npooln = OpExtInst %v3 %glsl Normalize %npool
+%poolv = OpCompositeConstruct %v3 %pool %pool %pool
+%Nm = OpExtInst %v3 %glsl FMix %N0 %npooln %poolv
+%N = OpExtInst %v3 %glsl Normalize %Nm
+
+%pcam = OpAccessChain %ptr_uv4 %cb %u2
+%cam4 = OpLoad %v4 %pcam
+%camw = OpVectorShuffle %v3 %cam4 %cam4 0 1 2
+%toeye = OpFSub %v3 %camw %world
+%V = OpExtInst %v3 %glsl Normalize %toeye
+%psun = OpAccessChain %ptr_uv4 %cb %u3
+%sun4 = OpLoad %v4 %psun
+%sun0 = OpVectorShuffle %v3 %sun4 %sun4 0 1 2
+%sun = OpExtInst %v3 %glsl Normalize %sun0
+%psc = OpAccessChain %ptr_uv4 %cb %u4
+%sc4 = OpLoad %v4 %psc
+%sun_c = OpVectorShuffle %v3 %sc4 %sc4 0 1 2
+%pzen = OpAccessChain %ptr_uv4 %cb %u5
+%zen4 = OpLoad %v4 %pzen
+%zenith = OpVectorShuffle %v3 %zen4 %zen4 0 1 2
+
+; diffuse: wet albedo is darker, because the film traps light in the roughness
+%wetk = OpFMul %float %wetness %fwetk
+%albs = OpFSub %float %f1 %wetk
+%albedo = OpVectorTimesScalar %v3 %v3_albedo %albs
+%ndl0 = OpDot %float %N %sun
+%ndl = OpExtInst %float %glsl FMax %ndl0 %f0
+%dk = OpFMul %float %ndl %finvpi
+%lit = OpVectorTimesScalar %v3 %sun_c %dk
+%nyh0 = OpCompositeExtract %float %N 1
+%nyh1 = OpFMul %float %nyh0 %f05
+%nyh = OpFAdd %float %nyh1 %f05
+%nyv = OpCompositeConstruct %v3 %nyh %nyh %nyh
+%amb = OpExtInst %v3 %glsl FMix %v3_ground %zenith %nyv
+%irr = OpFAdd %v3 %lit %amb
+%diffuse = OpFMul %v3 %irr %albedo
+
+; specular: the film is smooth, so wet sharpens the lobe and lifts F0
+%hv = OpFAdd %v3 %V %sun
+%H = OpExtInst %v3 %glsl Normalize %hv
+%ndh0 = OpDot %float %N %H
+%ndh = OpExtInst %float %glsl FClamp %ndh0 %f0 %f1
+%wv = OpCompositeConstruct %v3 %wetness %wetness %wetness
+%specp = OpExtInst %float %glsl FMix %fspecdry %fspecwet %wetness
+%spow = OpExtInst %float %glsl Pow %ndh %specp
+%ndv0 = OpDot %float %N %V
+%ndv = OpExtInst %float %glsl FMax %ndv0 %feps
+%omn = OpFSub %float %f1 %ndv
+%omn5 = OpExtInst %float %glsl Pow %omn %f5
+%f0base = OpExtInst %float %glsl FMix %ff0dry %ff0wet %wetness
+%fdiff = OpFSub %float %f1 %f0base
+%fsch0 = OpFMul %float %fdiff %omn5
+%fres = OpFAdd %float %f0base %fsch0
+%sk0 = OpFMul %float %spow %fres
+%skysheen = OpVectorTimesScalar %v3 %zenith %sk0
+%sunsheen = OpVectorTimesScalar %v3 %sun_c %sk0
+%spec0 = OpFAdd %v3 %skysheen %sunsheen
+%spec = OpVectorTimesScalar %v3 %spec0 %f05
+%total = OpFAdd %v3 %diffuse %spec
+%out4 = OpCompositeConstruct %v4 %total %f1
+OpStore %out_color %out4
+OpStore %out_depth %selfz
+OpReturn
+OpFunctionEnd

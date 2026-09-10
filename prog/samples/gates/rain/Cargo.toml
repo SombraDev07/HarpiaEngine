@@ -1,0 +1,16 @@
+[package]
+name = "gate-rain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Fase 5: wet material, ripples, and screen-space rain streaks."
+
+[dependencies]
+anyhow.workspace = true
+harpia-app.workspace = true
+harpia-math.workspace = true
+harpia-memory.workspace = true
+harpia-render.workspace = true
+harpia-rhi.workspace = true
+tracing.workspace = true
