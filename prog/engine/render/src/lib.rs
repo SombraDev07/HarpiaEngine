@@ -1,6 +1,8 @@
 //! Deferred PBR helpers. No `vk::*`.
 
 mod atmosphere;
+#[cfg(test)]
+mod spvasm_layout;
 mod cloud_noise;
 mod csm;
 mod fog;
@@ -14,7 +16,7 @@ mod taa;
 
 pub use atmosphere::{
     aerial_desc, distance_to_top, multiscatter_desc, skyview_desc, transmittance_desc,
-    AtmosphereCb, AERIAL_SIZE, MULTISCATTER_SIZE, SKYVIEW_H, SKYVIEW_W, TRANSMITTANCE_H,
+    AtmosphereCb, AERIAL_DEPTH_KM, AERIAL_SIZE, MULTISCATTER_SIZE, SKYVIEW_H, SKYVIEW_W, TRANSMITTANCE_H,
     TRANSMITTANCE_W,
 };
 pub use cloud_noise::{

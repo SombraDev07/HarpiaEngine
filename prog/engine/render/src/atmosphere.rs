@@ -181,6 +181,7 @@ mod tests {
 
     #[test]
     fn cb_layout_matches_the_spvasm() {
+        use std::mem::offset_of;
         assert_eq!(std::mem::size_of::<AtmosphereCb>(), 240);
         assert_eq!(std::mem::offset_of!(AtmosphereCb, camera_pos), 64);
         assert_eq!(std::mem::offset_of!(AtmosphereCb, sun_dir), 80);
@@ -194,6 +195,35 @@ mod tests {
         assert_eq!(std::mem::offset_of!(AtmosphereCb, transmittance_lut), 208);
         assert_eq!(std::mem::offset_of!(AtmosphereCb, inv_extent), 224);
         assert!(std::mem::size_of::<AtmosphereCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
+
+        // Every shader that binds this block has to agree with the struct.
+        let base = offset_of!(AtmosphereCb, transmittance_lut) as u32;
+        let expected = [
+            (0, 0),
+            (1, 64),
+            (2, 80),
+            (3, 96),
+            (4, 112),
+            (5, 128),
+            (6, 144),
+            (7, 160),
+            (8, 176),
+            (9, 192),
+            (10, base),
+            (11, base + 4),
+            (12, base + 8),
+            (13, base + 12),
+            (14, offset_of!(AtmosphereCb, inv_extent) as u32),
+        ];
+        for shader in [
+            "prog/samples/gates/sky/shaders/transmittance.ps.spvasm",
+            "prog/samples/gates/sky/shaders/multiscatter.ps.spvasm",
+            "prog/samples/gates/sky/shaders/skyview.ps.spvasm",
+            "prog/samples/gates/sky/shaders/sky.ps.spvasm",
+            "prog/samples/gates/sky/shaders/blit.ps.spvasm",
+        ] {
+            crate::spvasm_layout::assert_prefix_matches(shader, "Atmos", &expected);
+        }
     }
 
     /// Straight up from the ground is exactly the atmosphere thickness; straight

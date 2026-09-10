@@ -286,6 +286,21 @@ geometria a tapar o sol.
 O sol da Sponza continua alto, que é o que a fase 4 validou. Baixá-lo daria feixes
 muito mais dramáticos pela arcada; fica como escolha de arte, não de motor.
 
+## Sessão 2026-09-10 (parte 7) — os testes de layout passaram a ler os shaders
+
+`fog::cb_layout_matches_the_spvasm` e companhia tinham o nome trocado: só
+comparavam os offsets do Rust com números escritos no mesmo ficheiro. Agora
+`spvasm_layout::assert_prefix_matches` lê o `.spvasm` e compara membro a membro.
+Quatro blocos (`Fog`, `Atmos`, `Cloud`, `Lighting`) contra **17 shaders**.
+
+Vale a pena porque um CB desalinhado **não falha validation** — o bloco tem o
+tamanho certo, a GPU lê os bytes errados, e sai uma imagem plausível e errada.
+Foi a classe de bug mais cara desta árvore e esta noite mexi em quatro layouts à
+mão.
+
+Testado a sério: com um `Offset` trocado de propósito num shader o teste falha e
+diz o ficheiro, o membro e os dois offsets.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.
@@ -295,8 +310,11 @@ Não mesh shaders, RT, FSR, editor. Não VSM.
 3. ~~Clouds: raymarch Nubis a meia resolução. Gate `clouds`.~~ **feito**
 4. ~~Reprojecção temporal das nuvens.~~ **feito** (D22)
 5. ~~Sombras volumétricas no fog (CSM no inject).~~ **feito** (D23)
-6. **Sombra das nuvens** nos mesmos froxels — falta só ler a transmitância das
-   nuvens onde o inject já lê o CSM.
+6. **Sombra das nuvens** nos mesmos froxels — falta ler a transmitância das nuvens
+   onde o inject já lê o CSM. **Mas** o sítio natural para isto é a fase 6: a
+   Sponza é interior e o `gate-clouds` não tem chão, portanto não há onde a sombra
+   cair. Mesma razão adia o céu Hillaire na Sponza (pelas aberturas vê-se quase
+   nada). Fazer com o terreno, não antes.
 7. ~~Fog default-on na Sponza.~~ **feito** (D25)
 8. Water: point-sample depth no SSR.
 9. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).

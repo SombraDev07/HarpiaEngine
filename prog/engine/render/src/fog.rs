@@ -136,6 +136,7 @@ mod tests {
 
     #[test]
     fn cb_layout_matches_the_spvasm() {
+        use std::mem::offset_of;
         assert_eq!(std::mem::size_of::<FogCb>(), 464);
         assert_eq!(std::mem::offset_of!(FogCb, camera_pos), 64);
         assert_eq!(std::mem::offset_of!(FogCb, sun_dir), 80);
@@ -153,6 +154,38 @@ mod tests {
         assert_eq!(std::mem::offset_of!(FogCb, splits), 192);
         assert_eq!(std::mem::offset_of!(FogCb, cascades), 208);
         assert!(std::mem::size_of::<FogCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
+
+        // And the shader has to agree, member for member. Asserting only the
+        // Rust offsets proves the struct did not move, not that it still matches
+        // what the GPU reads.
+        let expected = [
+            (0, 0),
+            (1, 64),
+            (2, 80),
+            (3, 96),
+            (4, 112),
+            (5, 128),
+            (6, 144),
+            (7, offset_of!(FogCb, scene_color) as u32),
+            (8, offset_of!(FogCb, scene_depth) as u32),
+            (9, offset_of!(FogCb, inv_extent) as u32),
+            (10, offset_of!(FogCb, shadow_idx) as u32),
+            (11, offset_of!(FogCb, cascade_count) as u32),
+            (12, offset_of!(FogCb, atlas_size) as u32),
+            (13, offset_of!(FogCb, shadow_strength) as u32),
+            (14, offset_of!(FogCb, splits) as u32),
+            (15, offset_of!(FogCb, cascades) as u32),
+            (16, offset_of!(FogCb, cascades) as u32 + 64),
+            (17, offset_of!(FogCb, cascades) as u32 + 128),
+            (18, offset_of!(FogCb, cascades) as u32 + 192),
+        ];
+        for shader in [
+            "prog/samples/gates/fog/shaders/inject.cs.spvasm",
+            "prog/samples/gates/fog/shaders/integrate.cs.spvasm",
+            "prog/samples/gates/fog/shaders/apply.ps.spvasm",
+        ] {
+            crate::spvasm_layout::assert_prefix_matches(shader, "Fog", &expected);
+        }
     }
 
     #[test]

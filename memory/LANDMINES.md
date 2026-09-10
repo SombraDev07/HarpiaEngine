@@ -222,4 +222,10 @@ output.**
 - Um `str.replace` de Python que não casa **não falha** — só não faz nada, e o
   resultado é um alvo de `--capture` que nunca aparece. Põe sempre `assert old in s`
   antes de reescrever um ficheiro.
+- Um CB desalinhado do shader **não falha validation**: o bloco continua do
+  tamanho certo, a GPU é que lê os bytes errados e sai uma imagem plausível e
+  errada. Os testes `*_layout_matches_the_spvasm` agora **lêem mesmo** o
+  `.spvasm` (`spvasm_layout::assert_prefix_matches`) e comparam membro a membro —
+  antes só comparavam os offsets do Rust com números escritos no mesmo ficheiro,
+  o que prova que o struct não mexeu, não que ainda casa com o shader.
 

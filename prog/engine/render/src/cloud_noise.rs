@@ -398,6 +398,7 @@ mod tests {
 
     #[test]
     fn cloud_cb_layout_matches_the_spvasm() {
+        use std::mem::offset_of;
         assert_eq!(std::mem::size_of::<CloudCb>(), 272);
         assert_eq!(std::mem::offset_of!(CloudCb, camera_pos), 64);
         assert_eq!(std::mem::offset_of!(CloudCb, sun_dir), 80);
@@ -412,6 +413,30 @@ mod tests {
         assert_eq!(std::mem::offset_of!(CloudCb, history_rt), 204);
         assert_eq!(std::mem::offset_of!(CloudCb, prev_view_proj), 208);
         assert!(std::mem::size_of::<CloudCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
+
+        let expected = [
+            (0, 0),
+            (1, 64),
+            (2, 80),
+            (3, 96),
+            (4, 112),
+            (5, 128),
+            (6, 144),
+            (7, 160),
+            (8, 176),
+            (9, offset_of!(CloudCb, inv_extent) as u32),
+            (10, offset_of!(CloudCb, cloud_rt) as u32),
+            (11, offset_of!(CloudCb, history_rt) as u32),
+            (12, offset_of!(CloudCb, prev_view_proj) as u32),
+        ];
+        for shader in [
+            "prog/samples/gates/clouds/shaders/clouds.ps.spvasm",
+            "prog/samples/gates/clouds/shaders/reproject.ps.spvasm",
+            "prog/samples/gates/clouds/shaders/composite.ps.spvasm",
+            "prog/samples/gates/clouds/shaders/blit.ps.spvasm",
+        ] {
+            crate::spvasm_layout::assert_prefix_matches(shader, "Cloud", &expected);
+        }
     }
 
     #[test]

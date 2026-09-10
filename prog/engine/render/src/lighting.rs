@@ -128,6 +128,7 @@ mod tests {
 
     #[test]
     fn push_is_128_and_cb_fits_ubo() {
+        use std::mem::offset_of;
         assert_eq!(std::mem::size_of::<PushConstants>(), 128);
         assert!(std::mem::size_of::<LightingCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
         assert_eq!(std::mem::size_of::<LightingCb>(), 560);
@@ -139,5 +140,52 @@ mod tests {
         assert_eq!(std::mem::offset_of!(LightingCb, shadow_idx), 240);
         assert_eq!(std::mem::offset_of!(LightingCb, splits), 256);
         assert_eq!(std::mem::offset_of!(LightingCb, cascades), 272);
+
+        // The widest block in the tree, read by five shaders. A member that
+        // drifts here does not fail validation -- the block is still the right
+        // size -- it just makes the GPU read the wrong bytes.
+        let g = offset_of!(LightingCb, gbuf0) as u32;
+        let casc = offset_of!(LightingCb, cascades) as u32;
+        let expected = [
+            (0, 0),
+            (1, 64),
+            (2, 80),
+            (3, 96),
+            (4, g),
+            (5, g + 4),
+            (6, g + 8),
+            (7, g + 12),
+            (8, g + 16),
+            (9, offset_of!(LightingCb, irradiance) as u32),
+            (10, offset_of!(LightingCb, prefiltered) as u32),
+            (11, offset_of!(LightingCb, brdf_lut) as u32),
+            (12, offset_of!(LightingCb, ibl_scale) as u32),
+            (13, offset_of!(LightingCb, ibl_max_mip) as u32),
+            (14, offset_of!(LightingCb, exposure) as u32),
+            (15, offset_of!(LightingCb, alpha_cutoff) as u32),
+            (16, offset_of!(LightingCb, inv_extent) as u32),
+            (17, offset_of!(LightingCb, _pad1) as u32),
+            (18, offset_of!(LightingCb, view) as u32),
+            (19, offset_of!(LightingCb, shadow_idx) as u32),
+            (20, offset_of!(LightingCb, atlas_size) as u32),
+            (21, offset_of!(LightingCb, cascade_count) as u32),
+            (22, offset_of!(LightingCb, _pad2) as u32),
+            (23, offset_of!(LightingCb, splits) as u32),
+            (24, casc),
+            (25, casc + 64),
+            (26, casc + 128),
+            (27, casc + 192),
+            (28, offset_of!(LightingCb, pcss) as u32),
+            (29, offset_of!(LightingCb, cascade_radius) as u32),
+        ];
+        for shader in [
+            "prog/samples/gates/csm/shaders/color.ps.spvasm",
+            "prog/samples/gates/csm/shaders/blit.ps.spvasm",
+            "prog/samples/sponza/shaders/color.ps.spvasm",
+            "prog/samples/sponza/shaders/shadow.ps.spvasm",
+            "prog/samples/sponza/shaders/blit.ps.spvasm",
+        ] {
+            crate::spvasm_layout::assert_prefix_matches(shader, "Lighting", &expected);
+        }
     }
 }
