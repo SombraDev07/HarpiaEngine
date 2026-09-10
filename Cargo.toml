@@ -13,6 +13,7 @@ members = [
     "prog/samples/gates/pbr-grid",
     "prog/samples/gates/csm",
     "prog/samples/gates/fog",
+    "prog/samples/gates/sky",
     "prog/samples/gates/taa",
     "prog/samples/sponza",
 ]

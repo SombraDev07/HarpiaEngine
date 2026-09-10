@@ -87,8 +87,35 @@ host, ele ganha sempre.
   91 SampleProjImplicit, 92 SampleProjExplicit, 95 Fetch, 96 Gather,
   97 DrefGather, 98 Read, 99 Write.
 - `Rgba16f` no `ImageFormat` é **2** (1 = Rgba32f, 3 = R32f, 4 = Rgba8).
+- `OpImageSampleDrefExplicitLod` **90**, `OpImageSampleProjImplicitLod` 91.
 - `prog/tools/dis_spv.py` desmonta um `.spv` quando o validador não ajuda. Foi
   assim que se confirmou que o stream estava bem formado e o problema era outro.
+
+## `OpSampledImage` fora do bloco que o consome — outra vez
+
+Já estava escrito na fase 4 («tem de ser consumido no mesmo bloco») e mordeu na
+mesma. No `sky.ps` o `OpSampledImage` da LUT de transmittance nascia no bloco de
+entrada e era usado dentro do loop do raymarch. spirv-val recusa, **com mensagem
+vazia**.
+
+Os shaders do PCSS faziam o mesmo e passavam — sorte, não regra. Já foram
+corrigidos (a saída é bit-a-bit igual). **Cria o `OpSampledImage` no bloco onde o
+amostras**, sempre.
+
+E dentro de um loop usa **LOD explícito** (`OpImageSampleExplicitLod` /
+`OpImageSampleDrefExplicitLod` com `Lod 0`): LOD implícito pede derivadas que não
+existem em fluxo de controlo não uniforme.
+
+## O assembler agora valida ids
+
+`assemble_spvasm.py` recusa um `%id` usado e nunca definido, e um `%id` definido
+duas vezes. Isto nasceu de uma hora perdida: um `blit.ps` gerado por regex ficou
+com `%ptr_cb = OpTypePointer Uniform %Fog` (o `%Fog ` com espaço foi substituído,
+o do fim da linha não). O módulo inválido era esse, e eu andei a bissectar **outro**
+shader contra uma baseline contaminada.
+
+Regra: **descobre qual módulo falha antes de bissectar.** Troca um shader por um
+trivial e conta os erros — o `vkCreateShaderModule` falha uma vez por módulo.
 
 ## `OpKill` com bloco de merge vazio é rejeitado
 

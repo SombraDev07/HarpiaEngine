@@ -1,0 +1,206 @@
+; Transmittance LUT (256x64), Hillaire 2020 / Bruneton parameterisation.
+; Each texel is exp(-optical depth) from a point at radius r, looking along mu,
+; out to the top of the atmosphere. Extinction is Rayleigh + Mie + ozone tent.
+;   H = sqrt(top^2 - bottom^2);  rho = H*v;  r = sqrt(rho^2 + bottom^2)
+;   d = (top - r) + u*(rho + H - (top - r));  mu = (H^2 - rho^2 - d^2)/(2*r*d)
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %Atmos Block
+OpMemberDecorate %Atmos 0 Offset 0
+OpMemberDecorate %Atmos 0 ColMajor
+OpMemberDecorate %Atmos 0 MatrixStride 16
+OpMemberDecorate %Atmos 1 Offset 64
+OpMemberDecorate %Atmos 2 Offset 80
+OpMemberDecorate %Atmos 3 Offset 96
+OpMemberDecorate %Atmos 4 Offset 112
+OpMemberDecorate %Atmos 5 Offset 128
+OpMemberDecorate %Atmos 6 Offset 144
+OpMemberDecorate %Atmos 7 Offset 160
+OpMemberDecorate %Atmos 8 Offset 176
+OpMemberDecorate %Atmos 9 Offset 192
+OpMemberDecorate %Atmos 10 Offset 208
+OpMemberDecorate %Atmos 11 Offset 212
+OpMemberDecorate %Atmos 12 Offset 216
+OpMemberDecorate %Atmos 13 Offset 220
+OpMemberDecorate %Atmos 14 Offset 224
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Atmos = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %uint %uint %uint %uint %v2
+%ptr_cb = OpTypePointer Uniform %Atmos
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv2 = OpTypePointer Uniform %v2
+%ptr_uv4 = OpTypePointer Uniform %v4
+
+%u0c = OpConstant %uint 0
+; loop bound is a constant: it pairs with TRANSMITTANCE_STEPS in atmosphere.rs
+%nstepsu = OpConstant %uint 40
+%u1c = OpConstant %uint 1
+%u4 = OpConstant %uint 4
+%u5 = OpConstant %uint 5
+%u6 = OpConstant %uint 6
+%u7 = OpConstant %uint 7
+%u8 = OpConstant %uint 8
+%u9 = OpConstant %uint 9
+%u14 = OpConstant %uint 14
+
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%f05 = OpConstant %float 0.5
+%f2 = OpConstant %float 2.0
+%fn1 = OpConstant %float -1.0
+%feps = OpConstant %float 0.000001
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u14
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%u = OpCompositeExtract %float %uv 0
+%v = OpCompositeExtract %float %uv 1
+
+%prad = OpAccessChain %ptr_uv4 %cb %u4
+%radii = OpLoad %v4 %prad
+%bottom = OpCompositeExtract %float %radii 0
+%top = OpCompositeExtract %float %radii 1
+
+; H = sqrt(top^2 - bottom^2)
+%top2 = OpFMul %float %top %top
+%bot2 = OpFMul %float %bottom %bottom
+%hh = OpFSub %float %top2 %bot2
+%H = OpExtInst %float %glsl Sqrt %hh
+%rho = OpFMul %float %H %v
+%rho2 = OpFMul %float %rho %rho
+%rr0 = OpFAdd %float %rho2 %bot2
+%r = OpExtInst %float %glsl Sqrt %rr0
+%dmin = OpFSub %float %top %r
+%dmax = OpFAdd %float %rho %H
+%dspan = OpFSub %float %dmax %dmin
+%dsp = OpFMul %float %u %dspan
+%d = OpFAdd %float %dmin %dsp
+%dc = OpExtInst %float %glsl FMax %d %feps
+%d2 = OpFMul %float %dc %dc
+%mnum0 = OpFSub %float %hh %rho2
+%mnum = OpFSub %float %mnum0 %d2
+%mden0 = OpFMul %float %f2 %r
+%mden = OpFMul %float %mden0 %dc
+%mu0 = OpFDiv %float %mnum %mden
+%mu = OpExtInst %float %glsl FClamp %mu0 %fn1 %f1
+
+; distance to the top of the atmosphere from (r, mu)
+%mu2 = OpFMul %float %mu %mu
+%m2m1 = OpFSub %float %mu2 %f1
+%rr = OpFMul %float %r %r
+%disc0 = OpFMul %float %rr %m2m1
+%disc1 = OpFAdd %float %disc0 %top2
+%disc = OpExtInst %float %glsl FMax %disc1 %f0
+%sq = OpExtInst %float %glsl Sqrt %disc
+%rmu = OpFMul %float %r %mu
+%nrmu = OpFNegate %float %rmu
+%tt0 = OpFAdd %float %nrmu %sq
+%ttop = OpExtInst %float %glsl FMax %tt0 %f0
+
+%psteps = OpAccessChain %ptr_uv4 %cb %u9
+%stepsv = OpLoad %v4 %psteps
+%nsteps = OpCompositeExtract %float %stepsv 0
+%dt = OpFDiv %float %ttop %nsteps
+
+
+%pray = OpAccessChain %ptr_uv4 %cb %u5
+%rayv = OpLoad %v4 %pray
+%ray_rgb = OpVectorShuffle %v3 %rayv %rayv 0 1 2
+%ray_h = OpCompositeExtract %float %rayv 3
+%pmie = OpAccessChain %ptr_uv4 %cb %u6
+%miev = OpLoad %v4 %pmie
+%mie_s = OpCompositeExtract %float %miev 0
+%mie_a = OpCompositeExtract %float %miev 1
+%mie_e = OpFAdd %float %mie_s %mie_a
+%mie_h = OpCompositeExtract %float %miev 2
+%poz = OpAccessChain %ptr_uv4 %cb %u7
+%ozv = OpLoad %v4 %poz
+%oz_rgb = OpVectorShuffle %v3 %ozv %ozv 0 1 2
+%pozt = OpAccessChain %ptr_uv4 %cb %u8
+%oztv = OpLoad %v4 %pozt
+%oz_c = OpCompositeExtract %float %oztv 0
+%oz_w = OpCompositeExtract %float %oztv 1
+
+%v3zero = OpCompositeConstruct %v3 %f0 %f0 %f0
+OpBranch %head
+
+%head = OpLabel
+%i = OpPhi %uint %u0c %entry %inext %cont
+%tau = OpPhi %v3 %v3zero %entry %taun %cont
+%more = OpULessThan %bool %i %nstepsu
+OpLoopMerge %merge %cont None
+OpBranchConditional %more %body %merge
+
+%body = OpLabel
+%fi = OpConvertUToF %float %i
+%fi5 = OpFAdd %float %fi %f05
+%t = OpFMul %float %fi5 %dt
+; r_i = sqrt(t^2 + 2*r*mu*t + r^2)
+%t2 = OpFMul %float %t %t
+%two_rmu = OpFMul %float %f2 %rmu
+%cross = OpFMul %float %two_rmu %t
+%ri0 = OpFAdd %float %t2 %cross
+%ri1 = OpFAdd %float %ri0 %rr
+%ri = OpExtInst %float %glsl Sqrt %ri1
+%h = OpFSub %float %ri %bottom
+%hc = OpExtInst %float %glsl FMax %h %f0
+; densities
+%rex0 = OpFDiv %float %hc %ray_h
+%rex = OpFNegate %float %rex0
+%dens_r = OpExtInst %float %glsl Exp %rex
+%mex0 = OpFDiv %float %hc %mie_h
+%mex = OpFNegate %float %mex0
+%dens_m = OpExtInst %float %glsl Exp %mex
+%odh = OpFSub %float %hc %oz_c
+%odha = OpExtInst %float %glsl FAbs %odh
+%odn = OpFDiv %float %odha %oz_w
+%od1 = OpFSub %float %f1 %odn
+%dens_o = OpExtInst %float %glsl FMax %od1 %f0
+; extinction
+%ex_r = OpVectorTimesScalar %v3 %ray_rgb %dens_r
+%mie_ext = OpFMul %float %mie_e %dens_m
+%ex_m = OpCompositeConstruct %v3 %mie_ext %mie_ext %mie_ext
+%ex_o = OpVectorTimesScalar %v3 %oz_rgb %dens_o
+%ex0 = OpFAdd %v3 %ex_r %ex_m
+%ex = OpFAdd %v3 %ex0 %ex_o
+%dtau = OpVectorTimesScalar %v3 %ex %dt
+%taun = OpFAdd %v3 %tau %dtau
+OpBranch %cont
+
+%cont = OpLabel
+%inext = OpIAdd %uint %i %u1c
+OpBranch %head
+
+%merge = OpLabel
+%ntau = OpFNegate %v3 %tau
+%trans = OpExtInst %v3 %glsl Exp %ntau
+%out4 = OpCompositeConstruct %v4 %trans %f1
+OpStore %out_color %out4
+OpReturn
+OpFunctionEnd

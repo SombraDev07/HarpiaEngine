@@ -27,6 +27,7 @@ cargo run -p gate-pbr-grid -- --frames 90
 cargo run -p gate-csm
 cargo run -p gate-taa
 cargo run -p gate-fog
+cargo run -p gate-sky
 cargo run -p sponza -- --frames 90
 # assets: python3 prog/tools/fetch_sponza.py  (glTF gitignored)
 # pixels, não screenshots:
@@ -135,12 +136,29 @@ validador está ligado e há `prog/tools/dis_spv.py`. Ver `LANDMINES.md`.
 O que a barra manda **não** fazer e não foi feito: VSM, ESM, contact shadows,
 toroidal atlas, octa point shadows.
 
+## Sessão 2026-09-10 — atmosfera (parcial) antes das nuvens
+
+`gate-sky` verde: 16 frames, validation 0. LUT de transmittance (256×64,
+parameterização de Bruneton) + raymarch por pixel com Rayleigh + Mie + ozono,
+visibilidade do sol pela LUT, integração que conserva energia, ACES + sRGB. O sol
+desce ao longo dos frames — as LUTs são refeitas todos os frames (D19).
+
+Verificado na captura: azul no zénite, quente no horizonte, glow de Mie à volta do
+sol. **Single scattering apenas.** Falta a LUT de multiscattering e a sky-view LUT.
+
+Bruneton é o **céu**, não as nuvens — ver D19. As nuvens continuam Schneider.
+
+Uma hora perdida por bissectar o shader errado: o módulo inválido era um `blit.ps`
+gerado por regex, não o que eu estava a cortar. O assembler passou a validar ids e
+`LANDMINES.md` tem a regra: descobre qual módulo falha **antes** de bissectar.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.
 
 1. ~~Fog: froxels, 3D GENERAL. Gate `fog`.~~ **feito**
-2. Clouds (sem driveRain). Gate `clouds`.  ← próximo
+2. Céu: multiscattering LUT + sky-view LUT (fecha o Hillaire). Gate `sky`.  ← próximo
+3. Clouds (sem driveRain). Gate `clouds`.
 3. Water: point-sample depth no SSR.
 4. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).
 5. Default-on na Sponza (`--frames` curto) ou o pass não entra. Marcar fase 5 `[x]` no roadmap §15 **neste mesmo PR**.

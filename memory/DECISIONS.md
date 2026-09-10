@@ -185,3 +185,24 @@ tudo feito:
 Fora da barra, por decisão dela: VSM, ESM, contact shadows, toroidal, octa points
 (não há point lights). O bloco de sombra é partilhado à letra entre `gate-csm` e
 a Sponza — se um mudar, o outro muda.
+
+## D19 — Atmosfera é Hillaire 2020, não Bruneton
+
+Desvio consciente ao roadmap §5 («Bruneton LUTs baked na CPU no init»).
+
+- Mesma física, contabilidade diferente: LUTs pequenas refeitas **todos os frames**
+  em vez de uma tabela 4D grande cozida no init. A hora do dia fica livre — que é
+  o que uma engine com clima precisa. O `gate-sky` faz o sol descer ao longo dos
+  frames para o provar.
+- Encaixa no que já existe: a aerial perspective do Hillaire é um volume de
+  froxels 32³, exactamente o recurso que o fog trouxe (D16).
+- **Bruneton não é nuvens.** As nuvens continuam Schneider/Nubis como o §9 diz —
+  Perlin-Worley 128³ + Worley 32³, ray march, meia resolução, reprojecção
+  temporal. São dois sistemas.
+- LUTs 2D saem por **passes fullscreen**, não compute: são 2D, um output por
+  texel, sem partilha de grupo. Só a aerial perspective (3D) precisa de UAV.
+- Estado: LUT de transmittance + raymarch por pixel com **single scattering**.
+  Falta a LUT de multiscattering (o céu está mais escuro do que devia no azul
+  profundo e ao crepúsculo) e a sky-view LUT, que é a optimização que troca o
+  march por um fetch. Não chamar a isto «Hillaire completo» até essas duas
+  entrarem.

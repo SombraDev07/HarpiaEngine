@@ -1,5 +1,6 @@
 //! Deferred PBR helpers. No `vk::*`.
 
+mod atmosphere;
 mod csm;
 mod fog;
 mod gltf_scene;
@@ -10,6 +11,11 @@ mod mesh;
 mod packing;
 mod taa;
 
+pub use atmosphere::{
+    aerial_desc, distance_to_top, multiscatter_desc, skyview_desc, transmittance_desc,
+    AtmosphereCb, AERIAL_SIZE, MULTISCATTER_SIZE, SKYVIEW_H, SKYVIEW_W, TRANSMITTANCE_H,
+    TRANSMITTANCE_W,
+};
 pub use csm::{compute as compute_csm, Camera, Csm, CASCADE_COUNT, DEFAULT_ATLAS_SIZE};
 pub use fog::{
     froxel_desc, halton2, inject_dispatch, integrate_dispatch, FogCb, FROXEL_D, FROXEL_FORMAT,

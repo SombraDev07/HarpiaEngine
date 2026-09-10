@@ -291,8 +291,6 @@ OpBranch %got_m
 %ia = OpLoad %img %pa
 %sclamp = OpLoad %samp_ty %samp_c
 %scmp = OpLoad %samp_ty %samp_cmp
-%sm_read = OpSampledImage %sampled %ia %sclamp
-%sm_cmp = OpSampledImage %sampled %ia %scmp
 %search_uv = OpFMul %float %search_tx %texel
 OpBranch %bs_head
 
@@ -320,6 +318,7 @@ OpBranchConditional %bmore %bs_body %bs_merge
 %boff = OpCompositeConstruct %v2 %box %boy
 %buv0 = OpFAdd %v2 %base %boff
 %buv = OpExtInst %v2 %glsl FClamp %buv0 %tilemin %tilemax
+%sm_read = OpSampledImage %sampled %ia %sclamp
 %bcol = OpImageSampleExplicitLod %v4 %sm_read %buv Lod %f0
 %bd = OpCompositeExtract %float %bcol 0
 %isblk = OpFOrdLessThan %bool %bd %zref
@@ -375,6 +374,7 @@ OpBranchConditional %pmore %pcf_body %pcf_merge
 %poff = OpCompositeConstruct %v2 %pox %poy
 %puv0 = OpFAdd %v2 %base %poff
 %puv = OpExtInst %v2 %glsl FClamp %puv0 %tilemin %tilemax
+%sm_cmp = OpSampledImage %sampled %ia %scmp
 %ptap = OpImageSampleDrefExplicitLod %float %sm_cmp %puv %zref Lod %f0
 %plit_n = OpFAdd %float %plit %ptap
 OpBranch %pcf_cont

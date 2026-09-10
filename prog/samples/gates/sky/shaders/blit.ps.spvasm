@@ -1,0 +1,89 @@
+; Copy the composite RT (AtmosphereCb.transmittance_lut, re-pointed for the blit)
+; to the swapchain. sky.ps already tonemapped and encoded, so this is a copy.
+OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %frag %out_color %cb %heap %samp_c
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %frag BuiltIn FragCoord
+OpDecorate %out_color Location 0
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %isc NonUniform
+OpDecorate %Atmos Block
+OpMemberDecorate %Atmos 0 Offset 0
+OpMemberDecorate %Atmos 0 ColMajor
+OpMemberDecorate %Atmos 0 MatrixStride 16
+OpMemberDecorate %Atmos 1 Offset 64
+OpMemberDecorate %Atmos 2 Offset 80
+OpMemberDecorate %Atmos 3 Offset 96
+OpMemberDecorate %Atmos 4 Offset 112
+OpMemberDecorate %Atmos 5 Offset 128
+OpMemberDecorate %Atmos 6 Offset 144
+OpMemberDecorate %Atmos 7 Offset 160
+OpMemberDecorate %Atmos 8 Offset 176
+OpMemberDecorate %Atmos 9 Offset 192
+OpMemberDecorate %Atmos 10 Offset 208
+OpMemberDecorate %Atmos 11 Offset 212
+OpMemberDecorate %Atmos 12 Offset 216
+OpMemberDecorate %Atmos 13 Offset 220
+OpMemberDecorate %Atmos 14 Offset 224
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_out_v4 = OpTypePointer Output %v4
+%frag = OpVariable %ptr_in_v4 Input
+%out_color = OpVariable %ptr_out_v4 Output
+
+%Atmos = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %uint %uint %uint %uint %v2
+%ptr_cb = OpTypePointer Uniform %Atmos
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uu = OpTypePointer Uniform %uint
+%ptr_uv2 = OpTypePointer Uniform %v2
+
+%u10 = OpConstant %uint 10
+%u14 = OpConstant %uint 14
+
+%img2 = OpTypeImage %float 2D 0 0 0 1 Unknown
+%arr2 = OpTypeRuntimeArray %img2
+%ptr_arr2 = OpTypePointer UniformConstant %arr2
+%heap = OpVariable %ptr_arr2 UniformConstant
+%ptr_img2 = OpTypePointer UniformConstant %img2
+%sampled2 = OpTypeSampledImage %img2
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%fc = OpLoad %v4 %frag
+%pinv = OpAccessChain %ptr_uv2 %cb %u14
+%invext = OpLoad %v2 %pinv
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%uv = OpFMul %v2 %fcxy %invext
+%pisc = OpAccessChain %ptr_uu %cb %u10
+%isc = OpLoad %uint %pisc
+%pa = OpAccessChain %ptr_img2 %heap %isc
+%ia = OpLoad %img2 %pa
+%s = OpLoad %samp_ty %samp_c
+%sm = OpSampledImage %sampled2 %ia %s
+%col = OpImageSampleImplicitLod %v4 %sm %uv
+OpStore %out_color %col
+OpReturn
+OpFunctionEnd

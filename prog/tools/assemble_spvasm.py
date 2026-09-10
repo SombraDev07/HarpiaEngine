@@ -230,6 +230,21 @@ def assemble(text: str) -> bytes:
                 intern(a[1:])
         lines.append((result, op, args))
 
+    # Cheap module checks. spirv-val catches these too, but its message is
+    # sometimes empty, and by then you are debugging a GPU instead of a text file.
+    defined: set[str] = set()
+    for result, op, _ in lines:
+        if not result:
+            continue
+        name = result.lstrip("%")
+        if name in defined:
+            raise ValueError(f"id %{name} is defined twice (second time by {op})")
+        defined.add(name)
+    for result, op, args in lines:
+        for a in args:
+            if a.startswith("%") and a[1:] not in defined:
+                raise ValueError(f"{op} uses %{a[1:]}, which nothing defines")
+
     bound = max(ids.values(), default=0) + 1
     words = [0x07230203, 0x00010500, 0, bound, 0]
     float_types = {result.lstrip("%") for result, op, _ in lines if op == "OpTypeFloat" and result}
