@@ -614,6 +614,8 @@ Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
 
 ### Fase 6 — Terreno + vegetação + mundo — [ ]
 
+- [x] ECS decidido: **`bevy_ecs`**, pelo `gate-ecs` de 1e6 instâncias (D38).
+
 - [ ] Só `ClipmapTerrain` SV_VertexID.
 - [ ] HeightQuery GPU vs CPU.
 - [ ] Veg cull + indirect (buffers soltos, sem arrays HLSL).

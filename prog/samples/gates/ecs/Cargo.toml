@@ -1,0 +1,14 @@
+[package]
+name = "gate-ecs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Fase 6: 1e6 instâncias em bevy_ecs contra hecs. D20 exige medir."
+
+[dependencies]
+anyhow.workspace = true
+harpia-math.workspace = true
+harpia-memory.workspace = true
+bevy_ecs = "0.19"
+hecs = "0.11"

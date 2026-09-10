@@ -34,10 +34,10 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 - Repo GitHub: `https://github.com/SombraDev07/HarpiaEngine` (`main`). `gh` autenticado; SSH host key neste host falhou — push por HTTPS.
 - Sem `git config user.*` no repo: commits com `GIT_AUTHOR_*` / `GIT_COMMITTER_*` da conta GitHub.
 - **DXC não está no PATH.** Shaders: HLSL como spec + `.spvasm` + `prog/tools/assemble_spvasm.py` (ou `spirv-as` se existir).
-  **Mas isto está desactualizado como justificação:** `glslang-tools` 15.1.0 e
-  `spirv-tools` 2025.1 estão no apt deste host, por instalar. Ver
-  `docs/AAA-Gap-Analysis.md` §3.1 — escrever SPIR-V à mão é a maior dívida do
-  projecto e resolve-se com um comando.
+  **Corrigido (D35): o toolchain está instalado desde Maio/Junho.** `spirv-as`
+  assembla e valida os 54 shaders, o build usa-o, e `spirv-val` corre no build.
+  Shaders novos escrevem-se em **GLSL** (`harpia-shader-build` compila-os); o
+  assembler em Python é fallback com aviso.
 - Validation: JSON em `/usr/share/vulkan/explicit_layer.d` neste host. `harpia-rhi` ainda procura fallbacks (ver LANDMINES).
 - Doutrina canónica em `docs/`. Cópias `Rust-Rewrite-*.md` na raiz estão no `.gitignore`.
 

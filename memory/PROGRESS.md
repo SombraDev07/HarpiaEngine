@@ -407,12 +407,35 @@ Lição no LANDMINES: corre os testes antes de ir depurar a imagem.
 
 51 testes; 11 samples Vulkan a 32 frames com validation 0; 10 gates no Null.
 
+## Sessão 2026-09-10 (parte 12) — fase 5.5 e o ECS decidido
+
+**O toolchain sempre esteve cá.** `glslang-tools` 15.1.0 e `spirv-tools` 2025.1
+estavam instalados desde Maio/Junho; a minha verificação inicial (`command -v`)
+deu `NAO` para tudo e escrevi na revisão que faltavam. Falso. Pior: o `spirv-as`
+real assembla e valida os 54 shaders, e o `build.rs` já o preferia — o assembler
+em Python era um fallback que nunca precisou de existir neste host.
+
+`spirv-val` no build apanhou logo um bug que o runtime deixava passar: um
+`OpSampledImage` consumido noutro bloco no `water.ps`. Imagem bit-idêntica depois
+da correcção.
+
+Os 11 `build.rs` deram lugar a `harpia-shader-build` (aceita `.spvasm` e `.glsl`,
+valida sempre). O `blit.ps` da chuva é o primeiro em GLSL, **bit-idêntico**.
+
+**A engine passou a saber quanto custa.** `--vsync 0` e `--stats` com timestamps.
+Sponza: **1.569 ms de GPU**, não os 16.4 ms que o vsync mostrava. Cascatas 0.433 ·
+cena 0.770 · froxels 0.110 · rain map 0.082 · chuva 0.082 · fog apply 0.052.
+
+**ECS decidido: `bevy_ecs`** (D38), pelo `gate-ecs` de 1e6 entidades. Ganha no
+`iterate` (o caso de todos os frames) por 15–22%; o `hecs` ganha no spawn e no
+churn, que acontecem muito menos. Fecha a D20.
+
 ## Fase 6 — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor.
 
-1. **Decidir o ECS** com um gate de 1e6 instâncias a medir `bevy_ecs` contra
-   `hecs` (D28 tem os números de hoje e a recomendação; a D20 exige o gate).
+1. ~~Decidir o ECS.~~ **feito: `bevy_ecs`** (D38, `gate-ecs`). Falta **usá-lo**:
+   a Sponza ainda constrói a cena à mão no `frame()`.
 2. **Física por clarificar** — «jolt ou box3d»: `box3d` não existe. Adiado por
    decisão tua.
 3. Terreno: um clipmap. Depois `heightquery`, vegetação, instâncias.

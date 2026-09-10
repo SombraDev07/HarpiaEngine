@@ -584,3 +584,29 @@ mesmo: os literais de `DeviceDesc` nos `#[cfg(test)]` do `harpia-rhi` ficaram se
 o campo `vsync` novo e passaram despercebidos. Um check de verificação tem de
 falhar quando **não há** resultado, não só quando o resultado é mau.
 
+## D38 — ECS decidido: **`bevy_ecs`**, e com números (fecha a D20)
+
+`gate-ecs`, 1e6 entidades, release, três corridas estáveis:
+
+| | `bevy_ecs` | `hecs` | rácio |
+|---|---|---|---|
+| spawn | 58–72 ms | 29–31 ms | **hecs 2.0–2.4× mais rápido** |
+| **iterate** (por frame) | 0.88–1.39 ms | 1.10–1.68 ms | **bevy 15–22% mais rápido** |
+| fragmented (query esparsa) | 0.08–0.12 ms | 0.12 ms | bevy 6–32% mais rápido |
+| churn (despawn+spawn) | 9.3–11.3 ms | 7.4–8.8 ms | hecs 1.25–1.29× mais rápido |
+
+Os checksums dos dois mundos batem (4.453e8), portanto fizeram a mesma
+aritmética — sem isso a comparação era entre dois programas diferentes.
+
+**Escolha: `bevy_ecs`.** O `iterate` é o caso quente — acontece todos os frames,
+e é lá que ganha. O `hecs` ganha na construção e no churn, que acontecem muito
+menos: 58 ms para 1e6 são 58 ns por entidade, portanto um chunk de streaming de
+10 k entidades custa 0.6 ms, o que não é um problema.
+
+Somando ao que a D28 já tinha: 1.84 M downloads recentes, actualizado em Ago 2026,
+e **sem `wgpu` nem `winit`** nas dependências (confirmado outra vez com
+`cargo tree`: zero ocorrências). A D0 mantém-se.
+
+`hecs` fica como plano B documentado se as 18 dependências transitivas vierem a
+incomodar, ou se o perfil mudar para um mundo de churn muito alto.
+

@@ -14,6 +14,7 @@ members = [
     "prog/samples/gates/pbr-grid",
     "prog/samples/gates/clouds",
     "prog/samples/gates/csm",
+    "prog/samples/gates/ecs",
     "prog/samples/gates/fog",
     "prog/samples/gates/sky",
     "prog/samples/gates/taa",
