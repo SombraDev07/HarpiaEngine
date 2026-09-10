@@ -12,6 +12,9 @@ fn main() {
         ("water.ps.spvasm", "water.ps.spv"),
         ("sky.ps.spvasm", "sky.ps.spv"),
         ("tonemap.ps.spvasm", "tonemap.ps.spv"),
+        ("opaque.vs.spvasm", "opaque.vs.spv"),
+        ("opaque.ps.spvasm", "opaque.ps.spv"),
+        ("copy.ps.spvasm", "copy.ps.spv"),
         // One fullscreen VS for the whole tree; a copy here would only drift.
         ("../../fog/shaders/fullscreen.vs.spvasm", "fullscreen.vs.spv"),
     ] {

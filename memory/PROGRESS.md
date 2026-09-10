@@ -356,6 +356,28 @@ mantido** — o gate de 1e6 instâncias da D20 é a única forma de decidir.
 
 Decisão fica em aberto até à fase 6, como a D20 manda. Física continua adiada.
 
+## Sessão 2026-09-10 (parte 10) — SSR e espuma na água
+
+`gate-water` fechado: 32 frames, validation 0. Passou a ter rochas (o SSR precisa
+de algo para encontrar — água a reflectir só céu não prova nada), um passe opaco
+que escreve cor e view depth, e a água num segundo alvo HDR porque **amostra o que
+reflecte e não pode estar a escrever para lá**.
+
+O erro que custou: **espessura fixa no SSR só apanha silhuetas.** Os primeiros
+reflexos saíram como anéis ocos. Com passo de 3.2 unidades e janela de 0.9, o
+interior da rocha está muito mais perto do que o raio nesse passo. A janela tem de
+cobrir uma passada inteira e crescer com a distância.
+
+E uma descoberta ao afinar: **a espuma de crista era código morto**. Com `Q=0.62`,
+`Σ Q·k·A ≈ 0.22`, o termo de Jacobiano nunca sai de `[0.78, 1.22]`, e o limiar
+estava em 0.38 — nunca disparava. Estas ondas não rebentam. Está documentado em
+D29 que o que se mede agora é «quão perto de dobrar», com ganho: escolha de arte
+assumida, não física.
+
+Medido: ligar o SSR muda **3.7%** dos pixels em mais de 8/255 (máx 157). E os
+outros gates continuam determinísticos — 18 capturas bit-identical, as 3 da Sponza
+são as mesmas 12 pixels de limiar de sombra já explicadas na parte 9.
+
 ## Próximo (fase 5) — o que fazer, em ordem
 
 Não mesh shaders, RT, FSR, editor. Não VSM.
@@ -371,8 +393,7 @@ Não mesh shaders, RT, FSR, editor. Não VSM.
    cair. Mesma razão adia o céu Hillaire na Sponza (pelas aberturas vê-se quase
    nada). Fazer com o terreno, não antes.
 7. ~~Fog default-on na Sponza.~~ **feito** (D25)
-8. Water: ~~Gerstner + Fresnel + absorção~~ **feito** (D26). Falta **SSR**
-   (point-sample do depth) e espuma nas cristas.
+8. ~~Water: Gerstner, Fresnel, absorção, SSR e espuma.~~ **feito** (D26, D29)
 9. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).
 10. Marcar fase 5 `[x]` no roadmap §15 **no mesmo PR** que fechar o último gate.
 

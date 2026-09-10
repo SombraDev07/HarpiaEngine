@@ -1,9 +1,10 @@
 //! Water surface (roadmap §5 / fase 5).
 //!
-//! Gerstner waves on a tessellated grid, Fresnel against a sky reflection, and a
-//! depth-based body colour. No SSR yet — that needs the scene depth and is the
-//! next slice — so the reflection is the analytic sky, which is what a Fresnel
-//! term is mostly showing at grazing angles anyway.
+//! Gerstner waves on a tessellated grid, Fresnel between a screen-space
+//! reflection and the water body, and foam where the wave folds or the bottom
+//! comes close. The SSR falls back to the analytic sky when the march leaves the
+//! screen, which at grazing angles is most of the time — and is also what a real
+//! surface reflects there.
 
 use harpia_math::{Mat4, Vec2, Vec4};
 
@@ -43,9 +44,15 @@ pub struct WaterCb {
     /// Sky radiance at the horizon, rgb. `w` = seabed depth in world units.
     pub sky_horizon: Vec4,
     pub inv_extent: Vec2,
-    /// Bindless index of the HDR target, for the tonemap pass.
-    pub hdr: u32,
-    pub _pad: u32,
+    /// Bindless index of the HDR colour the water reflects (and the tonemap reads).
+    pub scene_color: u32,
+    /// Bindless index of the R32F view depth behind the water. 0 = no SSR.
+    pub scene_depth: u32,
+    /// SSR march steps, thickness in world units, max distance, foam amount.
+    pub ssr: Vec4,
+    /// The forward matrix. SSR projects each marched point back to the screen,
+    /// which `inv_view_proj` cannot do.
+    pub view_proj: Mat4,
 }
 
 impl Default for WaterCb {
@@ -67,8 +74,12 @@ impl Default for WaterCb {
             sky_zenith: Vec4::new(0.10, 0.20, 0.42, 0.0),
             sky_horizon: Vec4::new(0.52, 0.62, 0.78, 6.0),
             inv_extent: Vec2::ONE,
-            hdr: 0,
-            _pad: 0,
+            scene_color: 0,
+            scene_depth: 0,
+            // 28 steps over 90 units: a coarse march is fine because water is
+            // rough enough that a reflection lands on a wave face, not a mirror.
+            ssr: Vec4::new(28.0, 0.9, 90.0, 0.55),
+            view_proj: Mat4::IDENTITY,
         }
     }
 }
@@ -91,7 +102,7 @@ mod tests {
     #[test]
     fn cb_layout_matches_the_spvasm() {
         use std::mem::offset_of;
-        assert_eq!(std::mem::size_of::<WaterCb>(), 272);
+        assert_eq!(std::mem::size_of::<WaterCb>(), 352);
         assert!(std::mem::size_of::<WaterCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
 
         let expected = [
@@ -109,13 +120,18 @@ mod tests {
             (11, offset_of!(WaterCb, sky_zenith) as u32),
             (12, offset_of!(WaterCb, sky_horizon) as u32),
             (13, offset_of!(WaterCb, inv_extent) as u32),
-            (14, offset_of!(WaterCb, hdr) as u32),
+            (14, offset_of!(WaterCb, scene_color) as u32),
+            (15, offset_of!(WaterCb, scene_depth) as u32),
+            (16, offset_of!(WaterCb, ssr) as u32),
+            (17, offset_of!(WaterCb, view_proj) as u32),
         ];
         for shader in [
             "prog/samples/gates/water/shaders/water.vs.spvasm",
             "prog/samples/gates/water/shaders/water.ps.spvasm",
             "prog/samples/gates/water/shaders/sky.ps.spvasm",
             "prog/samples/gates/water/shaders/tonemap.ps.spvasm",
+            "prog/samples/gates/water/shaders/opaque.ps.spvasm",
+            "prog/samples/gates/water/shaders/copy.ps.spvasm",
         ] {
             crate::spvasm_layout::assert_prefix_matches(shader, "Water", &expected);
         }

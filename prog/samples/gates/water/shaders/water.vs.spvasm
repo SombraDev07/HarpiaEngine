@@ -9,13 +9,17 @@
 OpCapability Shader
 %glsl = OpExtInstImport "GLSL.std.450"
 OpMemoryModel Logical GLSL450
-OpEntryPoint Vertex %VSMain "VSMain" %in_pos %in_nrm %position %v_world %v_nrm %cb %pc
+OpEntryPoint Vertex %VSMain "VSMain" %in_pos %in_nrm %position %v_world %v_nrm %v_fold %v_z %cb %pc
 OpName %VSMain "VSMain"
 OpDecorate %in_pos Location 0
 OpDecorate %in_nrm Location 1
 OpDecorate %position BuiltIn Position
 OpDecorate %v_world Location 0
 OpDecorate %v_nrm Location 1
+; The Gerstner Jacobian term: it falls towards 0 exactly where a crest folds
+; over itself, which is where real water throws foam.
+OpDecorate %v_fold Location 2
+OpDecorate %v_z Location 3
 OpDecorate %cb DescriptorSet 0
 OpDecorate %cb Binding 0
 OpDecorate %Push Block
@@ -61,6 +65,9 @@ OpMemberDecorate %Water 14 Offset 264
 %position = OpVariable %ptr_out_v4 Output
 %v_world = OpVariable %ptr_out_v3 Output
 %v_nrm = OpVariable %ptr_out_v3 Output
+%ptr_out_f = OpTypePointer Output %float
+%v_fold = OpVariable %ptr_out_f Output
+%v_z = OpVariable %ptr_out_f Output
 
 %Water = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint
 %ptr_cb = OpTypePointer Uniform %Water
@@ -277,8 +284,11 @@ OpMemberDecorate %Water 14 Offset 264
 %p_vp = OpAccessChain %ptr_pmat %pc %u0
 %vp = OpLoad %mat4 %p_vp
 %clip = OpMatrixTimesVector %v4 %vp %world4
+%clipw = OpCompositeExtract %float %clip 3
 OpStore %position %clip
 OpStore %v_world %world
 OpStore %v_nrm %nrm
+OpStore %v_fold %nny3
+OpStore %v_z %clipw
 OpReturn
 OpFunctionEnd

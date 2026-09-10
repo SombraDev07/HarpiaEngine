@@ -233,4 +233,13 @@ output.**
   `dt` é fixo e o `Input` fica vazio quando `--frames N` está ligado (D27). Se
   acrescentares estado que evolui no tempo, verifica-o contra capturas de
   referência antes e depois.
+- **SSR com espessura fixa só apanha silhuetas.** Se os reflexos saírem como
+  contornos ocos, é isso: a janela de profundidade tem de cobrir uma passada
+  inteira e crescer com a distância.
+- Duas vezes nesta sessão apareceu **um** erro de validation
+  (`vkCreateShaderModule`, spirv-val) logo a seguir a editar um shader, e não
+  reproduziu em 9 corridas seguintes (incluindo reconstruções forçadas, com o
+  `.spv` correcto confirmado dentro do binário). **Não sei a causa.** Regra:
+  volta a correr antes de acreditar num falhanço isolado logo após editar um
+  shader — mas **nunca** o descartes sem repetir.
 

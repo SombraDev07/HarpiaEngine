@@ -1,0 +1,110 @@
+; Lambert sun plus a sky ambient, linear HDR, with the positive view depth on the
+; second target. The water's SSR marches against that depth.
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %PSMain "PSMain" %in_world %in_nrm %in_z %out_color %out_depth %cb
+OpExecutionMode %PSMain OriginUpperLeft
+OpName %PSMain "PSMain"
+OpDecorate %in_world Location 0
+OpDecorate %in_nrm Location 1
+OpDecorate %in_z Location 2
+OpDecorate %out_color Location 0
+OpDecorate %out_depth Location 1
+OpDecorate %cb DescriptorSet 0
+OpDecorate %cb Binding 0
+OpDecorate %Water Block
+OpMemberDecorate %Water 0 Offset 0
+OpMemberDecorate %Water 0 ColMajor
+OpMemberDecorate %Water 0 MatrixStride 16
+OpMemberDecorate %Water 1 Offset 64
+OpMemberDecorate %Water 2 Offset 80
+OpMemberDecorate %Water 3 Offset 96
+OpMemberDecorate %Water 4 Offset 112
+OpMemberDecorate %Water 5 Offset 128
+OpMemberDecorate %Water 6 Offset 144
+OpMemberDecorate %Water 7 Offset 160
+OpMemberDecorate %Water 8 Offset 176
+OpMemberDecorate %Water 9 Offset 192
+OpMemberDecorate %Water 10 Offset 208
+OpMemberDecorate %Water 11 Offset 224
+OpMemberDecorate %Water 12 Offset 240
+OpMemberDecorate %Water 13 Offset 256
+OpMemberDecorate %Water 14 Offset 264
+OpMemberDecorate %Water 15 Offset 268
+OpMemberDecorate %Water 16 Offset 272
+OpMemberDecorate %Water 17 Offset 288
+OpMemberDecorate %Water 17 ColMajor
+OpMemberDecorate %Water 17 MatrixStride 16
+
+%void = OpTypeVoid
+%fn0 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v3 = OpTypeVector %float 3
+%v4 = OpTypeVector %float 4
+%mat4 = OpTypeMatrix %v4 4
+%ptr_in_v3 = OpTypePointer Input %v3
+%ptr_in_f = OpTypePointer Input %float
+%ptr_out_v4 = OpTypePointer Output %v4
+%ptr_out_f = OpTypePointer Output %float
+%in_world = OpVariable %ptr_in_v3 Input
+%in_nrm = OpVariable %ptr_in_v3 Input
+%in_z = OpVariable %ptr_in_f Input
+%out_color = OpVariable %ptr_out_v4 Output
+%out_depth = OpVariable %ptr_out_f Output
+%Water = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint %uint %v4 %mat4
+%ptr_cb = OpTypePointer Uniform %Water
+%cb = OpVariable %ptr_cb Uniform
+%ptr_uv4 = OpTypePointer Uniform %v4
+%u2 = OpConstant %uint 2
+%u3 = OpConstant %uint 3
+%u11 = OpConstant %uint 11
+%f0 = OpConstant %float 0.0
+%f1 = OpConstant %float 1.0
+%finvpi = OpConstant %float 0.31830989
+%f05 = OpConstant %float 0.5
+%fambk = OpConstant %float 2.8
+; wet granite, and the light bouncing off the water underneath
+%falb_r = OpConstant %float 0.44
+%falb_g = OpConstant %float 0.42
+%falb_b = OpConstant %float 0.39
+%v3_albedo = OpConstantComposite %v3 %falb_r %falb_g %falb_b
+%fgnd_r = OpConstant %float 0.05
+%fgnd_g = OpConstant %float 0.09
+%fgnd_b = OpConstant %float 0.11
+%v3_ground = OpConstantComposite %v3 %fgnd_r %fgnd_g %fgnd_b
+
+%PSMain = OpFunction %void None %fn0
+%entry = OpLabel
+%nrm0 = OpLoad %v3 %in_nrm
+%N = OpExtInst %v3 %glsl Normalize %nrm0
+%psun = OpAccessChain %ptr_uv4 %cb %u2
+%sun4 = OpLoad %v4 %psun
+%sun0 = OpVectorShuffle %v3 %sun4 %sun4 0 1 2
+%sun = OpExtInst %v3 %glsl Normalize %sun0
+%psc = OpAccessChain %ptr_uv4 %cb %u3
+%sc4 = OpLoad %v4 %psc
+%sun_c = OpVectorShuffle %v3 %sc4 %sc4 0 1 2
+%pzen = OpAccessChain %ptr_uv4 %cb %u11
+%zen4 = OpLoad %v4 %pzen
+%zenith = OpVectorShuffle %v3 %zen4 %zen4 0 1 2
+%ndl0 = OpDot %float %N %sun
+%ndl = OpExtInst %float %glsl FMax %ndl0 %f0
+%k = OpFMul %float %ndl %finvpi
+%lit = OpVectorTimesScalar %v3 %sun_c %k
+%ny = OpCompositeExtract %float %N 1
+%nyh0 = OpFMul %float %ny %f05
+%nyh = OpFAdd %float %nyh0 %f05
+%nyv = OpCompositeConstruct %v3 %nyh %nyh %nyh
+%skyup = OpVectorTimesScalar %v3 %zenith %fambk
+%amb = OpExtInst %v3 %glsl FMix %v3_ground %skyup %nyv
+%tot0 = OpFAdd %v3 %lit %amb
+%tot = OpFMul %v3 %tot0 %v3_albedo
+%out4 = OpCompositeConstruct %v4 %tot %f1
+OpStore %out_color %out4
+%z = OpLoad %float %in_z
+OpStore %out_depth %z
+OpReturn
+OpFunctionEnd

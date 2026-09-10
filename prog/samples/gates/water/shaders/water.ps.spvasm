@@ -1,23 +1,43 @@
-; Water PS: Fresnel between a sky reflection and the water body.
-;
-; No SSR yet -- that needs the scene depth and is the next slice. At the grazing
-; angles where Fresnel dominates, what a real surface reflects is mostly sky
-; anyway, so the analytic sky is the honest approximation and not a placeholder.
-;
-; The body colour comes from how far the view ray travels through water before
-; the seabed: Beer-Lambert on that path length, deep tint to shallow tint. Looking
-; straight down shows the shallow colour, grazing shows the deep one.
+;; Water PS: Fresnel between a screen-space reflection and the water body, plus
+;; foam where the wave folds or the bottom comes close.
+;;
+;; The SSR marches in world space and projects each step back to the screen,
+;; rather than stepping in screen space. Screen-space stepping needs a per-pixel
+;; ray setup to stay uniform; marching the world ray is a matrix multiply per step
+;; and gets the depth comparison right at any angle. Water is rough enough that a
+;; coarse march is invisible -- a reflection lands on a wave face, not a mirror.
+;;
+;; There is no early exit. A `break` out of a loop is where hand-written SPIR-V
+;; goes wrong, and carrying "already hit" through the phi costs a few steps that
+;; the GPU would have run anyway for the rest of the wavefront.
+;;
+;; Missing the screen falls back to the analytic sky, which at grazing angles is
+;; both what SSR cannot see and what a real surface reflects.
 OpCapability Shader
+OpCapability SampledImageArrayDynamicIndexing
+OpCapability RuntimeDescriptorArray
+OpCapability SampledImageArrayNonUniformIndexing
+OpCapability ShaderNonUniform
+OpExtension "SPV_EXT_descriptor_indexing"
 %glsl = OpExtInstImport "GLSL.std.450"
 OpMemoryModel Logical GLSL450
-OpEntryPoint Fragment %PSMain "PSMain" %in_world %in_nrm %out_color %cb
+OpEntryPoint Fragment %PSMain "PSMain" %in_world %in_nrm %in_fold %in_z %frag %out_color %cb %heap %samp_c
 OpExecutionMode %PSMain OriginUpperLeft
 OpName %PSMain "PSMain"
 OpDecorate %in_world Location 0
 OpDecorate %in_nrm Location 1
+OpDecorate %in_fold Location 2
+OpDecorate %in_z Location 3
+OpDecorate %frag BuiltIn FragCoord
 OpDecorate %out_color Location 0
 OpDecorate %cb DescriptorSet 0
 OpDecorate %cb Binding 0
+OpDecorate %heap DescriptorSet 1
+OpDecorate %heap Binding 0
+OpDecorate %samp_c DescriptorSet 2
+OpDecorate %samp_c Binding 1
+OpDecorate %icol NonUniform
+OpDecorate %idep NonUniform
 OpDecorate %Water Block
 OpMemberDecorate %Water 0 Offset 0
 OpMemberDecorate %Water 0 ColMajor
@@ -36,6 +56,11 @@ OpMemberDecorate %Water 11 Offset 224
 OpMemberDecorate %Water 12 Offset 240
 OpMemberDecorate %Water 13 Offset 256
 OpMemberDecorate %Water 14 Offset 264
+OpMemberDecorate %Water 15 Offset 268
+OpMemberDecorate %Water 16 Offset 272
+OpMemberDecorate %Water 17 Offset 288
+OpMemberDecorate %Water 17 ColMajor
+OpMemberDecorate %Water 17 MatrixStride 16
 
 %void = OpTypeVoid
 %fn0 = OpTypeFunction %void
@@ -48,16 +73,25 @@ OpMemberDecorate %Water 14 Offset 264
 %mat4 = OpTypeMatrix %v4 4
 
 %ptr_in_v3 = OpTypePointer Input %v3
+%ptr_in_v4 = OpTypePointer Input %v4
+%ptr_in_f = OpTypePointer Input %float
 %ptr_out_v4 = OpTypePointer Output %v4
 %in_world = OpVariable %ptr_in_v3 Input
 %in_nrm = OpVariable %ptr_in_v3 Input
+%in_fold = OpVariable %ptr_in_f Input
+%in_z = OpVariable %ptr_in_f Input
+%frag = OpVariable %ptr_in_v4 Input
 %out_color = OpVariable %ptr_out_v4 Output
 
-%Water = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint
+%Water = OpTypeStruct %mat4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v4 %v2 %uint %uint %v4 %mat4
 %ptr_cb = OpTypePointer Uniform %Water
 %cb = OpVariable %ptr_cb Uniform
+%ptr_uv2 = OpTypePointer Uniform %v2
 %ptr_uv4 = OpTypePointer Uniform %v4
+%ptr_uu = OpTypePointer Uniform %uint
+%ptr_umat = OpTypePointer Uniform %mat4
 
+%u0 = OpConstant %uint 0
 %u1 = OpConstant %uint 1
 %u2 = OpConstant %uint 2
 %u3 = OpConstant %uint 3
@@ -66,6 +100,12 @@ OpMemberDecorate %Water 14 Offset 264
 %u10 = OpConstant %uint 10
 %u11 = OpConstant %uint 11
 %u12 = OpConstant %uint 12
+%u13 = OpConstant %uint 13
+%u14 = OpConstant %uint 14
+%u15 = OpConstant %uint 15
+%u16 = OpConstant %uint 16
+%u17 = OpConstant %uint 17
+
 %f0 = OpConstant %float 0.0
 %f05 = OpConstant %float 0.5
 %f1 = OpConstant %float 1.0
@@ -76,17 +116,39 @@ OpMemberDecorate %Water 14 Offset 264
 %fglowp = OpConstant %float 900.0
 %fglowk = OpConstant %float 1.1
 %fsuncos = OpConstant %float 0.9997
-%v3_zero = OpConstantComposite %v3 %f0 %f0 %f0
-; Water's index of refraction gives F0 = ((1-1.33)/(1+1.33))^2
 %ff0 = OpConstant %float 0.02
 %fmf0 = OpConstant %float 0.98
 %fmindot = OpConstant %float 0.02
+; foam starts once the fold term drops under this, and once the water column is
+; thinner than this many units
+%ffoldk = OpConstant %float 1.0
+%ffoldgain = OpConstant %float 3.2
+%ffoamdepth = OpConstant %float 0.30
+%fedge = OpConstant %float 0.12
+%fthickz = OpConstant %float 0.045
+%v3_zero = OpConstantComposite %v3 %f0 %f0 %f0
+%ffoamc = OpConstant %float 0.62
+%v3_foam = OpConstantComposite %v3 %ffoamc %ffoamc %ffoamc
+
+%img2 = OpTypeImage %float 2D 0 0 0 1 Unknown
+%arr2 = OpTypeRuntimeArray %img2
+%ptr_arr2 = OpTypePointer UniformConstant %arr2
+%heap = OpVariable %ptr_arr2 UniformConstant
+%ptr_img2 = OpTypePointer UniformConstant %img2
+%sampled2 = OpTypeSampledImage %img2
+%samp_ty = OpTypeSampler
+%ptr_samp = OpTypePointer UniformConstant %samp_ty
+%samp_c = OpVariable %ptr_samp UniformConstant
 
 %PSMain = OpFunction %void None %fn0
 %entry = OpLabel
 %world = OpLoad %v3 %in_world
 %nrm0 = OpLoad %v3 %in_nrm
 %N = OpExtInst %v3 %glsl Normalize %nrm0
+%fold = OpLoad %float %in_fold
+%selfz = OpLoad %float %in_z
+%fc = OpLoad %v4 %frag
+
 %pcam = OpAccessChain %ptr_uv4 %cb %u1
 %cam4 = OpLoad %v4 %pcam
 %camw = OpVectorShuffle %v3 %cam4 %cam4 0 1 2
@@ -106,6 +168,29 @@ OpMemberDecorate %Water 14 Offset 264
 %hor4 = OpLoad %v4 %phor
 %horiz = OpVectorShuffle %v3 %hor4 %hor4 0 1 2
 %seabed = OpCompositeExtract %float %hor4 3
+%pinv = OpAccessChain %ptr_uv2 %cb %u13
+%invext = OpLoad %v2 %pinv
+%pssr = OpAccessChain %ptr_uv4 %cb %u16
+%ssr4 = OpLoad %v4 %pssr
+%fsteps = OpCompositeExtract %float %ssr4 0
+%thick = OpCompositeExtract %float %ssr4 1
+%maxdist = OpCompositeExtract %float %ssr4 2
+%foamk = OpCompositeExtract %float %ssr4 3
+%usteps = OpConvertFToU %uint %fsteps
+%stride = OpFDiv %float %maxdist %fsteps
+%pvp = OpAccessChain %ptr_umat %cb %u17
+%vp = OpLoad %mat4 %pvp
+%pcol = OpAccessChain %ptr_uu %cb %u14
+%icol = OpLoad %uint %pcol
+%pcim = OpAccessChain %ptr_img2 %heap %icol
+%cim = OpLoad %img2 %pcim
+%pdep = OpAccessChain %ptr_uu %cb %u15
+%idep = OpLoad %uint %pdep
+%pdim = OpAccessChain %ptr_img2 %heap %idep
+%dim = OpLoad %img2 %pdim
+%s = OpLoad %samp_ty %samp_c
+%smd = OpSampledImage %sampled2 %dim %s
+%smc = OpSampledImage %sampled2 %cim %s
 
 ; ---- Fresnel (Schlick) ----
 %ndv0 = OpDot %float %N %V
@@ -114,10 +199,74 @@ OpMemberDecorate %Water 14 Offset 264
 %omn5 = OpExtInst %float %glsl Pow %omn %f5
 %fr0 = OpFMul %float %fmf0 %omn5
 %fresnel = OpFAdd %float %ff0 %fr0
-
-; ---- reflected sky ----
 %negV = OpFNegate %v3 %V
 %R = OpExtInst %v3 %glsl Reflect %negV %N
+OpBranch %head
+
+; ---- screen-space march along R ----
+%head = OpLabel
+%i = OpPhi %uint %u0 %entry %inext %cont
+%hit = OpPhi %float %f0 %entry %hit_n %cont
+%hux = OpPhi %float %f0 %entry %hux_n %cont
+%huy = OpPhi %float %f0 %entry %huy_n %cont
+%more = OpULessThan %bool %i %usteps
+OpLoopMerge %merge %cont None
+OpBranchConditional %more %body %merge
+
+%body = OpLabel
+%fi = OpConvertUToF %float %i
+%fi1 = OpFAdd %float %fi %f1
+%t = OpFMul %float %fi1 %stride
+%stepv = OpVectorTimesScalar %v3 %R %t
+%p = OpFAdd %v3 %world %stepv
+%p4 = OpCompositeConstruct %v4 %p %f1
+%clip = OpMatrixTimesVector %v4 %vp %p4
+%cw = OpCompositeExtract %float %clip 3
+%cwc = OpExtInst %float %glsl FMax %cw %feps
+%invcw = OpFDiv %float %f1 %cwc
+%cx = OpCompositeExtract %float %clip 0
+%cy = OpCompositeExtract %float %clip 1
+%ndx = OpFMul %float %cx %invcw
+%ndy = OpFMul %float %cy %invcw
+%sux0 = OpFMul %float %ndx %f05
+%sux = OpFAdd %float %sux0 %f05
+%suy0 = OpFMul %float %ndy %f05
+%suy = OpFAdd %float %suy0 %f05
+%suv = OpCompositeConstruct %v2 %sux %suy
+%dtex = OpImageSampleExplicitLod %v4 %smd %suv Lod %f0
+%scenez = OpCompositeExtract %float %dtex 0
+%delta = OpFSub %float %cw %scenez
+; behind the surface, but not so far behind that the ray passed under it.
+; The window has to cover a whole stride (the march overshoots by up to one) and
+; grow with distance (a step far away spans more depth than one up close).
+%thickd = OpFMul %float %cw %fthickz
+%thickb = OpExtInst %float %glsl FMax %thick %stride
+%thicke = OpFAdd %float %thickb %thickd
+%d0 = OpFOrdGreaterThan %bool %delta %f0
+%d1 = OpFOrdLessThan %bool %delta %thicke
+%front = OpFOrdGreaterThan %bool %cw %feps
+%bx0 = OpFOrdGreaterThanEqual %bool %sux %f0
+%bx1 = OpFOrdLessThanEqual %bool %sux %f1
+%by0 = OpFOrdGreaterThanEqual %bool %suy %f0
+%by1 = OpFOrdLessThanEqual %bool %suy %f1
+%bx = OpLogicalAnd %bool %bx0 %bx1
+%by = OpLogicalAnd %bool %by0 %by1
+%inb0 = OpLogicalAnd %bool %bx %by
+%inb = OpLogicalAnd %bool %inb0 %front
+%dd = OpLogicalAnd %bool %d0 %d1
+%ishit = OpLogicalAnd %bool %inb %dd
+%first = OpFOrdEqual %bool %hit %f0
+%take = OpLogicalAnd %bool %ishit %first
+%hit_n = OpSelect %float %take %f1 %hit
+%hux_n = OpSelect %float %take %sux %hux
+%huy_n = OpSelect %float %take %suy %huy
+OpBranch %cont
+
+%cont = OpLabel
+%inext = OpIAdd %uint %i %u1
+OpBranch %head
+
+%merge = OpLabel
 %upyr = OpCompositeExtract %float %R 1
 %upcr = OpExtInst %float %glsl FClamp %upyr %f0 %f1
 %upgr = OpExtInst %float %glsl Pow %upcr %fskyg
@@ -131,9 +280,24 @@ OpMemberDecorate %Water 14 Offset 264
 %discr = OpFOrdGreaterThan %bool %sdotr %fsuncos
 %dvr = OpSelect %v3 %discr %sun_c %v3_zero
 %sky0r = OpFAdd %v3 %gradr %sgsr
-%refl = OpFAdd %v3 %sky0r %dvr
+%skyR = OpFAdd %v3 %sky0r %dvr
+%huv = OpCompositeConstruct %v2 %hux %huy
+%ctex = OpImageSampleExplicitLod %v4 %smc %huv Lod %f0
+%ssrc = OpVectorShuffle %v3 %ctex %ctex 0 1 2
+; a hit near the screen border has no data just past it, so fade it out
+%ex0 = OpFSub %float %hux %f05
+%exa = OpExtInst %float %glsl FAbs %ex0
+%ey0 = OpFSub %float %huy %f05
+%eya = OpExtInst %float %glsl FAbs %ey0
+%emax = OpExtInst %float %glsl FMax %exa %eya
+%efrom = OpFSub %float %f05 %emax
+%efd = OpFDiv %float %efrom %fedge
+%efade = OpExtInst %float %glsl FClamp %efd %f0 %f1
+%wgt0 = OpFMul %float %hit %efade
+%wgtv = OpCompositeConstruct %v3 %wgt0 %wgt0 %wgt0
+%refl = OpExtInst %v3 %glsl FMix %skyR %ssrc %wgtv
 
-; ---- body: Beer-Lambert over the path down to the seabed and back ----
+; ---- body: Beer-Lambert down to the seabed ----
 %pshal = OpAccessChain %ptr_uv4 %cb %u4
 %shal4 = OpLoad %v4 %pshal
 %shallow = OpVectorShuffle %v3 %shal4 %shal4 0 1 2
@@ -146,9 +310,9 @@ OpMemberDecorate %Water 14 Offset 264
 %npk = OpFNegate %float %pk
 %trans = OpExtInst %float %glsl Exp %npk
 %tv = OpCompositeConstruct %v3 %trans %trans %trans
-%body = OpExtInst %v3 %glsl FMix %deep %shallow %tv
+%bodyc = OpExtInst %v3 %glsl FMix %deep %shallow %tv
 
-; ---- sun specular (Blinn), gated by the same Fresnel ----
+; ---- sun specular ----
 %hv = OpFAdd %v3 %V %sun
 %H = OpExtInst %v3 %glsl Normalize %hv
 %ndh0 = OpDot %float %N %H
@@ -160,10 +324,29 @@ OpMemberDecorate %Water 14 Offset 264
 %sk = OpFMul %float %spow %fresnel
 %spec = OpVectorTimesScalar %v3 %sun_c %sk
 
-; ---- combine ----
 %fv = OpCompositeConstruct %v3 %fresnel %fresnel %fresnel
-%mixed = OpExtInst %v3 %glsl FMix %body %refl %fv
-%total = OpFAdd %v3 %mixed %spec
+%mixed = OpExtInst %v3 %glsl FMix %bodyc %refl %fv
+%lit = OpFAdd %v3 %mixed %spec
+
+; ---- foam: where the crest folds, and where the bottom comes close ----
+%foldn = OpFSub %float %ffoldk %fold
+%foldd = OpFMul %float %foldn %ffoldgain
+%foldf = OpExtInst %float %glsl FClamp %foldd %f0 %f1
+%fcxy = OpVectorShuffle %v2 %fc %fc 0 1
+%ownuv = OpFMul %v2 %fcxy %invext
+%odtex = OpImageSampleExplicitLod %v4 %smd %ownuv Lod %f0
+%behind = OpCompositeExtract %float %odtex 0
+%col0 = OpFSub %float %behind %selfz
+%colc = OpExtInst %float %glsl FMax %col0 %f0
+%shal0 = OpFDiv %float %colc %ffoamdepth
+%shalc = OpExtInst %float %glsl FClamp %shal0 %f0 %f1
+%shoref0 = OpFSub %float %f1 %shalc
+%shoref = OpFMul %float %shoref0 %shoref0
+%foam0 = OpExtInst %float %glsl FMax %foldf %shoref
+%foam1 = OpFMul %float %foam0 %foamk
+%foam = OpExtInst %float %glsl FClamp %foam1 %f0 %f1
+%foamv = OpCompositeConstruct %v3 %foam %foam %foam
+%total = OpExtInst %v3 %glsl FMix %lit %v3_foam %foamv
 %out4 = OpCompositeConstruct %v4 %total %f1
 OpStore %out_color %out4
 OpReturn

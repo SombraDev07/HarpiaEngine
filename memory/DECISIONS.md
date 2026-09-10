@@ -412,3 +412,32 @@ do crates.io, não de memória:
   mesmo motivo que travou o Jolt.
 - **A decisão continua por fechar** — abre-se na fase 6 com o gate a medir.
 
+## D29 — SSR da água: marcha no mundo, espessura que acompanha o passo
+
+- A marcha é **no espaço do mundo**, projectando cada passo de volta ao ecrã, e
+  não em espaço de ecrã. Marchar em ecrã exige montar o raio por pixel para
+  manter o passo uniforme; marchar o raio do mundo é uma multiplicação de matriz
+  por passo e acerta na comparação de profundidade a qualquer ângulo.
+- **Sem saída antecipada.** Um `break` de dentro de um ciclo é onde o SPIR-V à
+  mão se estraga; carregar «já acertou» no phi custa uns passos que o GPU ia
+  correr na mesma pelo resto da wavefront.
+- **A espessura fixa foi o erro que deu anéis em vez de reflexos.** Com passo de
+  3.2 unidades e janela de 0.9, só as silhuetas acertavam: o interior da rocha
+  está muito mais perto do que o raio nesse passo. A janela tem de cobrir **um
+  passo inteiro** (a marcha ultrapassa até uma passada) **e crescer com a
+  distância** (um passo longe abrange mais profundidade que um perto).
+- Falhar o ecrã cai para o céu analítico. Aos ângulos rasantes é ao mesmo tempo o
+  que o SSR não consegue ver e o que uma superfície real reflecte ali.
+- A água precisa de **dois alvos HDR**: amostra o que reflecte, portanto não pode
+  estar a escrever para lá. Uma cópia fullscreen é mais barata do que ensinar o
+  RHI a fazer LOAD de um attachment.
+- **Espuma de crista era código morto.** Com `Q = 0.62` e estas amplitudes,
+  `Σ Q·k·A ≈ 0.22`, logo o termo de Jacobiano nunca sai de `[0.78, 1.22]` — e o
+  limiar estava em 0.38. Estas ondas **não rebentam**; o que se mede agora é
+  «quão perto de dobrar», com ganho para se ver nas cristas mais afiadas. Isto é
+  uma escolha de arte assumida, não física.
+- Espuma é luz dispersa, não um realce: a 1.15 linear ficava uma laje branca ao
+  lado de água nos 0.2.
+- **Medido:** ligar o SSR muda **3.7%** dos pixels em mais de 8/255 (máximo 157) —
+  forte e localizado exactamente onde estão os reflexos.
+

@@ -589,8 +589,9 @@ Ordem: fog compute → clouds (sem driveRain) → water → **rain por último**
       **+ reprojecção temporal** com profundidade analítica no meio da concha e
       clamp 3×3 (D22): −44.6% de ruído na banda do horizonte.
       Falta a sombra das **nuvens** nos froxels (a das malhas já lá está, D23).
-- [~] Water: **Gerstner + Fresnel + absorção** feitos, `gate-water` 16 frames,
-      validation 0 (D26). Falta o SSR (point-sample do depth) e a espuma.
+- [x] Water: Gerstner + Fresnel + absorção (D26) **+ SSR e espuma** (D29).
+      `gate-water` 16 frames, validation 0. SSR marchado no mundo com espessura
+      adaptativa; espuma na contacto e nas cristas.
 - [ ] Rain: GBuffer wet + post; cones sem HDR SRV; `--frames 16` only.
 - [x] Fog default-on na **Sponza**: cena em HDR linear + view depth no 2.º MRT,
       tonemap no apply, shaders partilhados com o gate (D25).
