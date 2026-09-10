@@ -32,11 +32,24 @@ layout(location = 2) out float v_view_dist;
 
 const int OCTAVES = 5;
 
+// Hash inteiro em [0, 1) a partir de coordenadas de célula.
+//
+// NÃO usar `fract(sin(x) * 43758.5)`. É o hash mais copiado da internet e não é
+// portável: `sin` de um argumento grande difere no último bit entre a libm da CPU
+// e o hardware da GPU, e o factor 43758 amplifica isso até a parte fraccionária
+// ser outra. Com esse hash o gate `heightquery` mediu 99.84% dos pontos fora da
+// tolerância e 77 m de erro máximo num terreno de +-60 m.
+//
+// Aritmética inteira é exacta dos dois lados.
 float hash2(float x, float y) {
-    float d = x * 127.1 + y * 311.7;
-    float s = sin(d) * 43758.545;
-    return s - floor(s);
+    uint ix = uint(int(x));
+    uint iy = uint(int(y));
+    uint h = ix * 374761393u + iy * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h = h ^ (h >> 16);
+    return float(h) * (1.0 / 4294967296.0);
 }
+
 
 float smooth_t(float t) { return t * t * (3.0 - 2.0 * t); }
 

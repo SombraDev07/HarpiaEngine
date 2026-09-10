@@ -246,4 +246,9 @@ output.**
   membro conhecido. `112 + i*16` em vez de `96 + i*16` deslocou todos os `%v4` da
   chuva em 16 bytes: zero erros de validation, e o sintoma foi uma faixa branca no
   ecrã. Corre `cargo test -p harpia-render` **antes** de ir depurar a imagem.
+- **`fract(sin(x) * 43758.5)` não é portável entre CPU e GPU.** Medido: 77 m de
+  erro máximo e 99.84% dos pontos fora da tolerância num terreno de ±60 m (D41).
+  Qualquer função partilhada entre os dois lados usa hash **inteiro**.
+- `read_texture` espera pelo device: só pode ser chamado fora de um frame. Usa
+  `Sample::finish` (D42).
 

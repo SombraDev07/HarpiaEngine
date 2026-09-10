@@ -438,8 +438,8 @@ Não mesh shaders, RT, FSR, editor.
    frustum culling: 621 → 596 draws, 1.353 → 1.218 ms, imagem bit-idêntica.
 2. **Física por clarificar** — «jolt ou box3d»: `box3d` não existe. Adiado por
    decisão tua.
-3. Terreno: ~~um clipmap~~ **feito** (D40, `gate-terrain`). Falta `heightquery`,
-   vegetação e instâncias.
+3. Terreno: ~~clipmap~~ **feito** (D40) e ~~`heightquery`~~ **feito** (D41, que
+   apanhou 77 m de divergência entre CPU e GPU). Falta vegetação e instâncias.
 4. **Céu Hillaire e nuvens entram aqui** — num interior não se viam (D32). A
    sombra das nuvens nos froxels do fog também, que é onde passa a haver chão.
 5. Aerial perspective (froxel 32³), a dívida do D19.

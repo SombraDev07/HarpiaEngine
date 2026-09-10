@@ -618,7 +618,9 @@ Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
 
 - [x] Só `ClipmapTerrain` SV_VertexID. `gate-terrain`: 7 níveis, alcance 1024,
       **2 draws**, 0.077 ms de GPU, zero vertex buffers (D40).
-- [ ] HeightQuery GPU vs CPU.
+- [x] HeightQuery GPU vs CPU. `gate-heightquery`: 256² pontos comparados; o hash
+      trigonométrico dava 77 m de erro e 99.84% fora da tolerância, o inteiro dá
+      0.19 mm e 0% (D41).
 - [ ] Veg cull + indirect (buffers soltos, sem arrays HLSL).
 - [ ] Instance cull 2500 cubos → 1 indirect.
 - [ ] Streaming: CPU first; GPU cull sem `waitIdle` no frame.

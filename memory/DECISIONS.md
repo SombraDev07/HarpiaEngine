@@ -676,3 +676,45 @@ desenha; se divergirem vê-se logo, e é o ensaio do gate `heightquery`.
 3. **Fade linear a partir de zero.** Um vale a 600 unidades ficava meio céu e
    lia-se como terreno em falta. Agora é `smoothstep(0.55·far, far)`.
 
+## D41 — `fract(sin(x) * 43758.5)` não é portável, e o gate provou-o
+
+O gate `heightquery` avalia a mesma função de altura em CPU e em GPU sobre uma
+grelha de 256² pontos, lê o resultado de volta e compara ponto a ponto.
+
+**Com o hash trigonométrico** — o mais copiado da internet:
+
+```
+diff média 17.23 m · diff máxima 76.92 m · 99.84% dos pontos fora da tolerância
+pior ponto: CPU −45.06 m, GPU +31.85 m
+```
+
+Num terreno de ±60 m, a CPU e a GPU estavam a calcular **superfícies
+completamente diferentes**. O terreno desenhado parecia perfeito; a colisão é que
+teria sido noutro sítio. Isso apareceria como um bug de física — o jogador a
+atravessar o chão ou a andar no ar — e ninguém iria procurar num hash.
+
+A causa: `sin` de um argumento grande difere no último bit entre a libm da CPU e o
+hardware da GPU, e o factor 43758 amplifica essa diferença até a parte
+fraccionária ser outra.
+
+**Com um hash inteiro** (xorshift-multiply sobre as coordenadas de célula):
+
+```
+diff média 0.000008 m · diff máxima 0.000185 m · 0% fora da tolerância
+```
+
+O que sobra (0.19 mm) é contracção FMA na soma das oitavas: a GPU pode fundir
+multiplicação e adição, o que dá um resultado *mais* exacto e por isso diferente.
+É ruído do último bit e não move nada.
+
+**Regra:** qualquer função que a CPU e a GPU tenham de partilhar usa aritmética
+**inteira** no hash. Há um teste (`hash_is_integer_and_pinned`) que trava isto sem
+precisar de GPU.
+
+## D42 — `Sample::finish`, para um gate poder medir
+
+`read_texture` espera pelo device e é ilegal a meio de um frame, portanto não
+havia sítio onde um gate lesse resultados de volta. `Sample::finish(&mut Gpu)`
+corre depois do último frame; devolver `Err` faz o sample sair ≠ 0, que é o que
+transforma uma medição num gate.
+

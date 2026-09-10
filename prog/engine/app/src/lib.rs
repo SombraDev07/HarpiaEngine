@@ -134,6 +134,15 @@ pub trait Sample {
     /// doing. Live input and a real clock only happen in `--interactive`.
     fn update(&mut self, _input: &Input, _dt: f32) {}
     fn frame(&mut self, gpu: &mut Gpu, info: FrameInfo) -> Result<()>;
+    /// Depois do último frame, fora de qualquer frame aberto.
+    ///
+    /// É aqui que um gate de medição lê resultados de volta: `read_texture`
+    /// espera pelo device e é ilegal a meio de um frame. Devolver `Err` faz o
+    /// sample sair com código ≠ 0, que é o que torna uma medição um gate.
+    fn finish(&mut self, _gpu: &mut Gpu) -> Result<()> {
+        Ok(())
+    }
+
     /// Render targets `--capture` should write out. Empty = nothing to dump.
     fn capture_targets(&self) -> Vec<(&'static str, Texture)> {
         Vec::new()
@@ -372,6 +381,8 @@ impl<S: Sample> WinitApp<S> {
 
         if let Some(max) = self.config.max_frames {
             if self.frames_done >= max.get() {
+                let gpu = self.gpu.as_mut().context("gpu")?;
+                self.sample.finish(gpu)?;
                 if let Some(prefix) = self.config.capture.clone() {
                     let targets = self.sample.capture_targets();
                     let gpu = self.gpu.as_mut().context("gpu")?;

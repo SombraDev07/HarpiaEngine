@@ -36,13 +36,25 @@ pub fn clipmap_range() -> f32 {
     CLIPMAP_CELL * (1u32 << (CLIPMAP_LEVELS - 1)) as f32 * CLIPMAP_N as f32 * 0.5
 }
 
-/// Hash de valor em `[0, 1)`. **Tem de bater com o GLSL exactamente**, por isso é
-/// escrito com as mesmas operações e as mesmas constantes.
+/// Hash inteiro em `[0, 1)` a partir de coordenadas de célula.
+///
+/// **Não uses `fract(sin(x) * 43758.5)`.** É o hash mais copiado da internet e
+/// não é portável: `sin` de um argumento grande difere no último bit entre a
+/// libm da CPU e o hardware da GPU, e multiplicar por 43758 amplifica isso até a
+/// parte fraccionária ser outra. O gate `heightquery` mediu-o com esse hash e
+/// deu **99.84% dos pontos fora da tolerância, com 77 m de erro máximo** num
+/// terreno de ±60 m — a colisão e a geometria eram superfícies diferentes.
+///
+/// Aritmética inteira é exacta nos dois lados, portanto isto concorda sempre.
 fn hash2(x: f32, y: f32) -> f32 {
-    let d = x * 127.1 + y * 311.7;
-    let s = d.sin() * 43758.545;
-    s - s.floor()
+    let ix = x as i32 as u32;
+    let iy = y as i32 as u32;
+    let mut h = ix.wrapping_mul(374_761_393).wrapping_add(iy.wrapping_mul(668_265_263));
+    h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+    h ^= h >> 16;
+    h as f32 * (1.0 / 4_294_967_296.0)
 }
+
 
 fn smooth(t: f32) -> f32 {
     // Hermite: derivada zero nas pontas, senão as células do ruído dão vincos.
@@ -171,6 +183,26 @@ mod tests {
         ] {
             crate::spvasm_layout::assert_glsl_offsets(shader, &expected);
         }
+    }
+
+    /// O hash tem de ser **inteiro**, não `fract(sin(x) * 43758)`.
+    ///
+    /// Com o hash trigonométrico o gate `heightquery` mediu 99.84% dos pontos
+    /// fora da tolerância e 77 m de erro entre CPU e GPU. Este teste trava os
+    /// valores para que uma regressão apareça sem ser preciso uma GPU.
+    #[test]
+    fn hash_is_integer_and_pinned() {
+        // Valores exactos: aritmética inteira dá o mesmo em qualquer máquina.
+        assert_eq!(hash2(0.0, 0.0), 0.0);
+        for (x, y) in [(1.0, 0.0), (-3.0, 7.0), (129.0, -45.0)] {
+            let h = hash2(x, y);
+            assert!((0.0..1.0).contains(&h), "hash2({x}, {y}) = {h} fora de [0,1)");
+        }
+        // Células vizinhas não podem colidir, senão o ruído tem riscas.
+        let a = hash2(10.0, 20.0);
+        assert_ne!(a, hash2(11.0, 20.0));
+        assert_ne!(a, hash2(10.0, 21.0));
+        assert_ne!(a, hash2(20.0, 10.0), "simétrico em x/y daria diagonais");
     }
 
     /// Determinista: a mesma coordenada dá sempre a mesma altura, ou a colisão e

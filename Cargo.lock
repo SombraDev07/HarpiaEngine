@@ -1054,6 +1054,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate-heightquery"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-math",
+ "harpia-memory",
+ "harpia-render",
+ "harpia-rhi",
+ "harpia-shader-build",
+ "tracing",
+]
+
+[[package]]
 name = "gate-pbr-grid"
 version = "0.1.0"
 dependencies = [
