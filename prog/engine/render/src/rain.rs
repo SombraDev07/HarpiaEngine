@@ -139,10 +139,14 @@ mod tests {
         for shader in [
             "prog/samples/gates/rain/shaders/scene.ps.spvasm",
             "prog/samples/gates/rain/shaders/rain.ps.spvasm",
-            "prog/samples/gates/rain/shaders/blit.ps.spvasm",
         ] {
             crate::spvasm_layout::assert_prefix_matches(shader, "Rain", &expected);
         }
+        // blit.ps is GLSL now: it names byte offsets, not member indices.
+        crate::spvasm_layout::assert_glsl_offsets(
+            "prog/samples/gates/rain/shaders/blit.ps.glsl",
+            &expected,
+        );
     }
 
     /// Looking straight down must still give a usable basis.

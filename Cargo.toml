@@ -7,6 +7,7 @@ members = [
     "prog/engine/drv",
     "prog/engine/render",
     "prog/engine/plugin",
+    "prog/tools/shader-build",
     "prog/engine/app",
     "prog/samples/hello-triangle",
     "prog/samples/gates/bindless",
@@ -28,6 +29,7 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 
 [workspace.dependencies]
+harpia-shader-build = { path = "prog/tools/shader-build" }
 harpia-core = { path = "prog/engine/core" }
 harpia-memory = { path = "prog/engine/memory" }
 harpia-math = { path = "prog/engine/math" }

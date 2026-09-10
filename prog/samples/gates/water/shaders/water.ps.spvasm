@@ -189,8 +189,6 @@ OpMemberDecorate %Water 17 MatrixStride 16
 %pdim = OpAccessChain %ptr_img2 %heap %idep
 %dim = OpLoad %img2 %pdim
 %s = OpLoad %samp_ty %samp_c
-%smd = OpSampledImage %sampled2 %dim %s
-%smc = OpSampledImage %sampled2 %cim %s
 
 ; ---- Fresnel (Schlick) ----
 %ndv0 = OpDot %float %N %V
@@ -214,6 +212,7 @@ OpLoopMerge %merge %cont None
 OpBranchConditional %more %body %merge
 
 %body = OpLabel
+%smd = OpSampledImage %sampled2 %dim %s
 %fi = OpConvertUToF %float %i
 %fi1 = OpFAdd %float %fi %f1
 %t = OpFMul %float %fi1 %stride
@@ -267,6 +266,8 @@ OpBranch %cont
 OpBranch %head
 
 %merge = OpLabel
+%smd_m = OpSampledImage %sampled2 %dim %s
+%smc = OpSampledImage %sampled2 %cim %s
 %upyr = OpCompositeExtract %float %R 1
 %upcr = OpExtInst %float %glsl FClamp %upyr %f0 %f1
 %upgr = OpExtInst %float %glsl Pow %upcr %fskyg
@@ -334,7 +335,7 @@ OpBranch %head
 %foldf = OpExtInst %float %glsl FClamp %foldd %f0 %f1
 %fcxy = OpVectorShuffle %v2 %fc %fc 0 1
 %ownuv = OpFMul %v2 %fcxy %invext
-%odtex = OpImageSampleExplicitLod %v4 %smd %ownuv Lod %f0
+%odtex = OpImageSampleExplicitLod %v4 %smd_m %ownuv Lod %f0
 %behind = OpCompositeExtract %float %odtex 0
 %col0 = OpFSub %float %behind %selfz
 %colc = OpExtInst %float %glsl FMax %col0 %f0

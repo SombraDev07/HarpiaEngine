@@ -57,7 +57,19 @@ pub fn select_surface_format(formats: &[vk::SurfaceFormatKHR]) -> Result<vk::Sur
     Ok(formats[0])
 }
 
-pub fn select_present_mode(modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
+/// FIFO when vsync is on -- the only mode Vulkan guarantees exists.
+///
+/// With it off, prefer MAILBOX and fall back to IMMEDIATE. This is what makes a
+/// frame time measurable: under FIFO every sample reports the monitor's refresh,
+/// which is why the clouds and Sponza both used to "cost" 16.4 ms.
+pub fn select_present_mode(modes: &[vk::PresentModeKHR], vsync: bool) -> vk::PresentModeKHR {
+    if !vsync {
+        for wanted in [vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::IMMEDIATE] {
+            if modes.contains(&wanted) {
+                return wanted;
+            }
+        }
+    }
     if modes.contains(&vk::PresentModeKHR::FIFO) {
         vk::PresentModeKHR::FIFO
     } else {
@@ -108,6 +120,7 @@ pub unsafe fn create(
     _graphics_family: u32,
     requested: Extent2D,
     old: vk::SwapchainKHR,
+    vsync: bool,
 ) -> Result<Swapchain> {
     let caps = unsafe { surface_fn.get_physical_device_surface_capabilities(phys, surface)? };
     let formats = unsafe { surface_fn.get_physical_device_surface_formats(phys, surface)? };
@@ -139,7 +152,7 @@ pub unsafe fn create(
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
         .pre_transform(caps.current_transform)
         .composite_alpha(composite)
-        .present_mode(select_present_mode(&modes))
+        .present_mode(select_present_mode(&modes, vsync))
         .clipped(true)
         .old_swapchain(old);
 

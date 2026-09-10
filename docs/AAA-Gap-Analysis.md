@@ -72,17 +72,21 @@ de bug que nenhuma outra engine tem.
 
 Nenhum motor AAA escreve SPIR-V à mão. Isto não é rigor, é uma dívida.
 
-**Descoberta desta revisão:** a premissa registada no `INDEX.md` — *«DXC não está
-no PATH, logo escrevemos `.spvasm`»* — está **desactualizada**. Neste host:
+**Descoberta desta revisão — e uma correcção a ela.** A premissa registada no
+`INDEX.md` — *«DXC não está no PATH, logo escrevemos `.spvasm`»* — está
+**desactualizada**. Escrevi primeiro que os pacotes estavam por instalar; estava
+errado, e a verificação inicial que me levou lá foi um `command -v` que devolveu
+`NAO` para tudo. **Já estavam instalados desde Maio/Junho de 2026:**
 
 ```
-glslang-tools  15.1.0-2~ubuntu0.24.04.2   (universe)   NÃO instalado
-spirv-tools    2025.1~rc1-1~ubuntu0.24.04.2 (universe) NÃO instalado
+glslang-tools  15.1.0-2~ubuntu0.24.04.2   ii (instalado)
+spirv-tools    2025.1~rc1-1~ubuntu0.24.04.2 ii (instalado)
 ```
 
-Um `sudo apt install glslang-tools spirv-tools` dá `glslangValidator`, `glslc`,
-`spirv-as`, `spirv-val` e `spirv-opt`. O `build.rs` já tenta `spirv-as` antes do
-Python — passaria a usá-lo sozinho.
+Pior ainda: o `spirv-as` real **assembla e valida os 54 shaders da árvore**, e o
+`build.rs` já o preferia. O assembler em Python era um fallback que nunca precisou
+de existir neste host — e cada opcode que lá corrigi foi tempo gasto a depurar uma
+ferramenta que estava a ser substituída por uma boa.
 
 **O que fazer, por ordem:**
 

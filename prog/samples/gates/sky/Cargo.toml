@@ -17,3 +17,6 @@ harpia-math.workspace = true
 harpia-memory.workspace = true
 harpia-render.workspace = true
 harpia-rhi.workspace = true
+
+[build-dependencies]
+harpia-shader-build.workspace = true

@@ -48,6 +48,43 @@ pub fn member_offsets(path: &str, block: &str) -> BTreeMap<u32, u32> {
     out
 }
 
+/// Panic unless every `layout(offset = N)` in a GLSL source is a real offset.
+///
+/// A GLSL block declares only the members the shader reads, so member *indices*
+/// carry no meaning across the two forms — the byte offsets do. Checking those
+/// keeps a GLSL shader inside the same safety net as the assembly it replaced.
+pub fn assert_glsl_offsets(path: &str, expected: &[(u32, u32)]) {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for _ in 0..3 {
+        root.pop();
+    }
+    let full = root.join(path);
+    let text = std::fs::read_to_string(&full)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", full.display()));
+
+    let valid: Vec<u32> = expected.iter().map(|(_, off)| *off).collect();
+    let mut found = 0;
+    for (line_no, line) in text.lines().enumerate() {
+        let Some(rest) = line.split("layout(offset").nth(1) else {
+            continue;
+        };
+        let Some(num) = rest.trim_start_matches([' ', '=']).split(')').next() else {
+            continue;
+        };
+        let Ok(off) = num.trim().parse::<u32>() else {
+            continue;
+        };
+        assert!(
+            valid.contains(&off),
+            "{path}:{}: layout(offset = {off}) is not a member offset of the Rust struct. \
+             Valid: {valid:?}",
+            line_no + 1
+        );
+        found += 1;
+    }
+    assert!(found > 0, "{path}: no `layout(offset = ...)` found — is it still a UBO block?");
+}
+
 /// Panic unless the shader declares exactly `expected`, member for member.
 ///
 /// `expected` is `(member index, byte offset)` for every member the *Rust* side

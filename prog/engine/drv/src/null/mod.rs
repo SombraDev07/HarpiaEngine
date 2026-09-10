@@ -137,6 +137,13 @@ impl NullGpu {
         Ok(())
     }
 
+    pub fn mark(&mut self, _label: &'static str) {}
+
+    /// The Null backend never touches a GPU, so there is nothing to time.
+    pub fn take_stats(&mut self) -> crate::types::GpuStats {
+        crate::types::GpuStats::default()
+    }
+
     pub fn validation_error_count(&self) -> u32 {
         0
     }

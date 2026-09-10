@@ -537,3 +537,50 @@ com nomes que dizem para que servem (`03-luz-pbr`, `04-sombras`, `sponza`, …),
 mais um README. Os gates já eram um-por-funcionalidade — isto é empacotamento,
 não código novo. A pasta está no `.gitignore`; o script é que é commitado.
 
+## D35 — Fase 5.5: o toolchain sempre esteve cá
+
+- `glslang-tools` 15.1.0 e `spirv-tools` 2025.1 estavam **instalados desde
+  Maio/Junho de 2026**. A premissa «não há DXC, logo escrevemos `.spvasm`» era
+  verdade sobre o DXC e falsa sobre tudo o resto. O `spirv-as` real assembla e
+  valida os 54 shaders da árvore.
+- **`spirv-val` passou a correr no build.** Apanhou logo um bug a sério que a
+  camada de validação em runtime **deixava passar**: no `water.ps` havia um
+  `OpSampledImage` consumido noutro bloco. O gate corria verde porque a RADV
+  tolera. Corrigido; a imagem ficou bit-idêntica.
+- Os 11 `build.rs` duplicados deram lugar a `harpia-shader-build`, que aceita
+  `.spvasm` (via `spirv-as`) **e** `.glsl` (via `glslangValidator`), valida sempre,
+  e só cai para o Python com um aviso ruidoso.
+- GLSL fica drop-in: o glslang renomeia o entry point para `VSMain`/`PSMain`/
+  `CSMain`, portanto um `.glsl` substitui um `.spvasm` sem tocar no PSO.
+- **Gate cumprido:** `blit.ps` da chuva reescrito em GLSL, e o composite é
+  **bit-idêntico** ao do assembly que substituiu.
+- Um shader GLSL declara só os membros que lê, com offsets explícitos, portanto
+  os *índices* de membro não têm significado entre as duas formas — os **offsets**
+  têm. `assert_glsl_offsets` verifica isso e mantém o GLSL dentro da mesma rede.
+
+## D36 — A engine passou a saber quanto custa
+
+- Present mode configurável (`--vsync 0` → MAILBOX/IMMEDIATE). Com FIFO fixo,
+  **todas** as medições davam o refresh do monitor: era por isso que a Sponza e
+  as nuvens «custavam» exactamente os mesmos 16.4 ms.
+- `VkQueryPool` de timestamps por slot de frame, lidos quando o slot volta a dar
+  a volta — nessa altura já se esperou pela fence, portanto os resultados existem
+  sem bloquear.
+- `gpu.mark("nome")` marca o command stream; o relatório mostra o intervalo desde
+  a marca anterior. Contadores de draws, dispatches e triângulos vêm de graça.
+- `--stats` descarta os primeiros 8 frames (criação de pipelines, primeiros
+  uploads) para a média não ficar a mentir sobre o regime estável.
+- **O primeiro número real desta engine:** Sponza a `--vsync 0` custa
+  **1.569 ms de GPU** (621 draws, 1.57 M triângulos), repartidos em cascatas
+  0.433 · cena 0.770 · froxels do fog 0.110 · rain map 0.082 · chuva 0.082 ·
+  fog apply 0.052. As **cascatas custam mais de metade do que a cena inteira** —
+  informação accionável que era impossível de obter antes.
+
+## D37 — Um check de sweep que dava falso verde
+
+O meu sweep procurava `test result: FAILED` na saída dos testes. Quando os testes
+**não compilavam**, não havia linha nenhuma e o sweep dizia «TESTES OK». Aconteceu
+mesmo: os literais de `DeviceDesc` nos `#[cfg(test)]` do `harpia-rhi` ficaram sem
+o campo `vsync` novo e passaram despercebidos. Um check de verificação tem de
+falhar quando **não há** resultado, não só quando o resultado é mau.
+

@@ -449,6 +449,7 @@ impl Sample for Sponza {
             )?;
         }
         gpu.end_color_pass()?;
+        gpu.mark("cascades");
 
         // Rain map: the same casters seen from straight up. Screen-space streaks
         // have no idea the arcade has a roof, and this is what stops it raining
@@ -462,6 +463,7 @@ impl Sample for Sponza {
         self.draw_prims(gpu, shadow_pso, one_sided.clone(), rain_vp, false, &mut cb)?;
         self.draw_prims(gpu, shadow_cutout_pso, two_sided.clone(), rain_vp, true, &mut cb)?;
         gpu.end_color_pass()?;
+        gpu.mark("rain map");
 
         // The clear is sky radiance, not a colour: the scene target is linear HDR
         // now and the tonemap happens in the fog apply. Depth clears to the fog
@@ -475,6 +477,7 @@ impl Sample for Sponza {
         self.draw_prims(gpu, color_pso, one_sided, view_proj, true, &mut cb)?;
         self.draw_prims(gpu, two_sided_pso, two_sided, view_proj, true, &mut cb)?;
         gpu.end_color_pass()?;
+        gpu.mark("scene");
 
         // Rain, default-on: streaks over the scene, masked by the rain map so
         // they fall in the nave and not through the arcade roof. Linear in and
@@ -499,6 +502,7 @@ impl Sample for Sponza {
         gpu.bind_graphics_bindless()?;
         gpu.draw(3, 1, 0, 0)?;
         gpu.end_color_pass()?;
+        gpu.mark("rain");
 
         // Fog, default-on (roadmap fase 5): the inject reads the same cascades the
         // scene did, so the shafts through the arcade cost no extra pass.
@@ -531,12 +535,14 @@ impl Sample for Sponza {
         gpu.bind_compute_bindless()?;
         gpu.dispatch(gx, gy, gz)?;
         gpu.storage_barrier(integrated)?;
+        gpu.mark("fog froxels");
 
         gpu.begin_color_pass(&[scene.composite], None, &[[0.0, 0.0, 0.0, 1.0]], None)?;
         gpu.set_pipeline(apply_pso)?;
         gpu.bind_graphics_bindless()?;
         gpu.draw(3, 1, 0, 0)?;
         gpu.end_color_pass()?;
+        gpu.mark("fog apply");
 
         cb.gbuf0 = gpu.bindless_index(scene.composite)?;
         cb.alpha_cutoff = 0.0;

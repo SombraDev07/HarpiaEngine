@@ -35,6 +35,11 @@ pub struct AppConfig {
     /// `--capture <prefix>`: after the last frame, dump the sample's
     /// [`Sample::capture_targets`] as `<prefix>.<name>.png`.
     pub capture: Option<PathBuf>,
+    /// `--vsync 0` picks the fastest present mode so a frame time can be
+    /// measured. On by default: an uncapped window is a hot GPU for nothing.
+    pub vsync: bool,
+    /// `--stats` prints CPU and GPU timings when the run ends.
+    pub stats: bool,
 }
 
 impl Default for AppConfig {
@@ -48,6 +53,8 @@ impl Default for AppConfig {
             max_frames: NonZeroU32::new(90),
             resize_at: vec![(30, 800, 600), (60, 1280, 720)],
             capture: None,
+            vsync: true,
+            stats: false,
         }
     }
 }
@@ -98,10 +105,15 @@ impl AppConfig {
                 }
                 "--help" | "-h" => {
                     eprintln!(
-                        "harpia sample\n  --frames N        default 90 (gate; window closes)\n  --interactive, -i keep the window open until you close it (AMD: not for overnight)\n  --backend vulkan|null\n  --validation 1|0  (default 1)\n  --capture PREFIX  PNG of each capture target after the last frame\n  --width --height --title"
+                        "harpia sample\n  --frames N        default 90 (gate; window closes)\n  --interactive, -i keep the window open until you close it (AMD: not for overnight)\n  --backend vulkan|null\n  --validation 1|0  (default 1)\n  --capture PREFIX  PNG of each capture target after the last frame\n  --vsync 0|1       0 = fastest present mode, for measuring\n  --stats           CPU and GPU timings at the end\n  --width --height --title"
                     );
                     std::process::exit(0);
                 }
+                "--vsync" => {
+                    let v = it.next().context("`--vsync` needs 0|1")?;
+                    cfg.vsync = v != "0";
+                }
+                "--stats" => cfg.stats = true,
                 other => anyhow::bail!("unknown argument `{other}`"),
             }
         }
@@ -163,6 +175,7 @@ fn install_device_loss_abort() {
 
 fn run_null(config: AppConfig, mut sample: impl Sample) -> Result<ExitCode> {
     let mut gpu = create(&DeviceDesc {
+        vsync: config.vsync,
         backend: Backend::Null,
         validation: false,
         app_name: "harpia",
@@ -196,6 +209,8 @@ fn run_winit(config: AppConfig, sample: impl Sample) -> Result<ExitCode> {
         ready: false,
         input: Input::new(),
         last_frame: None,
+        cpu_ms: Vec::new(),
+        gpu_stats: harpia_rhi::GpuStats::default(),
     };
     event_loop.run_app(&mut app).context("winit run")?;
     match app.exit_code {
@@ -214,6 +229,11 @@ struct WinitApp<S> {
     ready: bool,
     input: Input,
     last_frame: Option<std::time::Instant>,
+    /// CPU milliseconds per frame, for `--stats`.
+    cpu_ms: Vec<f32>,
+    /// The most recent GPU stats seen. Timestamps arrive a frame or two late, so
+    /// the last complete one is the one worth reporting.
+    gpu_stats: harpia_rhi::GpuStats,
 }
 
 impl<S: Sample> WinitApp<S> {
@@ -237,6 +257,7 @@ impl<S: Sample> WinitApp<S> {
             .as_raw();
 
         let mut gpu = create(&DeviceDesc {
+            vsync: self.config.vsync,
             backend: self.config.backend,
             validation: self.config.validation,
             app_name: "harpia",
@@ -261,6 +282,49 @@ impl<S: Sample> WinitApp<S> {
         event_loop.exit();
     }
 
+    /// Print what the run cost.
+    ///
+    /// The first frames are warm-up -- pipeline creation, first-use uploads,
+    /// shader caches -- so they are dropped rather than allowed to dominate the
+    /// average and flatter or slander the steady state.
+    fn report_stats(&mut self) {
+        const WARMUP: usize = 8;
+        let mut ms = self.cpu_ms.clone();
+        if ms.len() > WARMUP * 2 {
+            ms.drain(..WARMUP);
+        }
+        if ms.is_empty() {
+            return;
+        }
+        ms.sort_by(f32::total_cmp);
+        let avg: f32 = ms.iter().sum::<f32>() / ms.len() as f32;
+        let pick = |q: f32| ms[((ms.len() - 1) as f32 * q) as usize];
+        tracing::info!(
+            frames = ms.len(),
+            cpu_avg_ms = format!("{avg:.2}"),
+            cpu_min_ms = format!("{:.2}", ms[0]),
+            cpu_p99_ms = format!("{:.2}", pick(0.99)),
+            cpu_max_ms = format!("{:.2}", ms[ms.len() - 1]),
+            vsync = self.config.vsync,
+            "cpu"
+        );
+        let g = &self.gpu_stats;
+        if g.frame_ms > 0.0 {
+            tracing::info!(
+                gpu_frame_ms = format!("{:.3}", g.frame_ms),
+                draws = g.draws,
+                dispatches = g.dispatches,
+                triangles = g.triangles,
+                "gpu"
+            );
+            for (label, ms) in &g.passes {
+                tracing::info!(pass = label, ms = format!("{ms:.3}"), "gpu pass");
+            }
+        } else {
+            tracing::warn!("no GPU timestamps: the queue may not support them");
+        }
+    }
+
     fn draw(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         // A gate is a measurement, so it gets a fixed step and no input at all.
         // Wall-clock dt would make every `--capture` depend on how busy the
@@ -278,6 +342,7 @@ impl<S: Sample> WinitApp<S> {
             dt.clamp(1.0 / 1000.0, 0.1)
         };
         self.sample.update(&self.input, dt);
+        let frame_started = std::time::Instant::now();
 
         let gpu = self.gpu.as_mut().context("gpu")?;
         let info = gpu.begin_frame()?;
@@ -285,7 +350,12 @@ impl<S: Sample> WinitApp<S> {
             self.sample.frame(gpu, info)?;
         }
         gpu.end_frame()?;
+        let stats = gpu.take_stats();
+        if stats.frame_ms > 0.0 {
+            self.gpu_stats = stats;
+        }
         self.input.end_frame();
+        self.cpu_ms.push(frame_started.elapsed().as_secs_f32() * 1000.0);
         self.frames_done += 1;
 
         if let Some(&(at, w, h)) = self
@@ -306,6 +376,9 @@ impl<S: Sample> WinitApp<S> {
                     let targets = self.sample.capture_targets();
                     let gpu = self.gpu.as_mut().context("gpu")?;
                     capture::capture_all(gpu, &prefix, &targets)?;
+                }
+                if self.config.stats {
+                    self.report_stats();
                 }
                 let gpu = self.gpu.as_mut().context("gpu")?;
                 let errors = gpu.validation_error_count();

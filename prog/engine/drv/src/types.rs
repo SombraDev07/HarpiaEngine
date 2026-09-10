@@ -180,3 +180,23 @@ pub const FRAME_UBO_SIZE: u64 = 1024;
 pub const FRAME_CBV_CHUNKS: u32 = 512;
 /// Ring bytes per frame slot.
 pub const FRAME_CBV_RING_SIZE: u64 = FRAME_UBO_SIZE * FRAME_CBV_CHUNKS as u64;
+
+/// Timestamps a frame can hold. Two are the frame itself; the rest are marks.
+pub const MAX_TIMESTAMPS: u32 = 32;
+
+/// What a frame cost, filled in once the GPU has actually finished it.
+///
+/// The engine could not answer "how long does the fog take" before this existed,
+/// and a locked 60 Hz present made every wall-clock measurement report the
+/// monitor instead of the work.
+#[derive(Clone, Debug, Default)]
+pub struct GpuStats {
+    /// Whole frame on the GPU, milliseconds.
+    pub frame_ms: f32,
+    /// `(label, ms)` per [`Device::mark`], in the order they were recorded.
+    pub passes: Vec<(&'static str, f32)>,
+    pub draws: u32,
+    pub dispatches: u32,
+    pub triangles: u64,
+}
+

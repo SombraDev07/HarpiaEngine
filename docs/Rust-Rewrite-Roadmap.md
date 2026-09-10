@@ -601,6 +601,17 @@ Ordem: fog compute → clouds (sem driveRain) → water → **rain por último**
       entram fog e chuva (medidos lá); céu e nuvens ficam para a fase 6 porque um
       interior não os vê, e não há água na Sponza — ver D32.
 
+### Fase 5.5 — Ferramentas — [x] feito
+
+Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
+
+- [x] `spirv-as` + **`spirv-val` no build** (apanhou logo um `OpSampledImage`
+      inválido no `water.ps` que o runtime deixava passar).
+- [x] `harpia-shader-build`: um sítio só, aceita `.spvasm` e `.glsl`.
+- [x] `blit.ps` da chuva em GLSL, composite **bit-idêntico**.
+- [x] `--vsync 0|1` e `--stats` com timestamps por pass.
+- **Exit:** `sponza --frames 200 --vsync 0 --stats` → GPU 1.569 ms, por pass.
+
 ### Fase 6 — Terreno + vegetação + mundo — [ ]
 
 - [ ] Só `ClipmapTerrain` SV_VertexID.

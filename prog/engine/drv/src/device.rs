@@ -3,7 +3,7 @@ use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use crate::null::NullGpu;
 use crate::types::{
     Backend, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo,
-    GraphicsPipeline, PipelineTargets, Texture, TextureData, TextureDesc,
+    GpuStats, GraphicsPipeline, PipelineTargets, Texture, TextureData, TextureDesc,
 };
 use crate::vulkan::VulkanGpu;
 use crate::Result;
@@ -22,6 +22,9 @@ pub struct DeviceDesc {
     pub width: u32,
     pub height: u32,
     pub window: Option<WindowHandles>,
+    /// `false` picks the fastest present mode available instead of FIFO, so a
+    /// frame time can be measured instead of the monitor's refresh.
+    pub vsync: bool,
 }
 
 impl Default for DeviceDesc {
@@ -33,6 +36,7 @@ impl Default for DeviceDesc {
             width: 1280,
             height: 720,
             window: None,
+            vsync: true,
         }
     }
 }
@@ -101,6 +105,13 @@ pub trait Device {
     fn create_graphics_pipeline(&mut self, desc: &GraphicsPipelineDesc<'_>) -> Result<GraphicsPipeline>;
     fn wait_idle(&self) -> Result<()>;
     fn validation_error_count(&self) -> u32;
+
+    /// Timestamp the command stream. The span from the previous mark (or the
+    /// start of the frame) shows up in [`Device::take_stats`] under `label`.
+    fn mark(&mut self, label: &'static str);
+    /// Stats for the most recently *completed* frame, not the one being built.
+    /// Empty until a frame has been through the GPU and back.
+    fn take_stats(&mut self) -> GpuStats;
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture>;
     fn upload_texture_mip(&mut self, tex: Texture, mip: u32, rgba: &[u8]) -> Result<()>;
@@ -218,6 +229,14 @@ impl Device for Gpu {
     fn bind_compute_bindless(&mut self) -> Result<()> {
         gpu!(self, bind_compute_bindless)
     }
+    fn mark(&mut self, label: &'static str) {
+        gpu!(self, mark, label)
+    }
+
+    fn take_stats(&mut self) -> GpuStats {
+        gpu!(self, take_stats)
+    }
+
     fn dispatch(&mut self, x: u32, y: u32, z: u32) -> Result<()> {
         gpu!(self, dispatch, x, y, z)
     }

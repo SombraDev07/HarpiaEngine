@@ -21,7 +21,8 @@ use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use crate::device::{ComputePipelineDesc, DeviceDesc, GraphicsPipelineDesc};
 use crate::types::{
     Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
-    Texture, TextureData, TextureDesc, TextureDim, PUSH_CONSTANTS_SIZE,
+    GpuStats, Texture, TextureData, TextureDesc, TextureDim, MAX_TIMESTAMPS,
+    PUSH_CONSTANTS_SIZE,
 };
 use crate::{RhiError, Result, FRAMES_IN_FLIGHT};
 
@@ -33,6 +34,14 @@ struct FrameSlot {
     fence: vk::Fence,
     image_available: vk::Semaphore,
     render_finished: vk::Semaphore,
+    /// Timestamps for this slot. Read back when the slot comes round again, by
+    /// which point its fence has been waited on and the GPU is definitely done.
+    queries: vk::QueryPool,
+    /// Label per mark, in write order. Index 0 is the frame start.
+    labels: Vec<&'static str>,
+    written: u32,
+    /// False until this slot has recorded a frame worth reading.
+    has_results: bool,
 }
 
 struct DebugState {
@@ -68,6 +77,14 @@ pub struct VulkanGpu {
     frames: Vec<FrameSlot>,
     frame_index: u64,
     slot: usize,
+    /// Nanoseconds per timestamp tick, from the device limits.
+    timestamp_period: f32,
+    vsync: bool,
+    /// Filled in at `begin_frame` from the slot that just completed.
+    last_stats: GpuStats,
+    stat_draws: u32,
+    stat_dispatches: u32,
+    stat_triangles: u64,
     image_index: u32,
     in_frame: bool,
     in_pass: bool,
@@ -270,6 +287,7 @@ impl VulkanGpu {
                 graphics_family,
                 window_extent,
                 vk::SwapchainKHR::null(),
+                desc.vsync,
             )?
         };
 
@@ -296,9 +314,21 @@ impl VulkanGpu {
                 unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)? };
             let render_finished =
                 unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)? };
+            let queries = unsafe {
+                device.create_query_pool(
+                    &vk::QueryPoolCreateInfo::default()
+                        .query_type(vk::QueryType::TIMESTAMP)
+                        .query_count(MAX_TIMESTAMPS),
+                    None,
+                )?
+            };
             frames.push(FrameSlot {
                 cmd: cmds[i],
                 fence,
+                queries,
+                labels: Vec::new(),
+                written: 0,
+                has_results: false,
                 image_available,
                 render_finished,
             });
@@ -312,9 +342,11 @@ impl VulkanGpu {
         let alloc = allocator
             .as_mut()
             .ok_or_else(|| RhiError::msg("allocator missing"))?;
-        let min_ubo_align = unsafe { instance.get_physical_device_properties(phys) }
-            .limits
-            .min_uniform_buffer_offset_alignment;
+        let limits = unsafe { instance.get_physical_device_properties(phys) }.limits;
+        let min_ubo_align = limits.min_uniform_buffer_offset_alignment;
+        // Nanoseconds per timestamp tick. 0 means the queue cannot timestamp, in
+        // which case the stats stay at zero rather than reporting nonsense.
+        let timestamp_period = limits.timestamp_period;
         let heap = bindless::Bindless::create(&device, alloc, min_ubo_align)?;
         let mut dummy = bindless::create_dummy(&device, alloc)?;
         let packed = resources::pack_mip(1, 1, 1, 4, &bindless::dummy_pixel())?;
@@ -453,6 +485,12 @@ impl VulkanGpu {
             frames,
             frame_index: 0,
             slot: 0,
+            timestamp_period,
+            vsync: desc.vsync,
+            last_stats: GpuStats::default(),
+            stat_draws: 0,
+            stat_dispatches: 0,
+            stat_triangles: 0,
             image_index: 0,
             in_frame: false,
             in_pass: false,
@@ -468,6 +506,74 @@ impl VulkanGpu {
             window_extent,
             validation_errors,
         })
+    }
+
+    /// Timestamp here, labelled. Shows up in [`VulkanGpu::take_stats`] as the
+    /// span since the previous mark.
+    pub fn mark(&mut self, label: &'static str) {
+        if !self.in_frame || self.timestamp_period <= 0.0 {
+            return;
+        }
+        let slot = self.slot;
+        if self.frames[slot].written >= MAX_TIMESTAMPS {
+            return; // silently cap rather than corrupt the pool
+        }
+        let cmd = self.frames[slot].cmd;
+        let index = self.frames[slot].written;
+        unsafe {
+            self.device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.frames[slot].queries,
+                index,
+            );
+        }
+        self.frames[slot].labels.push(label);
+        self.frames[slot].written += 1;
+    }
+
+    pub fn take_stats(&mut self) -> GpuStats {
+        std::mem::take(&mut self.last_stats)
+    }
+
+    /// Pull the timestamps written the last time this slot was used.
+    ///
+    /// Only safe once the slot's fence has been waited on, which `begin_frame`
+    /// has just done -- otherwise the GPU may still be writing them.
+    fn collect_stats(&mut self, slot: usize) {
+        if !self.frames[slot].has_results || self.timestamp_period <= 0.0 {
+            return;
+        }
+        let count = self.frames[slot].written as usize;
+        if count < 2 {
+            return;
+        }
+        let mut ticks = vec![0u64; count];
+        let ok = unsafe {
+            self.device.get_query_pool_results(
+                self.frames[slot].queries,
+                0,
+                &mut ticks,
+                vk::QueryResultFlags::TYPE_64,
+            )
+        };
+        if ok.is_err() {
+            return; // NOT_READY: skip this frame's numbers rather than block
+        }
+        let to_ms = |a: u64, b: u64| {
+            (b.saturating_sub(a) as f64 * self.timestamp_period as f64 / 1.0e6) as f32
+        };
+        let mut passes = Vec::with_capacity(count.saturating_sub(2));
+        for i in 1..count - 1 {
+            passes.push((self.frames[slot].labels[i], to_ms(ticks[i - 1], ticks[i])));
+        }
+        self.last_stats = GpuStats {
+            frame_ms: to_ms(ticks[0], ticks[count - 1]),
+            passes,
+            draws: self.stat_draws,
+            dispatches: self.stat_dispatches,
+            triangles: self.stat_triangles,
+        };
     }
 
     pub fn begin_frame(&mut self) -> Result<FrameInfo> {
@@ -491,6 +597,8 @@ impl VulkanGpu {
                 Err(e) => return Err(RhiError::from_vk(e)),
             }
         }
+        // The fence is signalled, so last time round this slot is now readable.
+        self.collect_stats(slot);
 
         let mut tries = 0;
         let image_index = loop {
@@ -543,7 +651,16 @@ impl VulkanGpu {
             let begin = vk::CommandBufferBeginInfo::default()
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
             self.device.begin_command_buffer(cmd, &begin)?;
+            // Reset outside a render pass, which is the only place it is legal.
+            self.device
+                .cmd_reset_query_pool(cmd, self.frames[slot].queries, 0, MAX_TIMESTAMPS);
         }
+        self.frames[slot].labels.clear();
+        self.frames[slot].written = 0;
+        self.stat_draws = 0;
+        self.stat_dispatches = 0;
+        self.stat_triangles = 0;
+        self.mark("frame");
 
         Ok(FrameInfo {
             extent: self.swapchain.extent2d(),
@@ -643,6 +760,8 @@ impl VulkanGpu {
         first_vertex: u32,
         first_instance: u32,
     ) -> Result<()> {
+        self.stat_draws += 1;
+        self.stat_triangles += (vertex_count as u64 / 3) * instance_count.max(1) as u64;
         if !self.in_pass {
             return Err(RhiError::PassMismatch);
         }
@@ -693,11 +812,13 @@ impl VulkanGpu {
             return Err(RhiError::PassMismatch);
         }
 
+        self.mark("present");
         let slot = self.slot;
         let cmd = self.frames[slot].cmd;
         unsafe {
             self.device.end_command_buffer(cmd)?;
         }
+        self.frames[slot].has_results = self.frames[slot].written >= 2;
 
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let submit = vk::SubmitInfo::default()
@@ -989,6 +1110,7 @@ impl VulkanGpu {
                 self.graphics_family,
                 self.window_extent,
                 old,
+                self.vsync,
             ) {
                 Ok(new) => {
                     if old != vk::SwapchainKHR::null() {
@@ -1509,6 +1631,7 @@ impl VulkanGpu {
     }
 
     pub fn dispatch(&mut self, x: u32, y: u32, z: u32) -> Result<()> {
+        self.stat_dispatches += 1;
         if !self.in_frame || self.in_pass {
             return Err(RhiError::PassMismatch);
         }
@@ -1949,6 +2072,8 @@ impl VulkanGpu {
         vertex_offset: i32,
         first_instance: u32,
     ) -> Result<()> {
+        self.stat_draws += 1;
+        self.stat_triangles += (index_count as u64 / 3) * instance_count.max(1) as u64;
         if !self.in_pass {
             return Err(RhiError::PassMismatch);
         }
@@ -2019,6 +2144,7 @@ impl Drop for VulkanGpu {
                 }
             }
             for frame in &self.frames {
+                self.device.destroy_query_pool(frame.queries, None);
                 self.device.destroy_fence(frame.fence, None);
                 self.device.destroy_semaphore(frame.image_available, None);
                 self.device.destroy_semaphore(frame.render_finished, None);

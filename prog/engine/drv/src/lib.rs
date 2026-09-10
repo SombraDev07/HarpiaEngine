@@ -15,7 +15,8 @@ pub use device::{
 };
 pub use error::RhiError;
 pub use types::{
-    Backend, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
+    Backend, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GpuStats,
+    GraphicsPipeline,
     PipelineTargets, PrimitiveTopology, Texture, TextureData, TextureDesc, TextureDim,
     FRAME_CBV_CHUNKS, FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE, VOLUME_SRV_SLOTS, VOLUME_UAV_SLOTS,
 };
@@ -32,6 +33,7 @@ mod tests {
     #[test]
     fn null_device_draws_without_gpu() {
         let mut gpu = create(&DeviceDesc {
+            vsync: true,
             backend: Backend::Null,
             validation: false,
             app_name: "test",
@@ -64,6 +66,7 @@ mod tests {
     #[test]
     fn null_bindless_upload_and_dispatch() {
         let mut gpu = create(&DeviceDesc {
+            vsync: true,
             backend: Backend::Null,
             validation: false,
             app_name: "test",
@@ -104,6 +107,7 @@ mod tests {
     #[test]
     fn null_mrt_and_indexed_draw() {
         let mut gpu = create(&DeviceDesc {
+            vsync: true,
             backend: Backend::Null,
             validation: false,
             app_name: "test",
@@ -157,6 +161,7 @@ mod tests {
     #[test]
     fn null_depth_only_pass_and_viewport() {
         let mut gpu = create(&DeviceDesc {
+            vsync: true,
             backend: Backend::Null,
             validation: false,
             app_name: "test",
