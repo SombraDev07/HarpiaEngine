@@ -1310,6 +1310,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "harpia-scene"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "harpia-math",
+ "harpia-rhi",
+]
+
+[[package]]
 name = "harpia-shader-build"
 version = "0.1.0"
 
@@ -2752,11 +2761,13 @@ name = "sponza"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bevy_ecs",
  "harpia-app",
  "harpia-math",
  "harpia-memory",
  "harpia-render",
  "harpia-rhi",
+ "harpia-scene",
  "harpia-shader-build",
  "tracing",
 ]

@@ -10,5 +10,5 @@ description = "Fase 6: 1e6 instâncias em bevy_ecs contra hecs. D20 exige medir.
 anyhow.workspace = true
 harpia-math.workspace = true
 harpia-memory.workspace = true
-bevy_ecs = "0.19"
+bevy_ecs.workspace = true
 hecs = "0.11"

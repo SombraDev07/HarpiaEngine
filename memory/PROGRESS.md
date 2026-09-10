@@ -434,8 +434,8 @@ churn, que acontecem muito menos. Fecha a D20.
 
 Não mesh shaders, RT, FSR, editor.
 
-1. ~~Decidir o ECS.~~ **feito: `bevy_ecs`** (D38, `gate-ecs`). Falta **usá-lo**:
-   a Sponza ainda constrói a cena à mão no `frame()`.
+1. ~~Decidir o ECS e usá-lo.~~ **feito** (D38, D39). A Sponza é entidades e tem
+   frustum culling: 621 → 596 draws, 1.353 → 1.218 ms, imagem bit-idêntica.
 2. **Física por clarificar** — «jolt ou box3d»: `box3d` não existe. Adiado por
    decisão tua.
 3. Terreno: um clipmap. Depois `heightquery`, vegetação, instâncias.

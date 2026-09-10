@@ -6,6 +6,7 @@ members = [
     "prog/engine/math",
     "prog/engine/drv",
     "prog/engine/render",
+    "prog/engine/scene",
     "prog/engine/plugin",
     "prog/tools/shader-build",
     "prog/engine/app",
@@ -30,6 +31,8 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 
 [workspace.dependencies]
+bevy_ecs = "0.19"
+harpia-scene = { path = "prog/engine/scene" }
 harpia-shader-build = { path = "prog/tools/shader-build" }
 harpia-core = { path = "prog/engine/core" }
 harpia-memory = { path = "prog/engine/memory" }

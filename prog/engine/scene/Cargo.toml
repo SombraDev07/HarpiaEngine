@@ -1,0 +1,12 @@
+[package]
+name = "harpia-scene"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Cena em entidades (bevy_ecs) e frustum culling. No vk::*."
+
+[dependencies]
+bevy_ecs.workspace = true
+harpia-math.workspace = true
+harpia-rhi.workspace = true

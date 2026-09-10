@@ -610,3 +610,38 @@ e **sem `wgpu` nem `winit`** nas dependências (confirmado outra vez com
 `hecs` fica como plano B documentado se as 18 dependências transitivas vierem a
 incomodar, ou se o perfil mudar para um mundo de churn muito alto.
 
+## D39 — A Sponza passou a entidades, e o culling ganhou o seu lugar
+
+- `harpia-scene` (novo crate): `Mesh`, `Material`, `WorldTransform`, `Bounds`,
+  `TwoSided`, `Visible`, mais `Frustum` e o sistema `cull_to_frustum`. Não sabe
+  nada de Vulkan — guarda os handles opacos que o RHI devolve.
+- A Sponza deixou de ter `Vec<GpuPrim>` e um `usize` a marcar onde começavam as
+  primitivas de duas faces. `TwoSided` é uma componente e a partição é uma query.
+  **Não havia onde pendurar uma bounding box**, e é por isso que não havia culling.
+- As caixas são calculadas no `init`, que é o último sítio onde os vértices ainda
+  existem em CPU: depois disso só há um handle de buffer.
+- **O pass de sombra e o mapa de chuva não respeitam o `Visible`.** Um caster fora
+  do ecrã continua a projectar sombra para dentro dele; cortá-lo faria a sombra
+  desaparecer. Só o pass de cor é cullado.
+- Frustum por Gribb-Hartmann a partir da view-projection, o que o faz funcionar
+  com a `perspective_vk` sem casos especiais — o flip de Y e o depth em `[0,1]` já
+  estão dentro da matriz. O plano near é só `r2`, não `r3 + r2`, precisamente por
+  o depth ir de 0 a 1.
+- O teste é conservador de propósito: «está inteiramente fora de algum plano?».
+  Um falso positivo custa um draw, um falso negativo faz geometria desaparecer.
+
+**Medido, `--vsync 0 --stats`:**
+
+| | sem culling | com culling |
+|---|---|---|
+| draws | 621 | **596** |
+| GPU frame | 1.353 ms | **1.218 ms** |
+| pass da cena | 0.662 ms | **0.598 ms** |
+
+78 das 103 primitivas visíveis. E o que prova que está certo: a imagem é
+**bit-idêntica** com e sem culling. Nada visível foi cortado.
+
+O ganho é modesto **nesta cena** porque a câmara vê quase todo o átrio — é o
+mecanismo que interessa, e ele passa a existir para o terreno da fase 6, onde a
+maior parte do mundo está sempre fora do ecrã.
+

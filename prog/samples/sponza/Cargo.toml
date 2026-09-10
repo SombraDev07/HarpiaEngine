@@ -17,6 +17,8 @@ harpia-app.workspace = true
 harpia-math.workspace = true
 harpia-memory.workspace = true
 harpia-render.workspace = true
+harpia-scene.workspace = true
+bevy_ecs.workspace = true
 harpia-rhi.workspace = true
 
 [build-dependencies]
