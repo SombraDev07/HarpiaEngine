@@ -26,6 +26,9 @@ pub enum Stage {
     Vertex,
     Fragment,
     Compute,
+    /// `foo.mesh.glsl`. Precisa de `--target-env vulkan1.3` e da extensão
+    /// `GL_EXT_mesh_shader` declarada no shader.
+    Mesh,
 }
 
 impl Stage {
@@ -34,6 +37,7 @@ impl Stage {
             Stage::Vertex => "vert",
             Stage::Fragment => "frag",
             Stage::Compute => "comp",
+            Stage::Mesh => "mesh",
         }
     }
 
@@ -45,6 +49,7 @@ impl Stage {
             Stage::Vertex => "VSMain",
             Stage::Fragment => "PSMain",
             Stage::Compute => "CSMain",
+            Stage::Mesh => "MSMain",
         }
     }
 
@@ -58,6 +63,8 @@ impl Stage {
             Some(Stage::Fragment)
         } else if stem.ends_with(".cs") {
             Some(Stage::Compute)
+        } else if stem.ends_with(".mesh") {
+            Some(Stage::Mesh)
         } else {
             None
         }

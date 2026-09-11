@@ -2,6 +2,7 @@ fn main() {
     harpia_shader_build::build(&[
         ("shadow.vs.glsl", "shadow.vs.spv"),
         ("cull.cs.glsl", "cull.cs.spv"),
+        ("scene.mesh.glsl", "scene.mesh.spv"),
           // partilhado: uma cópia só, ou diverge
         ("../../gates/veg/shaders/hiz.cs.glsl", "hiz.cs.spv"),
         ("shadow.ps.spvasm", "shadow.ps.spv"),

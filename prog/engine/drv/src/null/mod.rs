@@ -155,6 +155,17 @@ impl NullGpu {
         Ok(())
     }
 
+    pub fn create_mesh_pipeline(
+        &mut self,
+        _desc: &crate::device::MeshPipelineDesc,
+    ) -> crate::Result<crate::types::GraphicsPipeline> {
+        Err(crate::RhiError::msg("null backend has no mesh shaders"))
+    }
+
+    pub fn draw_mesh_tasks(&mut self, _x: u32, _y: u32, _z: u32) -> crate::Result<()> {
+        Ok(())
+    }
+
     pub fn barriers(&mut self, _list: &[crate::types::BarrierDesc]) -> crate::Result<()> {
         Ok(())
     }

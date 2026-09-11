@@ -102,6 +102,16 @@ struct Sponza {
     /// Triângulos por meshlet. `usize::MAX` = um meshlet por primitiva, que é o
     /// que a medição diz ser o melhor com draws indirectos clássicos (D58).
     meshlet_tris: usize,
+    /// `-- --mesh` desenha a cena com mesh shaders em vez de draws indirectos.
+    mesh_path: bool,
+    /// Tecto de vértices únicos por meshlet: 64 com mesh shaders, sem limite sem eles.
+    max_verts: usize,
+    mesh_pso: Option<GraphicsPipeline>,
+    mesh_pso_two_sided: Option<GraphicsPipeline>,
+    mvert_buf: Option<Buffer>,
+    mtri_buf: Option<Buffer>,
+    range_buf: Option<Buffer>,
+    vert_storage: Option<Buffer>,
     checked: bool,
     scene_extent: Extent2D,
 }
@@ -124,6 +134,14 @@ impl Default for Sponza {
             last_cpu_visible: 0,
             meshlet_bounds: Vec::new(),
             meshlet_tris: usize::MAX,
+            mesh_path: false,
+            max_verts: usize::MAX,
+            mesh_pso: None,
+            mesh_pso_two_sided: None,
+            mvert_buf: None,
+            mtri_buf: None,
+            range_buf: None,
+            vert_storage: None,
             checked: false,
             shadow_pso: None,
             color_pso: None,
@@ -479,6 +497,42 @@ impl Sponza {
     }
 }
 
+/// Desenha um intervalo de meshlets com **um** dispatch de mesh tasks.
+///
+/// Sem lista de comandos: um workgroup por meshlet, e o próprio shader lê o
+/// `instanceCount` que o culling escreveu para saber se emite alguma coisa. Era
+/// este o custo que D58 mediu a bater o ganho — ~0.1 ms por cada mil comandos de
+/// draw — e aqui não há nenhum.
+fn draw_mesh_set(
+    gpu: &mut Gpu,
+    pso: &GraphicsPipeline,
+    two_sided: bool,
+    view_proj: Mat4,
+    one_sided: u32,
+    total: u32,
+) -> Result<()> {
+    let (base, count) = if two_sided {
+        (one_sided, total - one_sided)
+    } else {
+        (0, one_sided)
+    };
+    if count == 0 {
+        return Ok(());
+    }
+    gpu.set_pipeline(pso)?;
+    gpu.bind_graphics_bindless()?;
+    // A segunda matriz leva o meshlet base: o dispatch não tem offset de workgroup.
+    let base_m = Mat4::from_cols(
+        Vec4::new(base as f32, 0.0, 0.0, 0.0),
+        Vec4::ZERO,
+        Vec4::ZERO,
+        Vec4::ZERO,
+    );
+    gpu.set_push_constants(PushConstants::with_world(view_proj, base_m).as_bytes())?;
+    gpu.draw_mesh_tasks(count, 1, 1)?;
+    Ok(())
+}
+
 fn color_targets(cull_back: bool) -> PipelineTargets<'static> {
     const FORMATS: [Format; 2] = [SCENE_FORMAT, VIEW_DEPTH];
     PipelineTargets {
@@ -497,6 +551,11 @@ const SLOT_ARGS: u32 = 1;
 const SLOT_ARGS_ALL: u32 = 2;
 const SLOT_ARGS_P2: u32 = 3;
 const SLOT_SEEN: u32 = 4;
+// Os quatro buffers do formato canónico, para o mesh shader.
+const SLOT_VERTS: u32 = 5;
+const SLOT_MVERTS: u32 = 6;
+const SLOT_MTRIS: u32 = 7;
+const SLOT_RANGES: u32 = 8;
 
 /// Uma primitiva, como a GPU a vê.
 #[repr(C)]
@@ -539,7 +598,8 @@ impl Sample for Sponza {
         for (i, p) in cpu.prims.iter().enumerate() {
             let vertex_offset = all_verts.len() as i32;
             let base = all_idx.len() as u32;
-            let (mut ml, idx) = harpia_render::build_meshlets(p, i as u32, self.meshlet_tris);
+            let (mut ml, idx) =
+                harpia_render::build_meshlets(p, i as u32, self.meshlet_tris, self.max_verts);
             for m in &mut ml {
                 m.first_index += base;
                 m.vertex_offset = vertex_offset;
@@ -549,12 +609,16 @@ impl Sample for Sponza {
             all_verts.extend_from_slice(&p.vertices);
             all_idx.extend_from_slice(&idx);
         }
-        let vb = gpu.create_vertex_buffer(unsafe {
+        // Storage **e** vertex buffer: o mesh shader lê os vértices como storage e
+        // o caminho clássico liga o mesmo buffer como vertex. Duas cópias dos 6 MB
+        // seria o preço de não o fazer.
+        let vb = gpu.create_storage_buffer(SLOT_VERTS, unsafe {
             std::slice::from_raw_parts(
                 all_verts.as_ptr().cast::<u8>(),
                 std::mem::size_of_val(all_verts.as_slice()),
             )
         })?;
+        self.vert_storage = Some(vb);
         let ib_handle = gpu.create_index_buffer(unsafe {
             std::slice::from_raw_parts(
                 all_idx.as_ptr().cast::<u8>(),
@@ -661,6 +725,44 @@ impl Sample for Sponza {
                 slot as u32,
             ]);
         }
+        // O formato canónico, pela **mesma ordem** dos comandos: o mesh shader usa
+        // `gl_WorkGroupID` como índice, portanto as duas tabelas têm de estar
+        // alinhadas ou cada meshlet desenha a geometria de outro.
+        let ordered: Vec<harpia_render::Meshlet> = order.iter().map(|&i| meshlets[i]).collect();
+        let packed = harpia_render::pack_meshlets(&ordered, &all_idx);
+        anyhow::ensure!(
+            packed.meshlets.len() == ordered.len(),
+            "o empacotamento partiu {} meshlets em {}: as tabelas deixariam de estar \
+             alinhadas com os comandos",
+            ordered.len(),
+            packed.meshlets.len()
+        );
+        // E verificado **antes** de subir: um `SetMeshOutputsEXT` com valores acima
+        // do que o shader declarou pendura a GPU, e um GPU hang não diz qual foi a
+        // linha. Melhor falhar aqui com o número.
+        for (i, r) in packed.meshlets.iter().enumerate() {
+            anyhow::ensure!(
+                r.vertex_count as usize <= harpia_render::MESHLET_VERTS
+                    && r.triangle_count as usize <= harpia_render::MESHLET_PRIMS,
+                "meshlet {i} com {} vértices e {} triângulos: acima do que o mesh \
+                 shader declara ({} e {})",
+                r.vertex_count,
+                r.triangle_count,
+                harpia_render::MESHLET_VERTS,
+                harpia_render::MESHLET_PRIMS
+            );
+            anyhow::ensure!(
+                r.vertex_offset as usize + r.vertex_count as usize <= packed.vertices.len()
+                    && r.triangle_offset as usize + r.triangle_count as usize
+                        <= packed.triangles.len(),
+                "meshlet {i} aponta para fora dos buffers"
+            );
+        }
+
+        self.mvert_buf = Some(gpu.create_storage_buffer(SLOT_MVERTS, as_bytes(&packed.vertices))?);
+        self.mtri_buf = Some(gpu.create_storage_buffer(SLOT_MTRIS, as_bytes(&packed.triangles))?);
+        self.range_buf = Some(gpu.create_storage_buffer(SLOT_RANGES, as_bytes(&packed.meshlets))?);
+
         self.prim_buf = Some(gpu.create_storage_buffer(SLOT_PRIMS, as_bytes(&prims))?);
         self.args_buf = Some(gpu.create_storage_buffer(SLOT_ARGS, as_bytes(&args))?);
         // Uma segunda lista, com `instanceCount` sempre a 1: as sombras e o mapa
@@ -679,6 +781,29 @@ impl Sample for Sponza {
             })
             .context("hiz CS")?,
         );
+        if self.mesh_path {
+            anyhow::ensure!(
+                gpu.mesh_shaders(),
+                "`-- --mesh` pedido e este device não tem VK_EXT_mesh_shader"
+            );
+            for (slot, cull_back) in [(0usize, true), (1, false)] {
+                let pso = gpu
+                    .create_mesh_pipeline(&harpia_rhi::MeshPipelineDesc {
+                        ms_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/scene.mesh.spv")),
+                        fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/color.ps.spv")),
+                        ms_entry: "MSMain",
+                        fs_entry: "PSMain",
+                        targets: color_targets(cull_back),
+                    })
+                    .context("mesh PSO")?;
+                if slot == 0 {
+                    self.mesh_pso = Some(pso);
+                } else {
+                    self.mesh_pso_two_sided = Some(pso);
+                }
+            }
+        }
+
         self.cull_pso = Some(
             gpu.create_compute_pipeline(&ComputePipelineDesc {
                 cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/cull.cs.spv")),
@@ -1049,28 +1174,48 @@ impl Sample for Sponza {
         )?;
         // Fase 1: o que se via no frame anterior. É isto que enche o depth buffer
         // de que a pirâmide sai.
-        draw_indirect_set(
-            gpu,
-            color_pso,
-            false,
-            view_proj,
-            vb,
-            ib,
-            args_culled,
-            one_sided,
-            total,
-        )?;
-        draw_indirect_set(
-            gpu,
-            two_sided_pso,
-            true,
-            view_proj,
-            vb,
-            ib,
-            args_culled,
-            one_sided,
-            total,
-        )?;
+        if self.mesh_path {
+            draw_mesh_set(
+                gpu,
+                self.mesh_pso.as_ref().context("mesh pso")?,
+                false,
+                view_proj,
+                one_sided,
+                total,
+            )?;
+            draw_mesh_set(
+                gpu,
+                self.mesh_pso_two_sided.as_ref().context("mesh pso 2")?,
+                true,
+                view_proj,
+                one_sided,
+                total,
+            )?;
+        } else {
+            draw_indirect_set(
+                gpu,
+                color_pso,
+                false,
+                view_proj,
+                vb,
+                ib,
+                args_culled,
+                one_sided,
+                total,
+            )?;
+            draw_indirect_set(
+                gpu,
+                two_sided_pso,
+                true,
+                view_proj,
+                vb,
+                ib,
+                args_culled,
+                one_sided,
+                total,
+            )?;
+        }
+
         gpu.end_color_pass()?;
         gpu.mark("scene");
 
@@ -1248,6 +1393,7 @@ fn main() -> Result<std::process::ExitCode> {
     let mut config = AppConfig::parse(std::env::args())?;
     config.title = "Harpia — sponza".into();
     let occlusion = config.extra.iter().any(|a| a == "--occlusion");
+    let mesh_path = config.extra.iter().any(|a| a == "--mesh");
     let meshlet_tris = config
         .extra
         .iter()
@@ -1256,11 +1402,25 @@ fn main() -> Result<std::process::ExitCode> {
         .map(|v| v.parse::<usize>())
         .transpose()
         .context("`--meshlets` quer um número de triângulos")?
-        .unwrap_or(usize::MAX);
+        // Com mesh shaders o valor por omissão é o limite canónico: um meshlet por
+        // primitiva não caberia nos 64 vértices de saída.
+        .unwrap_or(if mesh_path {
+            harpia_render::MESHLET_PRIMS
+        } else {
+            usize::MAX
+        });
     run(
         config,
         Sponza {
             occlusion,
+            mesh_path,
+            // O tecto de vértices é do hardware quando há mesh shaders, e não
+            // existe sem eles.
+            max_verts: if mesh_path {
+                harpia_render::MESHLET_VERTS
+            } else {
+                usize::MAX
+            },
             meshlet_tris,
             ..Default::default()
         },

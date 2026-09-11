@@ -12,6 +12,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
+use ash::ext;
 use ash::ext::debug_utils;
 use ash::khr;
 use ash::vk;
@@ -63,6 +64,8 @@ pub struct VulkanGpu {
     graphics_queue: vk::Queue,
     graphics_family: u32,
     swapchain_fn: khr::swapchain::Device,
+    /// `None` quando o device não tem `VK_EXT_mesh_shader`.
+    mesh_fn: Option<ext::mesh_shader::Device>,
     swapchain: swapchain::Swapchain,
     /// Kept alive for phase 2 uploads. Unused in hello-triangle.
     #[allow(dead_code)]
@@ -303,13 +306,38 @@ impl VulkanGpu {
         let queue_ci = vk::DeviceQueueCreateInfo::default()
             .queue_family_index(graphics_family)
             .queue_priorities(&prios);
-        let device_exts = [khr::swapchain::NAME.as_ptr()];
-        let device_ci = vk::DeviceCreateInfo::default()
+        // Mesh shaders: pedidos **se existirem**, e o motor funciona sem eles.
+        //
+        // É a peça que falta para os meshlets pagarem: com draws indirectos o custo
+        // fixo por comando bate o ganho do culling em todos os tamanhos (D58); como
+        // workgroups de um dispatch esse custo desaparece.
+        let available: Vec<String> =
+            unsafe { instance.enumerate_device_extension_properties(phys)? }
+                .iter()
+                .filter_map(|e| {
+                    e.extension_name_as_c_str()
+                        .ok()
+                        .map(|c| c.to_string_lossy().into_owned())
+                })
+                .collect();
+        let want_mesh = available.iter().any(|n| n == "VK_EXT_mesh_shader");
+        let mut device_exts = vec![khr::swapchain::NAME.as_ptr()];
+        if want_mesh {
+            device_exts.push(ext::mesh_shader::NAME.as_ptr());
+        }
+        let mut mesh_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
+            .mesh_shader(true)
+            .task_shader(true);
+        let mut device_ci = vk::DeviceCreateInfo::default()
             .push_next(&mut features2)
             .queue_create_infos(std::slice::from_ref(&queue_ci))
             .enabled_extension_names(&device_exts);
+        if want_mesh {
+            device_ci = device_ci.push_next(&mut mesh_features);
+        }
 
         let device = unsafe { instance.create_device(phys, &device_ci, None)? };
+        let mesh_fn = want_mesh.then(|| ext::mesh_shader::Device::new(&instance, &device));
         let graphics_queue = unsafe { device.get_device_queue(graphics_family, 0) };
         let swapchain_fn = khr::swapchain::Device::new(&instance, &device);
 
@@ -392,7 +420,7 @@ impl VulkanGpu {
         // Nanoseconds per timestamp tick. 0 means the queue cannot timestamp, in
         // which case the stats stay at zero rather than reporting nonsense.
         let timestamp_period = limits.timestamp_period;
-        let heap = bindless::Bindless::create(&device, alloc, min_ubo_align)?;
+        let heap = bindless::Bindless::create(&device, alloc, min_ubo_align, mesh_fn.is_some())?;
         let mut dummy = bindless::create_dummy(&device, alloc)?;
         let packed = resources::pack_mip(1, 1, 1, 4, &bindless::dummy_pixel())?;
         resources::write_staging(&heap.staging, &packed)?;
@@ -517,6 +545,7 @@ impl VulkanGpu {
             graphics_queue,
             graphics_family,
             swapchain_fn,
+            mesh_fn,
             swapchain,
             allocator,
             cmd_pool,
@@ -943,6 +972,59 @@ impl VulkanGpu {
         &mut self,
         desc: &GraphicsPipelineDesc<'_>,
     ) -> Result<GraphicsPipeline> {
+        self.create_pipeline_inner(desc, false)
+    }
+
+    /// Um pipeline de mesh shader.
+    ///
+    /// A única diferença face a um de vértices é a **flag do estágio**: o
+    /// `pVertexInputState` é ignorado pela especificação quando o pipeline inclui
+    /// um mesh shader, por isso o resto do caminho é literalmente o mesmo — e é
+    /// por isso que isto é um parâmetro e não uma cópia de 150 linhas.
+    pub fn create_mesh_pipeline(
+        &mut self,
+        desc: &crate::device::MeshPipelineDesc<'_>,
+    ) -> Result<GraphicsPipeline> {
+        if !self.mesh_shaders() {
+            return Err(RhiError::msg("este device não tem VK_EXT_mesh_shader"));
+        }
+        self.create_pipeline_inner(
+            &GraphicsPipelineDesc {
+                vs_spirv: desc.ms_spirv,
+                fs_spirv: desc.fs_spirv,
+                vs_entry: desc.ms_entry,
+                fs_entry: desc.fs_entry,
+                bindless: true,
+                targets: desc.targets,
+            },
+            true,
+        )
+    }
+
+    pub fn mesh_shaders(&self) -> bool {
+        self.mesh_fn.is_some()
+    }
+
+    /// Lança workgroups de mesh (ou de task, se o pipeline tiver um).
+    pub fn draw_mesh_tasks(&mut self, x: u32, y: u32, z: u32) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        let f = self
+            .mesh_fn
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("este device não tem VK_EXT_mesh_shader"))?;
+        // Um só «draw» para a cena toda: é este o ponto de haver mesh shaders.
+        self.stat_draws += 1;
+        unsafe { f.cmd_draw_mesh_tasks(self.frames[self.slot].cmd, x, y, z) };
+        Ok(())
+    }
+
+    fn create_pipeline_inner(
+        &mut self,
+        desc: &GraphicsPipelineDesc<'_>,
+        mesh: bool,
+    ) -> Result<GraphicsPipeline> {
         if desc.vs_spirv.is_empty() {
             return Err(RhiError::msg("vertex SPIR-V is empty"));
         }
@@ -977,7 +1059,11 @@ impl VulkanGpu {
         let fs_entry = CString::new(desc.fs_entry).map_err(|_| RhiError::BadCString)?;
         let mut stages = vec![
             vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
+                .stage(if mesh {
+                    vk::ShaderStageFlags::MESH_EXT
+                } else {
+                    vk::ShaderStageFlags::VERTEX
+                })
                 .module(vs_mod)
                 .name(vs_entry.as_c_str()),
         ];
@@ -1525,8 +1611,7 @@ impl VulkanGpu {
             if img.dim != TextureDim::D2 {
                 return Err(RhiError::msg("bind_storage_image needs a 2D texture"));
             }
-            *img
-                .storage_views
+            *img.storage_views
                 .get(mip as usize)
                 .ok_or_else(|| RhiError::msg("mip out of range, or not a storage texture"))?
         };
@@ -2403,12 +2488,20 @@ impl VulkanGpu {
         if slot >= STORAGE_BUFFER_SLOTS {
             return Err(RhiError::msg("storage buffer slot out of range"));
         }
+        // VERTEX e INDEX também, desde os mesh shaders: eles lêem os vértices como
+        // um storage buffer, e o caminho clássico liga o **mesmo** buffer como
+        // vertex buffer. Duas cópias dos 6 MB da Sponza seria o preço de não ter
+        // estas duas flags.
+        //
         // INDIRECT_BUFFER também: o caso que interessa é um compute a escrever os
         // argumentos de um draw no mesmo buffer que depois o alimenta. Separá-los
         // obrigava a um copy entre dois buffers para nada.
         let buffer = self.create_host_buffer(
             bytes,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDIRECT_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::INDIRECT_BUFFER
+                | vk::BufferUsageFlags::VERTEX_BUFFER
+                | vk::BufferUsageFlags::INDEX_BUFFER,
             "ssbo",
         )?;
         let raw = self

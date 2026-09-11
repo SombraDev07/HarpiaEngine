@@ -43,7 +43,12 @@ pub struct Bindless {
 }
 
 impl Bindless {
-    pub fn create(device: &Device, allocator: &mut Allocator, min_ubo_align: u64) -> Result<Self> {
+    pub fn create(
+        device: &Device,
+        allocator: &mut Allocator,
+        min_ubo_align: u64,
+        mesh: bool,
+    ) -> Result<Self> {
         if min_ubo_align == 0 || UBO_SIZE % min_ubo_align != 0 {
             return Err(RhiError::msg(format!(
                 "FRAME_UBO_SIZE {UBO_SIZE} is not a multiple of minUniformBufferOffsetAlignment {min_ubo_align}"
@@ -95,6 +100,15 @@ impl Bindless {
             )?
         };
 
+        // `MESH_EXT` a mais quando o device o tem: um mesh shader lê os mesmos
+        // heaps que um vertex shader, e um layout que não o declare faz a criação
+        // do pipeline falhar com VUID-...-07988.
+        let mesh_bit = if mesh {
+            vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::TASK_EXT
+        } else {
+            vk::ShaderStageFlags::empty()
+        };
+
         let ubo_binding = [vk::DescriptorSetLayoutBinding::default()
             .binding(0)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
@@ -112,7 +126,8 @@ impl Bindless {
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .descriptor_count(BINDLESS_HEAP_SIZE)
             .stage_flags(
-                vk::ShaderStageFlags::VERTEX
+                mesh_bit
+                    | vk::ShaderStageFlags::VERTEX
                     | vk::ShaderStageFlags::FRAGMENT
                     | vk::ShaderStageFlags::COMPUTE,
             )];
@@ -131,7 +146,8 @@ impl Bindless {
             )?
         };
 
-        let sampler_stage = vk::ShaderStageFlags::VERTEX
+        let sampler_stage = mesh_bit
+            | vk::ShaderStageFlags::VERTEX
             | vk::ShaderStageFlags::FRAGMENT
             | vk::ShaderStageFlags::COMPUTE;
         let sampler_binding = [
@@ -184,12 +200,12 @@ impl Bindless {
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(crate::types::STORAGE_IMAGE_SLOTS)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+                .stage_flags(vk::ShaderStageFlags::COMPUTE | mesh_bit),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(VOLUME_UAV_SLOTS)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+                .stage_flags(vk::ShaderStageFlags::COMPUTE | mesh_bit),
         ];
         // UPDATE_AFTER_BIND nas duas: as texturas de storage são criadas e
         // religadas a meio de um frame quando a janela muda de tamanho, e sem esta
@@ -217,7 +233,8 @@ impl Bindless {
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .descriptor_count(VOLUME_SRV_SLOTS)
             .stage_flags(
-                vk::ShaderStageFlags::VERTEX
+                mesh_bit
+                    | vk::ShaderStageFlags::VERTEX
                     | vk::ShaderStageFlags::FRAGMENT
                     | vk::ShaderStageFlags::COMPUTE,
             )];
@@ -237,7 +254,7 @@ impl Bindless {
             set5_layout,
         ];
         let pc_range = vk::PushConstantRange {
-            stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            stage_flags: mesh_bit | vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             offset: 0,
             size: PUSH_CONSTANTS_SIZE,
         };

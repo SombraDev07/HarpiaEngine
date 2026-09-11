@@ -380,3 +380,10 @@ output.**
 - Ordenar índices por localidade espacial **só ajuda se houver agrupamento a
   fazer**. Com um meshlet por primitiva a ordenação de Morton custou 5% do frame da
   Sponza e não agrupou nada (D58).
+- **Nunca uses um pipeline que a validation rejeitou.** Um `VUID-...-07988` (layout
+  sem o estágio declarado) no `vkCreateGraphicsPipelines` seguido de um draw
+  pendurou a GPU, o amdgpu fez reset, e a sessão gráfica não voltou — sem display
+  não se corre mais nada. Lê os erros de validation **antes** do primeiro draw (D59).
+- `SetMeshOutputsEXT` com valores acima do `max_vertices`/`max_primitives` que o
+  shader declarou é UB e em RADV pendura. Limita sempre, e verifica a tabela no
+  host antes de a subir: um `ensure!` dá um número, um hang dá um reset (D59).

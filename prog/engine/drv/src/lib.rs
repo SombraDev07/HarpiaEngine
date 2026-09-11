@@ -11,6 +11,7 @@ mod types;
 mod vulkan;
 
 pub use device::{
+    MeshPipelineDesc,
     create, ComputePipelineDesc, Device, DeviceDesc, Gpu, GraphicsPipelineDesc, WindowHandles,
 };
 pub use error::RhiError;

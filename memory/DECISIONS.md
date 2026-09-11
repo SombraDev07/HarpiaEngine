@@ -1644,3 +1644,61 @@ A primeira versão ordenava os triângulos por Morton **sempre**, mesmo com um s
 meshlet por primitiva. Aí a ordenação não agrupa nada e só estraga a localidade que
 o ficheiro já tinha: **0.736 → 0.772 ms**, 5% do frame por nada. Agora só ordena
 quando há mais de um grupo.
+
+## D59 — Mesh shaders: escritos, e **por verificar** — um GPU hang levou a sessão gráfica
+
+Os três resultados negativos anteriores (Hi-Z no terreno, Hi-Z na Sponza,
+meshlets) apontavam todos para o mesmo sítio: o custo fixo por comando de draw. A
+resposta é `VK_EXT_mesh_shader`, que este device suporta. Comecei-o, e **não está
+provado**.
+
+### O que está feito e verificado (sem GPU)
+
+* **RHI**: a extensão pedida se existir, `create_mesh_pipeline`, `draw_mesh_tasks`,
+  e as flags de estágio `MESH_EXT`/`TASK_EXT` nos layouts dos descritores. O
+  pipeline de mesh partilha o caminho do de vértices — a única diferença real é a
+  flag do estágio, porque o `pVertexInputState` é ignorado pela especificação
+  quando há um mesh shader.
+* **Formato canónico**: `pack_meshlets` converte os grupos de intervalos-de-índices
+  para até 64 vértices únicos e 124 triângulos como índices locais de 8 bits.
+* **`build_meshlets` respeita o tecto de vértices**, e tem de ser na construção:
+  128 triângulos agrupados por vizinhança precisam de bem mais de 64 vértices, e
+  deixar a embalagem partir depois desalinha as tabelas dos comandos.
+* **Seis testes e quatro controlos negativos**, sem GPU: os triângulos sobrevivem
+  ao empacotamento, os limites são respeitados, os intervalos ladrilham o index
+  buffer sem buracos, e — o que interessa para não partir o que funcionava — **sem
+  tectos o resultado é exactamente a primitiva**, com os índices pela ordem do
+  ficheiro e a caixa da primitiva.
+
+### O que **não** está verificado
+
+**O caminho de mesh shader nunca completou um frame.** Na primeira execução:
+
+> `amdgpu 0000:0a:00.0: GPU reset(1) succeeded!`
+> `[drm] device wedged, but recovered through reset`
+
+A GPU recuperou. A sessão gráfica não: o socket do X desapareceu e desde então
+nenhum sample corre. Portanto **não sei** se o caminho desenha certo nem se é mais
+rápido, e não vou dizer que sim.
+
+### O que causou o hang, e o que ficou a impedi-lo
+
+A criação do pipeline dava `VUID-VkGraphicsPipelineCreateInfo-layout-07988`: os
+layouts dos descritores não declaravam o estágio de mesh. Usar um pipeline que a
+validation rejeitou é comportamento indefinido, e em RADV o que aconteceu foi
+pendurar. Corrigido.
+
+Ficaram duas guardas que não existiam:
+
+* o shader **limita** o que passa a `SetMeshOutputsEXT` ao que declarou em
+  `max_vertices`/`max_primitives` — escrever para lá disso é UB, e o que se vê é a
+  GPU a pendurar sem dizer onde;
+* o host **verifica a tabela antes de a subir**: cada intervalo dentro dos limites
+  e dentro dos buffers. Falhar aqui dá um número; falhar na GPU dá um reset do
+  driver.
+
+### O caminho por omissão
+
+Não mudou de comportamento, e isso também não pôde ser verificado na GPU — por isso
+ficou preso por dois testes de CPU novos, com controlos negativos que os partem.
+`-- --mesh` é opt-in.

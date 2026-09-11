@@ -48,8 +48,8 @@ pub use fog::{
     FROXEL_H, FROXEL_W, INJECT_GROUP, INTEGRATE_GROUP,
 };
 pub use gltf_scene::{
-    build_meshlets, load_path as load_gltf, CpuImage, CpuPrimitive, CpuScene, GltfError, Meshlet,
-    MESHLET_TRIS,
+    build_meshlets, load_path as load_gltf, pack_meshlets, CpuImage, CpuPrimitive, CpuScene,
+    GltfError, Meshlet, MeshletData, MeshletRange, MESHLET_PRIMS, MESHLET_TRIS, MESHLET_VERTS,
 };
 pub use graph::{
     Access, GraphError, Handle, Layout, Load, Pass, PassId, PassPlan, RenderGraph, Resource,

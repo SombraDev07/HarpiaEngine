@@ -1,13 +1,12 @@
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
+use crate::Result;
 use crate::null::NullGpu;
 use crate::types::{
-    BarrierDesc,
-    Backend, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo,
+    Backend, BarrierDesc, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo,
     GpuStats, GraphicsPipeline, PipelineTargets, Texture, TextureData, TextureDesc,
 };
 use crate::vulkan::VulkanGpu;
-use crate::Result;
 
 /// WSI handles. Must not outlive the `winit` window. Copied only for `create`.
 #[derive(Clone, Copy)]
@@ -40,6 +39,19 @@ impl Default for DeviceDesc {
             vsync: true,
         }
     }
+}
+
+/// Um pipeline de **mesh shader**: sem vertex input, sem vertex shader.
+///
+/// A geometria não é lida por um assembler de vértices — é o shader que a emite,
+/// um workgroup por meshlet. É por isso que não há aqui `vertex_stride` nenhum: o
+/// mesh shader busca o que precisa de storage buffers.
+pub struct MeshPipelineDesc<'a> {
+    pub ms_spirv: &'a [u8],
+    pub fs_spirv: &'a [u8],
+    pub ms_entry: &'a str,
+    pub fs_entry: &'a str,
+    pub targets: PipelineTargets<'a>,
 }
 
 pub struct GraphicsPipelineDesc<'a> {
@@ -103,7 +115,10 @@ pub trait Device {
     fn resize(&mut self, width: u32, height: u32) -> Result<()>;
     fn present_format(&self) -> Format;
     fn extent(&self) -> Extent2D;
-    fn create_graphics_pipeline(&mut self, desc: &GraphicsPipelineDesc<'_>) -> Result<GraphicsPipeline>;
+    fn create_graphics_pipeline(
+        &mut self,
+        desc: &GraphicsPipelineDesc<'_>,
+    ) -> Result<GraphicsPipeline>;
     fn wait_idle(&self) -> Result<()>;
     fn validation_error_count(&self) -> u32;
 
@@ -124,7 +139,10 @@ pub trait Device {
     fn bind_volume_srv(&mut self, slot: u32, tex: Texture) -> Result<()>;
     fn write_frame_constants(&mut self, c: FrameConstants) -> Result<()>;
     fn bind_graphics_bindless(&mut self) -> Result<()>;
-    fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> Result<ComputePipeline>;
+    fn create_compute_pipeline(
+        &mut self,
+        desc: &ComputePipelineDesc<'_>,
+    ) -> Result<ComputePipeline>;
     fn set_compute_pipeline(&mut self, pipeline: &ComputePipeline) -> Result<()>;
     fn bind_compute_bindless(&mut self) -> Result<()>;
     fn dispatch(&mut self, x: u32, y: u32, z: u32) -> Result<()>;
@@ -150,6 +168,12 @@ pub trait Device {
     /// Emite as barreiras que o render graph derivou.
     /// Liga a imagem 2D de storage no mip pedido.
     fn bind_storage_image(&mut self, tex: Texture, mip: u32, slot: u32) -> Result<()>;
+    /// Um pipeline de mesh shader. Falha se o device não suportar a extensão.
+    fn create_mesh_pipeline(&mut self, desc: &MeshPipelineDesc) -> Result<GraphicsPipeline>;
+    /// Lança `x*y*z` workgroups de mesh (ou de task, se houver um).
+    fn draw_mesh_tasks(&mut self, x: u32, y: u32, z: u32) -> Result<()>;
+    /// O device suporta mesh shaders?
+    fn mesh_shaders(&self) -> bool;
     fn barriers(&mut self, list: &[BarrierDesc]) -> Result<()>;
     fn clear_depth_rect(&mut self, x: u32, y: u32, w: u32, h: u32, value: f32) -> Result<()>;
     fn draw_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()>;
@@ -187,7 +211,14 @@ impl Device for Gpu {
         first_vertex: u32,
         first_instance: u32,
     ) -> Result<()> {
-        gpu!(self, draw, vertex_count, instance_count, first_vertex, first_instance)
+        gpu!(
+            self,
+            draw,
+            vertex_count,
+            instance_count,
+            first_vertex,
+            first_instance
+        )
     }
     fn end_swapchain_pass(&mut self) -> Result<()> {
         gpu!(self, end_swapchain_pass)
@@ -204,7 +235,10 @@ impl Device for Gpu {
     fn extent(&self) -> Extent2D {
         gpu!(self, extent)
     }
-    fn create_graphics_pipeline(&mut self, desc: &GraphicsPipelineDesc<'_>) -> Result<GraphicsPipeline> {
+    fn create_graphics_pipeline(
+        &mut self,
+        desc: &GraphicsPipelineDesc<'_>,
+    ) -> Result<GraphicsPipeline> {
         gpu!(self, create_graphics_pipeline, desc)
     }
     fn wait_idle(&self) -> Result<()> {
@@ -237,7 +271,10 @@ impl Device for Gpu {
     fn bind_graphics_bindless(&mut self) -> Result<()> {
         gpu!(self, bind_graphics_bindless)
     }
-    fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> Result<ComputePipeline> {
+    fn create_compute_pipeline(
+        &mut self,
+        desc: &ComputePipelineDesc<'_>,
+    ) -> Result<ComputePipeline> {
         gpu!(self, create_compute_pipeline, desc)
     }
     fn set_compute_pipeline(&mut self, pipeline: &ComputePipeline) -> Result<()> {
@@ -294,6 +331,21 @@ impl Device for Gpu {
 
     fn bind_storage_image(&mut self, tex: Texture, mip: u32, slot: u32) -> Result<()> {
         gpu!(self, bind_storage_image, tex, mip, slot)
+    }
+
+    fn create_mesh_pipeline(&mut self, desc: &MeshPipelineDesc) -> Result<GraphicsPipeline> {
+        gpu!(self, create_mesh_pipeline, desc)
+    }
+
+    fn draw_mesh_tasks(&mut self, x: u32, y: u32, z: u32) -> Result<()> {
+        gpu!(self, draw_mesh_tasks, x, y, z)
+    }
+
+    fn mesh_shaders(&self) -> bool {
+        match self {
+            Gpu::Null(_) => false,
+            Gpu::Vulkan(g) => g.mesh_shaders(),
+        }
     }
 
     fn barriers(&mut self, list: &[BarrierDesc]) -> Result<()> {

@@ -105,6 +105,40 @@ pub struct CpuScene {
 /// função continua a existir.
 pub const MESHLET_TRIS: usize = 128;
 
+/// Vértices únicos por meshlet, no formato canónico.
+///
+/// 64 e 124 são os números que cabem em qualquer hardware com mesh shaders: o
+/// RX 6700 permite 256 de cada, mas um mesh shader escrito para 64/124 corre em
+/// todo o lado sem variantes.
+pub const MESHLET_VERTS: usize = 64;
+pub const MESHLET_PRIMS: usize = 124;
+
+/// O formato canónico, para mesh shaders.
+///
+/// Um meshlet não guarda índices globais: guarda uma lista curta de vértices
+/// únicos (no máximo 64) e os triângulos como índices **locais** de 8 bits nessa
+/// lista. É isso que permite a um workgroup de mesh shader carregar os vértices
+/// uma vez e emiti-los sem repetir — com índices globais, três triângulos
+/// vizinhos buscariam o mesmo vértice três vezes.
+#[derive(Clone, Debug, Default)]
+pub struct MeshletData {
+    /// Índices globais dos vértices, agrupados por meshlet.
+    pub vertices: Vec<u32>,
+    /// Três índices locais de 8 bits por triângulo, empacotados num `u32`.
+    pub triangles: Vec<u32>,
+    pub meshlets: Vec<MeshletRange>,
+}
+
+/// Onde um meshlet vive dentro de [`MeshletData`].
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct MeshletRange {
+    pub vertex_offset: u32,
+    pub vertex_count: u32,
+    pub triangle_offset: u32,
+    pub triangle_count: u32,
+}
+
 /// Um grupo de triângulos com a sua própria caixa.
 #[derive(Clone, Copy, Debug)]
 pub struct Meshlet {
@@ -128,12 +162,20 @@ pub struct Meshlet {
 ///
 /// Devolve `(meshlets, índices reordenados)`, com os índices ainda relativos à
 /// primitiva; quem chama soma o `vertex_offset`.
+/// `max_verts` é o tecto de **vértices únicos** por grupo.
+///
+/// `usize::MAX` para o caminho clássico, onde não há limite nenhum; 64 para mesh
+/// shaders, onde é do hardware. Tem de entrar aqui e não no empacotamento: 128
+/// triângulos agrupados por vizinhança precisam de bem mais de 64 vértices, e
+/// deixar a embalagem partir depois desalinhava as tabelas dos comandos.
 pub fn build_meshlets(
     prim: &CpuPrimitive,
     prim_index: u32,
     tris_per_meshlet: usize,
+    max_verts: usize,
 ) -> (Vec<Meshlet>, Vec<u32>) {
     let tris_per_meshlet = tris_per_meshlet.max(1);
+    let max_verts = max_verts.max(3);
     let tri_count = prim.indices.len() / 3;
     if tri_count == 0 {
         return (Vec::new(), Vec::new());
@@ -147,11 +189,20 @@ pub fn build_meshlets(
             hi[a] = hi[a].max(v.pos[a]);
         }
     }
-    let span = [
-        (hi[0] - lo[0]).max(1e-6),
-        (hi[1] - lo[1]).max(1e-6),
-        (hi[2] - lo[2]).max(1e-6),
-    ];
+    // **Uma** escala para os três eixos, não uma por eixo.
+    //
+    // Normalizar cada eixo à sua própria extensão faz um passo de Morton valer
+    // distâncias diferentes em cada direcção: numa superfície de 32 × 6 × 32, os
+    // 10 bits de Y cobrem seis unidades e os de X cobrem trinta e duas, portanto o
+    // Y fica cinco vezes sobre-representado e a ordenação agrupa por faixas de
+    // altura em vez de por vizinhança. Medido num heightfield de teste: o volume
+    // somado das caixas dava **23 628** contra 6 090 de uma caixa só — os grupos
+    // sobrepunham-se em vez de ladrilhar.
+    let span = (hi[0] - lo[0])
+        .max(hi[1] - lo[1])
+        .max(hi[2] - lo[2])
+        .max(1e-6);
+    let span = [span, span, span];
 
     let centroid = |t: usize| {
         let mut c = [0.0f32; 3];
@@ -180,28 +231,26 @@ pub fn build_meshlets(
 
     let mut out_idx: Vec<u32> = Vec::with_capacity(prim.indices.len());
     let mut meshlets = Vec::with_capacity(tri_count.div_ceil(tris_per_meshlet));
-    for chunk in order.chunks(tris_per_meshlet) {
-        let first = out_idx.len() as u32;
-        let (mut mlo, mut mhi) = ([f32::MAX; 3], [f32::MIN; 3]);
-        for &(_, t) in chunk {
-            for k in 0..3 {
-                let i = prim.indices[t * 3 + k];
-                out_idx.push(i);
-                let v = &prim.vertices[i as usize];
-                let w = prim
-                    .world
-                    .transform_point3(harpia_math::Vec3::new(v.pos[0], v.pos[1], v.pos[2]));
-                let w = [w.x, w.y, w.z];
-                for a in 0..3 {
-                    mlo[a] = mlo[a].min(w[a]);
-                    mhi[a] = mhi[a].max(w[a]);
-                }
-            }
+
+    let mut first = 0u32;
+    let mut tris_here = 0usize;
+    let mut unique: Vec<u32> = Vec::with_capacity(max_verts.min(256));
+    let (mut mlo, mut mhi) = ([f32::MAX; 3], [f32::MIN; 3]);
+
+    let close = |first: &mut u32,
+                 tris_here: &mut usize,
+                 unique: &mut Vec<u32>,
+                 mlo: &mut [f32; 3],
+                 mhi: &mut [f32; 3],
+                 out_idx: &Vec<u32>,
+                 meshlets: &mut Vec<Meshlet>| {
+        if *tris_here == 0 {
+            return;
         }
         meshlets.push(Meshlet {
             prim: prim_index,
-            first_index: first,
-            index_count: (chunk.len() * 3) as u32,
+            first_index: *first,
+            index_count: (*tris_here * 3) as u32,
             vertex_offset: 0,
             centre: [
                 (mlo[0] + mhi[0]) * 0.5,
@@ -214,8 +263,127 @@ pub fn build_meshlets(
                 (mhi[2] - mlo[2]) * 0.5,
             ],
         });
+        *first = out_idx.len() as u32;
+        *tris_here = 0;
+        unique.clear();
+        *mlo = [f32::MAX; 3];
+        *mhi = [f32::MIN; 3];
+    };
+
+    for &(_, t) in &order {
+        let gi = [
+            prim.indices[t * 3],
+            prim.indices[t * 3 + 1],
+            prim.indices[t * 3 + 2],
+        ];
+        // Quantos vértices **novos e distintos** este triângulo traz. O `gi[..k]`
+        // evita contar duas vezes um vértice repetido dentro do próprio triângulo;
+        // sem isso a conta subestimava e o empacotamento tinha de partir o grupo
+        // à mesma, desalinhando as tabelas dos comandos.
+        let mut missing = 0;
+        for (k, g) in gi.iter().enumerate() {
+            if unique.contains(g) || gi[..k].contains(g) {
+                continue;
+            }
+            missing += 1;
+        }
+        // Fecha antes de estourar qualquer um dos dois tectos.
+        if tris_here >= tris_per_meshlet || unique.len() + missing > max_verts {
+            close(
+                &mut first,
+                &mut tris_here,
+                &mut unique,
+                &mut mlo,
+                &mut mhi,
+                &out_idx,
+                &mut meshlets,
+            );
+        }
+        for g in gi {
+            out_idx.push(g);
+            if !unique.contains(&g) {
+                unique.push(g);
+            }
+            let v = &prim.vertices[g as usize];
+            let w = prim
+                .world
+                .transform_point3(harpia_math::Vec3::new(v.pos[0], v.pos[1], v.pos[2]));
+            let w = [w.x, w.y, w.z];
+            for a in 0..3 {
+                mlo[a] = mlo[a].min(w[a]);
+                mhi[a] = mhi[a].max(w[a]);
+            }
+        }
+        tris_here += 1;
     }
+    close(
+        &mut first,
+        &mut tris_here,
+        &mut unique,
+        &mut mlo,
+        &mut mhi,
+        &out_idx,
+        &mut meshlets,
+    );
     (meshlets, out_idx)
+}
+
+/// Converte os meshlets de intervalos-de-índices para o formato canónico.
+///
+/// Recebe o que o [`build_meshlets`] devolveu — grupos de triângulos com índices
+/// globais — e reescreve cada grupo como uma lista de vértices únicos mais
+/// triângulos locais. Um grupo com mais de [`MESHLET_VERTS`] vértices únicos é
+/// **partido**, porque o limite é do hardware e não uma preferência.
+pub fn pack_meshlets(meshlets: &[Meshlet], indices: &[u32]) -> MeshletData {
+    let mut out = MeshletData::default();
+    for m in meshlets {
+        let tris = m.index_count as usize / 3;
+        let mut local: Vec<u32> = Vec::with_capacity(MESHLET_VERTS);
+        let mut tri_buf: Vec<u32> = Vec::with_capacity(MESHLET_PRIMS);
+        let flush = |local: &mut Vec<u32>, tri_buf: &mut Vec<u32>, out: &mut MeshletData| {
+            if tri_buf.is_empty() {
+                return;
+            }
+            out.meshlets.push(MeshletRange {
+                vertex_offset: out.vertices.len() as u32,
+                vertex_count: local.len() as u32,
+                triangle_offset: out.triangles.len() as u32,
+                triangle_count: tri_buf.len() as u32,
+            });
+            out.vertices.append(local);
+            out.triangles.append(tri_buf);
+        };
+        for t in 0..tris {
+            let gi = [
+                indices[m.first_index as usize + t * 3],
+                indices[m.first_index as usize + t * 3 + 1],
+                indices[m.first_index as usize + t * 3 + 2],
+            ];
+            // Quantos destes três ainda não estão na lista local?
+            let missing = gi
+                .iter()
+                .filter(|g| !local.contains(g))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len();
+            if local.len() + missing > MESHLET_VERTS || tri_buf.len() >= MESHLET_PRIMS {
+                flush(&mut local, &mut tri_buf, &mut out);
+            }
+            let mut packed = 0u32;
+            for (k, g) in gi.iter().enumerate() {
+                let li = match local.iter().position(|v| v == g) {
+                    Some(i) => i,
+                    None => {
+                        local.push(*g);
+                        local.len() - 1
+                    }
+                };
+                packed |= (li as u32) << (k * 8);
+            }
+            tri_buf.push(packed);
+        }
+        flush(&mut local, &mut tri_buf, &mut out);
+    }
+    out
 }
 
 /// Entrelaça os bits de três valores de 10 bits.
@@ -513,5 +681,217 @@ mod tests {
         let i = img(1, 1);
         assert_eq!(i.mip_levels(), 1);
         assert_eq!(i.mip_chain().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod meshlet_tests {
+    use super::*;
+    use harpia_math::Mat4;
+
+    /// Uma grelha de quads, para haver vértices partilhados a sério.
+    fn grid(n: usize) -> CpuPrimitive {
+        let mut vertices = Vec::new();
+        for y in 0..=n {
+            for x in 0..=n {
+                // Relevo **lento**: uma grelha plana degenera o volume em zero dos
+                // dois lados, e um relevo rápido faz qualquer patch cobrir a gama
+                // toda de altura — nos dois casos o teste mede a função de teste em
+                // vez da partição. A primeira versão tinha `sin(x * 0.7)` e foi
+                // isso que aconteceu.
+                let h = ((x as f32) * 0.1).sin() * ((y as f32) * 0.1).cos() * 3.0;
+                vertices.push(MeshVertex {
+                    pos: [x as f32, h, y as f32],
+                    nrm: [0.0, 1.0, 0.0],
+                    uv: [0.0, 0.0],
+                });
+            }
+        }
+        let mut indices = Vec::new();
+        let w = (n + 1) as u32;
+        for y in 0..n as u32 {
+            for x in 0..n as u32 {
+                let i = y * w + x;
+                indices.extend_from_slice(&[i, i + w, i + 1, i + 1, i + w, i + w + 1]);
+            }
+        }
+        CpuPrimitive {
+            vertices,
+            indices,
+            albedo: 0,
+            alpha_cutoff: 0.0,
+            double_sided: false,
+            world: Mat4::IDENTITY,
+        }
+    }
+
+    /// O formato canónico tem de descrever **exactamente** os mesmos triângulos.
+    ///
+    /// É o único invariante que interessa: um meshlet que perca ou invente um
+    /// triângulo é geometria que aparece ou desaparece, e num mesh shader isso não
+    /// dá erro nenhum.
+    #[test]
+    fn packing_preserves_every_triangle() {
+        let p = grid(24);
+        let (ml, idx) = build_meshlets(&p, 0, 64, MESHLET_VERTS);
+        let packed = pack_meshlets(&ml, &idx);
+
+        let mut got: Vec<[u32; 3]> = Vec::new();
+        for r in &packed.meshlets {
+            for t in 0..r.triangle_count as usize {
+                let tri = packed.triangles[r.triangle_offset as usize + t];
+                let v = |k: u32| {
+                    packed.vertices[r.vertex_offset as usize + ((tri >> (k * 8)) & 0xff) as usize]
+                };
+                got.push([v(0), v(1), v(2)]);
+            }
+        }
+        let want: Vec<[u32; 3]> = idx.chunks(3).map(|c| [c[0], c[1], c[2]]).collect();
+        assert_eq!(got.len(), want.len(), "número de triângulos mudou");
+        let mut a = got.clone();
+        let mut b = want.clone();
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b, "os triângulos não são os mesmos");
+    }
+
+    /// Os limites são do hardware, não uma preferência: exceder um deles é um
+    /// mesh shader que escreve fora do que declarou.
+    #[test]
+    fn packing_respects_the_hardware_limits() {
+        let p = grid(40);
+        let (ml, idx) = build_meshlets(&p, 0, 128, MESHLET_VERTS);
+        let packed = pack_meshlets(&ml, &idx);
+        assert!(!packed.meshlets.is_empty());
+        for (i, r) in packed.meshlets.iter().enumerate() {
+            assert!(
+                r.vertex_count as usize <= MESHLET_VERTS,
+                "meshlet {i} com {} vértices",
+                r.vertex_count
+            );
+            assert!(
+                r.triangle_count as usize <= MESHLET_PRIMS,
+                "meshlet {i} com {} triângulos",
+                r.triangle_count
+            );
+            // Os índices locais têm 8 bits: um que aponte para lá do fim da lista
+            // lê outro vértice qualquer, sem erro nenhum.
+            for t in 0..r.triangle_count as usize {
+                let tri = packed.triangles[r.triangle_offset as usize + t];
+                for k in 0..3 {
+                    let li = (tri >> (k * 8)) & 0xff;
+                    assert!(
+                        li < r.vertex_count,
+                        "índice local {li} fora de {}",
+                        r.vertex_count
+                    );
+                }
+            }
+        }
+    }
+
+    /// Partir em meshlets não pode perder triângulos, seja qual for o tamanho.
+    #[test]
+    fn build_meshlets_keeps_every_triangle() {
+        let p = grid(17);
+        for n in [1, 7, 64, 128, usize::MAX] {
+            let (ml, idx) = build_meshlets(&p, 0, n, usize::MAX);
+            assert_eq!(
+                idx.len(),
+                p.indices.len(),
+                "n={n}: índices a mais ou a menos"
+            );
+            let total: u32 = ml.iter().map(|m| m.index_count).sum();
+            assert_eq!(total as usize, p.indices.len(), "n={n}");
+        }
+    }
+
+    /// Sem tectos, o resultado tem de ser **exactamente** a primitiva.
+    ///
+    /// É o caminho por omissão de toda a árvore: um meshlet por primitiva, os
+    /// índices pela ordem do ficheiro, e a caixa igual à da primitiva. Este teste
+    /// existe porque a construção passou a acumular triângulo a triângulo em vez
+    /// de cortar em blocos, e essa mudança apanha o caminho normal — que eu não
+    /// podia verificar na GPU quando a escrevi.
+    #[test]
+    fn no_limits_reproduces_the_primitive_exactly() {
+        let p = grid(9);
+        let (ml, idx) = build_meshlets(&p, 7, usize::MAX, usize::MAX);
+        assert_eq!(ml.len(), 1, "devia dar um meshlet só");
+        assert_eq!(idx, p.indices, "os índices não podem ser reordenados");
+        let m = ml[0];
+        assert_eq!(m.prim, 7);
+        assert_eq!(m.first_index, 0);
+        assert_eq!(m.index_count as usize, p.indices.len());
+
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for v in &p.vertices {
+            for a in 0..3 {
+                lo[a] = lo[a].min(v.pos[a]);
+                hi[a] = hi[a].max(v.pos[a]);
+            }
+        }
+        for a in 0..3 {
+            let c = (lo[a] + hi[a]) * 0.5;
+            let e = (hi[a] - lo[a]) * 0.5;
+            assert!(
+                (m.centre[a] - c).abs() < 1e-4,
+                "centro em {a}: {} vs {c}",
+                m.centre[a]
+            );
+            assert!((m.extents[a] - e).abs() < 1e-4, "extensão em {a}");
+        }
+    }
+
+    /// Os intervalos têm de ladrilhar o index buffer sem buracos nem sobreposição.
+    #[test]
+    fn meshlet_ranges_tile_the_index_buffer() {
+        let p = grid(19);
+        for (t, v) in [
+            (usize::MAX, usize::MAX),
+            (64, 64),
+            (124, 64),
+            (7, usize::MAX),
+        ] {
+            let (ml, idx) = build_meshlets(&p, 0, t, v);
+            let mut next = 0u32;
+            for (i, m) in ml.iter().enumerate() {
+                assert_eq!(
+                    m.first_index, next,
+                    "t={t} v={v}: buraco antes do meshlet {i}"
+                );
+                assert!(m.index_count > 0 && m.index_count % 3 == 0, "t={t} v={v}");
+                next += m.index_count;
+            }
+            assert_eq!(
+                next as usize,
+                idx.len(),
+                "t={t} v={v}: sobra índice por cobrir"
+            );
+        }
+    }
+
+    /// Meshlets mais pequenos têm de dar caixas mais apertadas — é a razão de eles
+    /// existirem, e um agrupamento que não agrupe não serve de nada.
+    #[test]
+    fn smaller_meshlets_give_tighter_bounds() {
+        let p = grid(32);
+        let volume = |n: usize| -> f64 {
+            let (ml, _) = build_meshlets(&p, 0, n, usize::MAX);
+            ml.iter()
+                .map(|m| {
+                    (2.0 * m.extents[0] as f64).max(1e-4)
+                        * (2.0 * m.extents[1] as f64).max(1e-4)
+                        * (2.0 * m.extents[2] as f64).max(1e-4)
+                })
+                .sum()
+        };
+        let big = volume(usize::MAX);
+        let small = volume(64);
+        assert!(
+            small < big * 0.25,
+            "64 triângulos por meshlet dão {small:.1} de volume somado contra {big:.1} \
+             de um só: a ordenação espacial não está a agrupar"
+        );
     }
 }
