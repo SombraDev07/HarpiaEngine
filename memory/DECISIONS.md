@@ -1589,3 +1589,58 @@ imagem é **idêntica ao pixel** nos três alvos (cena, composite, atlas de somb
 
 O que não fica é a pretensão: ligá-lo por omissão seria vender como optimização uma
 coisa que medi a tornar o frame 6% mais lento.
+
+## D58 — Meshlets: a granularidade certa, e mesmo assim não paga
+
+O D57 concluiu que o culling por oclusão na Sponza não paga porque as unidades são
+grandes de mais — 103 primitivas com ~15 000 triângulos cada. A conclusão era certa
+e a cura óbvia: partir em meshlets. Fi-lo, e **também não paga** — por outra razão,
+que também se mede.
+
+### O que foi feito
+
+`build_meshlets` parte cada primitiva em grupos de N triângulos, ordenados por
+**código de Morton do centróide** antes do corte. Cortá-los pela ordem do ficheiro
+daria grupos com triângulos de sítios distantes e caixas a cobrir meia primitiva —
+que é exactamente o que o culling não quer.
+
+Cada meshlet leva a matriz e o material da sua primitiva, por isso a tabela que o
+shader lê tem **a mesma forma** de antes: **nenhum shader mudou** para isto.
+
+Com 128 triângulos, a Sponza passa de 103 a **2 097** meshlets, e a oclusão passa de
+cortar 3 para cortar **116**.
+
+### E o frame ficou mais lento em todos os tamanhos
+
+| triângulos/meshlet | meshlets | cortados pela oclusão | frame |
+|---|---|---|---|
+| 128 | 2 097 | 116 | 0.948 ms |
+| 256 | 1 076 | 34 | 0.856 ms |
+| 512 | 569 | 13 | 0.837 ms |
+| 1 024 | 327 | 6 | 0.821 ms |
+| 2 048 | 204 | 2 | 0.813 ms |
+| **um por primitiva** | **103** | 1 | **0.737 ms** |
+
+Monótono: quanto maiores, melhor, e o melhor de todos é não os usar. O culling
+melhora com meshlets pequenos e o custo por comando de draw piora mais depressa.
+
+**A causa é o custo fixo por comando indirecto.** 1 768 comandos para 262 267
+triângulos são 148 triângulos por draw; a conta dá cerca de +0.1 ms por cada mil
+comandos. Não é o culling que está errado — é desenhar um meshlet por draw.
+
+**O que faria pagar: mesh shaders.** Com `VK_EXT_mesh_shader` os meshlets são
+workgroups de um dispatch e o custo por comando desaparece. É a fase 9 do roadmap, e
+este trabalho é a fundação dela: a partição, as caixas e a tabela ficam iguais.
+
+### O que fica
+
+`-- --meshlets N` para experimentar; por omissão **um meshlet por primitiva**, que é
+o que a medição diz. A imagem é idêntica ao pixel em todos os tamanhos e com a
+oclusão ligada ou desligada — o que muda é só quanto custa.
+
+### E um erro que a medição apanhou
+
+A primeira versão ordenava os triângulos por Morton **sempre**, mesmo com um só
+meshlet por primitiva. Aí a ordenação não agrupa nada e só estraga a localidade que
+o ficheiro já tinha: **0.736 → 0.772 ms**, 5% do frame por nada. Agora só ordena
+quando há mais de um grupo.

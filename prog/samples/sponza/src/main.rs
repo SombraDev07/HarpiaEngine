@@ -96,6 +96,12 @@ struct Sponza {
     prim_count: u32,
     one_sided_count: u32,
     last_cpu_visible: u32,
+    /// As caixas dos meshlets, em CPU. São a referência do culling em compute —
+    /// o `Visible` do ECS é por primitiva e já não serve para comparar.
+    meshlet_bounds: Vec<(Vec3, Vec3)>,
+    /// Triângulos por meshlet. `usize::MAX` = um meshlet por primitiva, que é o
+    /// que a medição diz ser o melhor com draws indirectos clássicos (D58).
+    meshlet_tris: usize,
     checked: bool,
     scene_extent: Extent2D,
 }
@@ -116,6 +122,8 @@ impl Default for Sponza {
             prim_count: 0,
             one_sided_count: 0,
             last_cpu_visible: 0,
+            meshlet_bounds: Vec::new(),
+            meshlet_tris: usize::MAX,
             checked: false,
             shadow_pso: None,
             color_pso: None,
@@ -435,12 +443,12 @@ impl Sponza {
         };
         let gpu_visible = p1 + p2;
         tracing::info!(
-            primitivas = self.prim_count,
             oclusao = self.occlusion,
             fase1 = p1,
             fase2 = p2,
             desenhadas = gpu_visible,
             so_frustum_cpu = self.last_cpu_visible,
+            meshlets = self.prim_count,
             poupadas = self.last_cpu_visible.saturating_sub(gpu_visible),
             "culling de primitivas"
         );
@@ -505,19 +513,6 @@ fn as_bytes<T>(v: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), std::mem::size_of_val(v)) }
 }
 
-/// A caixa em espaço do mundo. Calculada aqui porque é o último sítio onde os
-/// vértices ainda existem em CPU.
-fn bounds_of(p: &harpia_render::CpuPrimitive) -> Bounds {
-    Bounds::from_points(p.vertices.iter().map(|v| {
-        p.world
-            .transform_point3(Vec3::new(v.pos[0], v.pos[1], v.pos[2]))
-    }))
-    .unwrap_or(Bounds {
-        center: Vec3::ZERO,
-        extents: Vec3::ZERO,
-    })
-}
-
 impl Sample for Sponza {
     fn init(&mut self, gpu: &mut Gpu) -> Result<()> {
         let path = sponza_gltf();
@@ -531,17 +526,28 @@ impl Sample for Sponza {
         // 0.36 ms de CPU. Um draw indirecto múltiplo precisa de um só VB e um só
         // IB — os índices não são rebaseados, cada comando leva o seu
         // `vertexOffset`, que é exactamente para isto que ele existe.
+        // E partida em **meshlets**: grupos de 128 triângulos com a sua própria
+        // caixa. 103 primitivas com ~15 000 triângulos cada não dão ao culling por
+        // oclusão nada para cortar — uma primitiva desse tamanho quase nunca está
+        // inteiramente tapada, e medido dava 3 de 78 (D57). Com meshlets a unidade
+        // de teste fica da ordem de grandeza das plantas do `gate-veg`, onde a
+        // mesma máquina corta 86%.
         let mut all_verts: Vec<harpia_render::MeshVertex> = Vec::new();
         let mut all_idx: Vec<u32> = Vec::new();
         let mut ranges: Vec<(u32, u32, i32)> = Vec::new(); // first_index, count, vertex_offset
-        for p in &cpu.prims {
-            ranges.push((
-                all_idx.len() as u32,
-                p.indices.len() as u32,
-                all_verts.len() as i32,
-            ));
+        let mut meshlets: Vec<harpia_render::Meshlet> = Vec::new();
+        for (i, p) in cpu.prims.iter().enumerate() {
+            let vertex_offset = all_verts.len() as i32;
+            let base = all_idx.len() as u32;
+            let (mut ml, idx) = harpia_render::build_meshlets(p, i as u32, self.meshlet_tris);
+            for m in &mut ml {
+                m.first_index += base;
+                m.vertex_offset = vertex_offset;
+            }
+            ranges.push((base, idx.len() as u32, vertex_offset));
+            meshlets.extend_from_slice(&ml);
             all_verts.extend_from_slice(&p.vertices);
-            all_idx.extend_from_slice(&p.indices);
+            all_idx.extend_from_slice(&idx);
         }
         let vb = gpu.create_vertex_buffer(unsafe {
             std::slice::from_raw_parts(
@@ -560,9 +566,10 @@ impl Sample for Sponza {
         let ib = ib_handle;
         tracing::info!(
             primitivas = cpu.prims.len(),
+            meshlets = meshlets.len(),
+            triangulos = all_idx.len() / 3,
             vertices = all_verts.len(),
-            indices = all_idx.len(),
-            "geometria fundida num par de buffers"
+            "geometria fundida e partida em meshlets"
         );
 
         let mut two_sided = 0;
@@ -608,23 +615,27 @@ impl Sample for Sponza {
         // As de uma face vêm primeiro e as de duas a seguir, porque são dois PSOs
         // diferentes: assim cada um desenha um intervalo contíguo da mesma lista,
         // com dois `drawIndexedIndirect` em vez de 103 `drawIndexed`.
-        let mut order: Vec<usize> = (0..cpu.prims.len()).collect();
-        order.sort_by_key(|&i| {
-            let p = &cpu.prims[i];
-            (p.alpha_cutoff > 0.0 || p.double_sided) as u8
-        });
+        // Um comando por **meshlet**, com os de uma face primeiro: são dois PSOs e
+        // cada um quer um intervalo contíguo. A tabela que o shader lê tem a mesma
+        // forma de antes — a matriz e o material do meshlet são os da sua
+        // primitiva — por isso **nenhum shader mudou** para isto.
+        let two_sided_of = |m: &harpia_render::Meshlet| {
+            let p = &cpu.prims[m.prim as usize];
+            p.alpha_cutoff > 0.0 || p.double_sided
+        };
+        let mut order: Vec<usize> = (0..meshlets.len()).collect();
+        order.sort_by_key(|&i| two_sided_of(&meshlets[i]) as u8);
         self.one_sided_count = order
             .iter()
-            .filter(|&&i| !(cpu.prims[i].alpha_cutoff > 0.0 || cpu.prims[i].double_sided))
+            .filter(|&&i| !two_sided_of(&meshlets[i]))
             .count() as u32;
         self.prim_count = order.len() as u32;
 
         let mut prims: Vec<PrimGpu> = Vec::with_capacity(order.len());
         let mut args: Vec<u32> = Vec::with_capacity(order.len() * 5);
         for (slot, &i) in order.iter().enumerate() {
-            let p = &cpu.prims[i];
-            let (first_index, index_count, vertex_offset) = ranges[i];
-            let b = bounds_of(p);
+            let m = &meshlets[i];
+            let p = &cpu.prims[m.prim as usize];
             prims.push(PrimGpu {
                 world: p.world,
                 material: Vec4::new(
@@ -633,14 +644,18 @@ impl Sample for Sponza {
                     0.0,
                     0.0,
                 ),
-                centre: Vec4::new(b.center.x, b.center.y, b.center.z, 0.0),
-                extents: Vec4::new(b.extents.x, b.extents.y, b.extents.z, 0.0),
+                centre: Vec4::new(m.centre[0], m.centre[1], m.centre[2], 0.0),
+                extents: Vec4::new(m.extents[0], m.extents[1], m.extents[2], 0.0),
             });
+            self.meshlet_bounds.push((
+                Vec3::new(m.centre[0], m.centre[1], m.centre[2]),
+                Vec3::new(m.extents[0], m.extents[1], m.extents[2]),
+            ));
             args.extend_from_slice(&[
-                index_count,
+                m.index_count,
                 1,
-                first_index,
-                vertex_offset as u32,
+                m.first_index,
+                m.vertex_offset as u32,
                 // `firstInstance` = o índice na tabela. É por aqui que o VS sabe
                 // qual é a sua matriz, sem `gl_DrawID`.
                 slot as u32,
@@ -875,7 +890,19 @@ impl Sample for Sponza {
         // A marca `Visible` já não escolhe o que se desenha — isso é do compute —
         // mas continua a correr porque é a **referência** contra a qual o culling
         // na GPU é verificado no `finish`.
-        self.last_cpu_visible = self.world.resource::<CullStats>().visible;
+        // A referência é o **mesmo** teste sobre as **mesmas** caixas, em CPU.
+        let planes = Frustum::from_view_proj(view_proj).planes();
+        self.last_cpu_visible = self
+            .meshlet_bounds
+            .iter()
+            .filter(|(c, e)| {
+                planes.iter().all(|pl| {
+                    let n = Vec3::new(pl.x, pl.y, pl.z);
+                    let r = e.x * n.x.abs() + e.y * n.y.abs() + e.z * n.z.abs();
+                    n.dot(*c) + pl.w + r >= 0.0
+                })
+            })
+            .count() as u32;
 
         let mut cb = LightingCb {
             inv_view_proj: view_proj.inverse(),
@@ -1221,10 +1248,20 @@ fn main() -> Result<std::process::ExitCode> {
     let mut config = AppConfig::parse(std::env::args())?;
     config.title = "Harpia — sponza".into();
     let occlusion = config.extra.iter().any(|a| a == "--occlusion");
+    let meshlet_tris = config
+        .extra
+        .iter()
+        .position(|a| a == "--meshlets")
+        .and_then(|i| config.extra.get(i + 1))
+        .map(|v| v.parse::<usize>())
+        .transpose()
+        .context("`--meshlets` quer um número de triângulos")?
+        .unwrap_or(usize::MAX);
     run(
         config,
         Sponza {
             occlusion,
+            meshlet_tris,
             ..Default::default()
         },
     )

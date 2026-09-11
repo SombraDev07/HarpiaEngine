@@ -47,7 +47,10 @@ pub use fog::{
     froxel_desc, halton2, inject_dispatch, integrate_dispatch, FogCb, FROXEL_D, FROXEL_FORMAT,
     FROXEL_H, FROXEL_W, INJECT_GROUP, INTEGRATE_GROUP,
 };
-pub use gltf_scene::{load_path as load_gltf, CpuImage, CpuPrimitive, CpuScene, GltfError};
+pub use gltf_scene::{
+    build_meshlets, load_path as load_gltf, CpuImage, CpuPrimitive, CpuScene, GltfError, Meshlet,
+    MESHLET_TRIS,
+};
 pub use graph::{
     Access, GraphError, Handle, Layout, Load, Pass, PassId, PassPlan, RenderGraph, Resource,
     ResourceId,

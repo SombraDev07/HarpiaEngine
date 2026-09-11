@@ -96,6 +96,141 @@ pub struct CpuScene {
     pub prims: Vec<CpuPrimitive>,
 }
 
+/// Triângulos por meshlet, quando se usam.
+///
+/// 128 é o número habitual da literatura — e **medido nesta árvore dá pior**: com
+/// um draw indirecto por meshlet, o custo fixo por comando bate o ganho do culling
+/// em todos os tamanhos que experimentei. O varrimento está em D58. O valor fica
+/// aqui porque é o que um caminho de mesh shaders vai querer, e é por isso que a
+/// função continua a existir.
+pub const MESHLET_TRIS: usize = 128;
+
+/// Um grupo de triângulos com a sua própria caixa.
+#[derive(Clone, Copy, Debug)]
+pub struct Meshlet {
+    /// Índice da primitiva de origem: a matriz e o material vêm de lá.
+    pub prim: u32,
+    /// Onde começa no index buffer partilhado, e quantos índices tem.
+    pub first_index: u32,
+    pub index_count: u32,
+    pub vertex_offset: i32,
+    /// Em espaço do mundo, já com a transformação do nó aplicada.
+    pub centre: [f32; 3],
+    pub extents: [f32; 3],
+}
+
+/// Parte uma primitiva em meshlets e devolve os índices reordenados.
+///
+/// Os triângulos são ordenados por **código de Morton do centróide** antes de
+/// serem cortados em grupos. Cortá-los pela ordem em que vêm no ficheiro daria
+/// grupos com triângulos de sítios distantes da malha, e a caixa envolvente de um
+/// grupo assim cobre meia primitiva — que é exactamente o que o culling não quer.
+///
+/// Devolve `(meshlets, índices reordenados)`, com os índices ainda relativos à
+/// primitiva; quem chama soma o `vertex_offset`.
+pub fn build_meshlets(
+    prim: &CpuPrimitive,
+    prim_index: u32,
+    tris_per_meshlet: usize,
+) -> (Vec<Meshlet>, Vec<u32>) {
+    let tris_per_meshlet = tris_per_meshlet.max(1);
+    let tri_count = prim.indices.len() / 3;
+    if tri_count == 0 {
+        return (Vec::new(), Vec::new());
+    }
+
+    // Caixa da primitiva, para normalizar os centróides antes do Morton.
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for v in &prim.vertices {
+        for a in 0..3 {
+            lo[a] = lo[a].min(v.pos[a]);
+            hi[a] = hi[a].max(v.pos[a]);
+        }
+    }
+    let span = [
+        (hi[0] - lo[0]).max(1e-6),
+        (hi[1] - lo[1]).max(1e-6),
+        (hi[2] - lo[2]).max(1e-6),
+    ];
+
+    let centroid = |t: usize| {
+        let mut c = [0.0f32; 3];
+        for k in 0..3 {
+            let v = &prim.vertices[prim.indices[t * 3 + k] as usize];
+            for a in 0..3 {
+                c[a] += v.pos[a] / 3.0;
+            }
+        }
+        c
+    };
+
+    let mut order: Vec<(u32, usize)> = (0..tri_count)
+        .map(|t| {
+            let c = centroid(t);
+            let q = |a: usize| (((c[a] - lo[a]) / span[a]).clamp(0.0, 1.0) * 1023.0) as u32;
+            (morton3(q(0), q(1), q(2)), t)
+        })
+        .collect();
+    // Só se vale a pena. Com um meshlet por primitiva a ordenação não agrupa
+    // nada e só estraga a localidade que o ficheiro já tinha: medido, custava
+    // 5% do frame da Sponza por nada.
+    if tris_per_meshlet < tri_count {
+        order.sort_unstable();
+    }
+
+    let mut out_idx: Vec<u32> = Vec::with_capacity(prim.indices.len());
+    let mut meshlets = Vec::with_capacity(tri_count.div_ceil(tris_per_meshlet));
+    for chunk in order.chunks(tris_per_meshlet) {
+        let first = out_idx.len() as u32;
+        let (mut mlo, mut mhi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for &(_, t) in chunk {
+            for k in 0..3 {
+                let i = prim.indices[t * 3 + k];
+                out_idx.push(i);
+                let v = &prim.vertices[i as usize];
+                let w = prim
+                    .world
+                    .transform_point3(harpia_math::Vec3::new(v.pos[0], v.pos[1], v.pos[2]));
+                let w = [w.x, w.y, w.z];
+                for a in 0..3 {
+                    mlo[a] = mlo[a].min(w[a]);
+                    mhi[a] = mhi[a].max(w[a]);
+                }
+            }
+        }
+        meshlets.push(Meshlet {
+            prim: prim_index,
+            first_index: first,
+            index_count: (chunk.len() * 3) as u32,
+            vertex_offset: 0,
+            centre: [
+                (mlo[0] + mhi[0]) * 0.5,
+                (mlo[1] + mhi[1]) * 0.5,
+                (mlo[2] + mhi[2]) * 0.5,
+            ],
+            extents: [
+                (mhi[0] - mlo[0]) * 0.5,
+                (mhi[1] - mlo[1]) * 0.5,
+                (mhi[2] - mlo[2]) * 0.5,
+            ],
+        });
+    }
+    (meshlets, out_idx)
+}
+
+/// Entrelaça os bits de três valores de 10 bits.
+fn morton3(x: u32, y: u32, z: u32) -> u32 {
+    let part = |mut v: u32| {
+        v &= 0x3ff;
+        v = (v | (v << 16)) & 0x030000ff;
+        v = (v | (v << 8)) & 0x0300f00f;
+        v = (v | (v << 4)) & 0x030c30c3;
+        v = (v | (v << 2)) & 0x09249249;
+        v
+    };
+    part(x) | (part(y) << 1) | (part(z) << 2)
+}
+
 /// glTF image index (or a flat base-colour factor) → index into `images`.
 #[derive(PartialEq, Eq, Hash)]
 enum ImageKey {

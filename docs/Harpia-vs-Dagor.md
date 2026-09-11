@@ -241,9 +241,14 @@ alcançáveis e por medirem algo.
       primitivas de 78. A granularidade é que está errada: 103 primitivas com
       ~15 000 triângulos cada não têm nada para cortar. A mesma máquina corta 86.2%
       no `gate-veg`, onde as unidades são pequenas.
-- [ ] **Meshlets**: dividir cada primitiva em grupos de ~64–128 triângulos com a
-      sua própria caixa. É o que falta para o culling por oclusão pagar numa cena
-      de malhas, e é também o que abre a porta aos mesh shaders.
+- [~] **Meshlets: feitos, verificados, e medidos a não pagar** (D58). Partição por
+      código de Morton, caixa por meshlet, nenhum shader alterado. Com 128
+      triângulos a oclusão passa a cortar 116 unidades em vez de 3 — e o frame vai
+      de 0.737 para 0.948 ms. O custo fixo por comando indirecto (~0.1 ms por mil)
+      bate o ganho em **todos** os tamanhos entre 128 e 2048.
+- [ ] **Mesh shaders** (`VK_EXT_mesh_shader`): é o que falta para os meshlets
+      pagarem — como workgroups de um dispatch, o custo por comando desaparece. A
+      partição, as caixas e a tabela já estão feitas e ficam iguais.
 - [~] **Hi-Z no terreno: medido e arrumado.** A pass do terreno custa 0.042 ms e a
       pirâmide custa 0.032 — mesmo cortando tudo não pagava. Não é esquecimento.
 - [ ] Impostores à distância, que é o que eles têm e nós não.

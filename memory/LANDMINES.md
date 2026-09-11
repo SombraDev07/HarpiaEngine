@@ -373,3 +373,10 @@ output.**
   86.2% da vegetação (plantas de 6 vértices) corta 3 de 78 na Sponza (primitivas de
   15 000 triângulos), e aí o custo da pirâmide torna o frame 6% mais lento. Antes de
   aplicar oclusão a uma cena, olha para o tamanho da unidade de teste (D57).
+- **Um draw indirecto por meshlet não paga.** Medido na Sponza: com 128 triângulos
+  por meshlet o culling corta 116 unidades e o frame fica 0.948 ms contra 0.737 sem
+  meshlets. O custo fixo por comando (~0.1 ms por mil) bate o ganho em todos os
+  tamanhos de 128 a 2048. Meshlets precisam de mesh shaders para pagar (D58).
+- Ordenar índices por localidade espacial **só ajuda se houver agrupamento a
+  fazer**. Com um meshlet por primitiva a ordenação de Morton custou 5% do frame da
+  Sponza e não agrupou nada (D58).

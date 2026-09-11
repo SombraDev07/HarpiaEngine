@@ -812,3 +812,38 @@ são plantas de seis vértices.
 Fica desligado por omissão, atrás de `-- --occlusion`. Fica porque é a fundação do
 culling por meshlet, que é o que falta para isto pagar. Ligá-lo por omissão seria
 vender como optimização uma coisa que medi a tornar o frame mais lento.
+
+## Meshlets: a granularidade certa, e mesmo assim não paga
+
+O passo anterior concluiu que a oclusão não pagava na Sponza porque as unidades eram
+grandes de mais. A cura óbvia era partir em meshlets. Fiz, e **também não paga** —
+por outra razão, que também se mede.
+
+Cada primitiva parte-se em grupos de N triângulos ordenados por código de Morton do
+centróide (cortá-los pela ordem do ficheiro daria caixas a cobrir meia primitiva).
+Cada meshlet leva a matriz e o material da sua primitiva, por isso a tabela tem a
+mesma forma: **nenhum shader mudou**.
+
+Com 128 triângulos a Sponza passa de 103 a 2 097 meshlets e a oclusão passa de
+cortar 3 para **116**. E o frame:
+
+| tris/meshlet | meshlets | cortados | frame |
+|---|---|---|---|
+| 128 | 2 097 | 116 | 0.948 ms |
+| 512 | 569 | 13 | 0.837 ms |
+| 2 048 | 204 | 2 | 0.813 ms |
+| **um por primitiva** | **103** | 1 | **0.737 ms** |
+
+Monótono, e o melhor é não os usar. A causa é o **custo fixo por comando
+indirecto**: ~0.1 ms por cada mil. Não é o culling que está errado — é desenhar um
+meshlet por draw.
+
+O que faria pagar são **mesh shaders**: os meshlets passam a workgroups de um
+dispatch e o custo por comando desaparece. Este trabalho é a fundação disso.
+
+Fica `-- --meshlets N` para experimentar, e por omissão um meshlet por primitiva.
+A imagem é idêntica ao pixel em todos os tamanhos.
+
+E um erro que a medição apanhou: a primeira versão ordenava por Morton **sempre**,
+mesmo com um meshlet só. Aí não agrupa nada e estraga a localidade que o ficheiro já
+tinha — 0.736 → 0.772 ms, 5% por nada.
