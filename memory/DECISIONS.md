@@ -718,3 +718,33 @@ havia sítio onde um gate lesse resultados de volta. `Sample::finish(&mut Gpu)`
 corre depois do último frame; devolver `Err` faz o sample sair ≠ 0, que é o que
 transforma uma medição num gate.
 
+## D43 — Comparação com a Dagor, e o que ela mudou no plano
+
+`docs/Harpia-vs-Dagor.md` tem a análise completa, lida no código e não de memória.
+A Dagor está em `DagorEngine/` (84 GB, BSD-3 da Gaijin) e está **no `.gitignore`** —
+nunca entra no repo. Implementa-se a partir da técnica, não se transplanta código.
+
+O que mudou no que eu pensava:
+
+- **A Dagor também não usa vertex buffer no terreno** (`setvsrc_ex(0, NULL, 0, 0)`).
+  A ideia do `SV_VertexID` não é nossa e eles chegaram lá primeiro. Usam índices,
+  patches, culling por patch e tesselação por hardware no LOD0 — tudo o que nós
+  não temos.
+- **O núcleo do BRDF deles não tem magia**: o `optimized-ggx.hlsl` é do John Hable,
+  domínio público, e a biblioteca inteira são **285 linhas**. O nosso BRDF aguenta
+  a comparação. Volume não era a história.
+- **A distância que dói não é de shading: é que só temos uma luz.** Eles têm
+  clustered (omni + spot) com sombras por prioridade e orçamento por frame. Nenhum
+  detalhe de BRDF chega perto disto.
+- Eles ganham decisivamente em frame graph (161 ficheiros de `daFrameGraph`), GI
+  (`daGI2`: voxel + radiance cache), sombras toroidais e FSR2.
+- **Onde estamos à frente e vale a pena preservar:** o `heightquery` compara CPU
+  contra GPU e falha se divergirem. Procurei um equivalente do lado deles e um
+  teste de furnace, e não encontrei nenhum. A classe de bug que nos deu 77 m de
+  erro é invisível sem esse arnês.
+
+Prioridades que saem daqui, por esta ordem: **Smith height-correlated** (barato e
+estritamente melhor), **clustered lights** (a maior distância), **culling em
+compute para o terreno** (onde podemos genuinamente passar à frente, porque eles
+fazem-no em CPU), **render graph**.
+

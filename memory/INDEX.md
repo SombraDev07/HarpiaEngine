@@ -47,6 +47,12 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 - Doutrina (`docs/Rust-Rewrite-*.md`)
 - Layout bindless (`docs/Bindless-Descriptor-Layout.md`) — contrato; o heap já existe na fase 2
 
+## Comparação com a Dagor
+
+`docs/Harpia-vs-Dagor.md` — análise técnica em terreno, render e PBR, lida no
+código. Resumo: o BRDF aguenta; só temos uma luz; eles fazem culling de terreno em
+CPU e é aí que podemos passar à frente. A `DagorEngine/` está no `.gitignore`.
+
 ## Isto é AAA?
 
 Não, e `docs/AAA-Gap-Analysis.md` diz porquê com números medidos, o que falta por

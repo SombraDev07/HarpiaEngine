@@ -25,3 +25,6 @@ TucanoEngine/
 
 # Binários de release colectados por prog/tools/build_demos.sh
 /demos/
+
+# Motor de terceiros para estudo (BSD-3, Gaijin). 84 GB: nunca entra no repo.
+/DagorEngine/
