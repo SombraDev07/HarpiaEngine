@@ -27,10 +27,25 @@ struct ClusterRange {
 // O binding 0 do set 3 é um **array** de storage buffers, tal como o set 1 é um
 // array de texturas. Três tipos diferentes sobre o mesmo array é o mesmo padrão
 // que já usamos para o heap: o slot é que escolhe qual é qual.
-//   slot 0 = luzes · slot 1 = intervalos por cluster · slot 2 = índices
+//   slot 0 = luzes · 1 = intervalos por cluster · 2 = índices · 3 = sombras
 layout(set = 3, binding = 0, std430) readonly buffer Lights { Light lights[]; } light_buf[];
 layout(set = 3, binding = 0, std430) readonly buffer Ranges { ClusterRange ranges[]; } range_buf[];
 layout(set = 3, binding = 0, std430) readonly buffer Indices { uint indices[]; } index_buf[];
+
+// Uma entrada por luz. `uv_rect.z == 0` = esta luz não tem sombra no atlas, seja
+// porque não é projector, seja porque a fila não lhe deu tile este frame.
+struct ShadowEntry {
+    mat4 view_proj;     // do ponto de vista da luz
+    vec4 uv_rect;       // x,y canto do tile no atlas; z,w lado (normalizado)
+    vec4 params;        // x = um texel do tile em unidades do atlas
+};
+layout(set = 3, binding = 0, std430) readonly buffer Shadows { ShadowEntry items[]; } shadow_buf[];
+
+// O atlas de profundidade, no heap de texturas 2D. Os samplers são bindings
+// separados (0 wrap, 1 clamp, 2 compare), não um array — declará-los como array
+// pede 2 descritores num binding que só tem 1, e a validation apanha-o.
+layout(set = 1, binding = 0) uniform texture2D heap[];
+layout(set = 2, binding = 1) uniform sampler samp_clamp;
 
 layout(set = 0, binding = 0, std140) uniform Lit {
     layout(offset = 0)   mat4 inv_view_proj;
@@ -43,6 +58,8 @@ layout(set = 0, binding = 0, std140) uniform Lit {
     // x,y = dimensões do ecrã, z,w = 1/dimensões
     layout(offset = 192) vec4 screen;
     layout(offset = 208) vec4 cluster_dims;   // x,y,z = grelha
+    // x = índice bindless do atlas, y = 1 se as sombras estão ligadas
+    layout(offset = 224) vec4 shadow;
 } cb;
 
 layout(location = 0) in vec3 v_world;
@@ -108,6 +125,44 @@ float attenuation(float dist, float radius) {
 // Tem de chegar exactamente a zero no ângulo exterior, pela mesma razão que a
 // atenuação radial: o teste de cone no lado da CPU corta ali, e se o shader ainda
 // contribuísse um pouco para lá disso, o clustered discordava da força-bruta.
+// Quanto desta luz chega ao ponto. 1 = nada a tapar.
+//
+// PCF 2x2 sobre o tile. Sem filtragem a borda fica escadeada num mapa de 128
+// texels, e escadeado é exactamente o que um projector de perto mostra.
+float shadow_factor(uint light_index, vec3 world) {
+    if (cb.shadow.y < 0.5) return 1.0;
+    ShadowEntry e = shadow_buf[3].items[light_index];
+    if (e.uv_rect.z <= 0.0) return 1.0;      // sem tile: não se sombreia
+
+    vec4 clip = e.view_proj * vec4(world, 1.0);
+    if (clip.w <= 0.0) return 1.0;           // atrás da luz
+    vec3 ndc = clip.xyz / clip.w;
+    if (any(greaterThan(abs(ndc.xy), vec2(1.0))) || ndc.z > 1.0) return 1.0;
+
+    // NDC -> dentro do tile -> dentro do atlas.
+    vec2 uv = ndc.xy * 0.5 + 0.5;
+    vec2 base = e.uv_rect.xy + uv * e.uv_rect.zw;
+    float texel = e.params.x;
+
+    // Bias proporcional ao texel: um mapa pequeno cobre mais mundo por texel e
+    // precisa de mais folga. Uma constante fixa dá acne nos tiles pequenos ou
+    // peter-panning nos grandes -- e o atlas tem tiles de 512 e de 64 ao mesmo
+    // tempo, por isso aqui não há constante que sirva as duas.
+    float bias = 0.0015 + texel * 2.0;
+    float d = ndc.z - bias;
+
+    float lit = 0.0;
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            vec2 o = (vec2(x, y) - 0.5) * texel;
+            float s = texture(sampler2D(heap[nonuniformEXT(uint(cb.shadow.x))],
+                                        samp_clamp), base + o).r;
+            lit += d <= s ? 1.0 : 0.0;
+        }
+    }
+    return lit * 0.25;
+}
+
 float cone_falloff(vec3 l, vec4 dir_cos_outer, float cos_inner) {
     float cos_outer = dir_cos_outer.w;
     if (cos_outer <= -1.0) return 1.0;          // omni
@@ -140,8 +195,10 @@ void main() {
             vec3 l = d / max(dist, 1e-4);
             float cone = cone_falloff(l, lt.dir_cos_outer, lt.color.w);
             if (cone <= 0.0) continue;
+            float vis = shadow_factor(i, v_world);
+            if (vis <= 0.0) continue;
             color += shade(n, v, l,
-                           lt.color.rgb * (attenuation(dist, lt.position_radius.w) * cone),
+                           lt.color.rgb * (attenuation(dist, lt.position_radius.w) * cone * vis),
                            v_albedo, rough, metal);
         }
     } else {
@@ -161,15 +218,18 @@ void main() {
         uint cluster = (cz * uint(dims.y) + cy) * uint(dims.x) + cx;
         ClusterRange r = range_buf[1].ranges[cluster];
         for (uint i = 0u; i < r.count; ++i) {
-            Light lt = light_buf[0].lights[index_buf[2].indices[r.offset + i]];
+            uint li = index_buf[2].indices[r.offset + i];
+            Light lt = light_buf[0].lights[li];
             vec3 d = lt.position_radius.xyz - v_world;
             float dist = length(d);
             if (dist >= lt.position_radius.w) continue;
             vec3 l = d / max(dist, 1e-4);
             float cone = cone_falloff(l, lt.dir_cos_outer, lt.color.w);
             if (cone <= 0.0) continue;
+            float vis = shadow_factor(li, v_world);
+            if (vis <= 0.0) continue;
             color += shade(n, v, l,
-                           lt.color.rgb * (attenuation(dist, lt.position_radius.w) * cone),
+                           lt.color.rgb * (attenuation(dist, lt.position_radius.w) * cone * vis),
                            v_albedo, rough, metal);
         }
     }

@@ -1154,3 +1154,91 @@ superfície onde o cone pouse, um projector e uma luz pontual dão a mesma image
 um gate cuja imagem não distingue o que testa é mais fraco do que parece. O número
 já provava a correcção; o chão é para se **ver** o que está provado. De caminho é
 uma superfície rasante que cobre muitos clusters, o que torna o teste mais duro.
+
+## D52 — Sombras dinâmicas com orçamento: o tecto é uma optimização, não outra resposta
+
+Fecha o ponto 7.2. Mil luzes não podem ter mil shadow maps por frame e não
+precisam: a maior parte não se mexe, e das que se mexem a maior parte está longe.
+O que faz falta é decidir **quais** valem o custo, e não voltar a desenhar as que
+continuam válidas.
+
+O escalonador está em `prog/engine/render/src/shadow_atlas.rs` e não sabe nada de
+Vulkan: é uma fila por prioridade, um tecto de trabalho, e uma cache com versões.
+
+### Três decisões, e a razão de cada uma
+
+**O orçamento conta-se em texels, não em mapas.** Um mapa de 512² custa 64 vezes um
+de 64². «Oito mapas por frame» deixa o custo variar 64× consoante o que a fila
+calhar a escolher, o que é o mesmo que não haver orçamento.
+
+**A cache é o que torna o orçamento honesto.** Sem conteúdo persistente, «só
+actualizei metade» significa «metade das luzes não tem sombra». Com cache significa
+«metade tem um frame de atraso». Por isso um slot guarda a **versão** que tem
+desenhada e só é refeito quando a versão da luz muda. Para isso o `begin_color_pass`
+passou a interpretar `depth_clear: None` como **LOAD** em vez de limpar a 1.0, e há
+um `clear_depth_rect` para limpar só os tiles do plano. Nenhum chamador passava
+`None` com depth ligado, por isso a mudança de significado não parte nada.
+
+**Omni não entra.** Uma luz pontual precisa de seis faces; é outro trabalho e está
+no roadmap, não aqui.
+
+### O invariante, e é ele que prova tudo o resto
+
+Numa cena parada, o resultado **com** orçamento tem de ser idêntico ao resultado
+**sem** tecto nenhum. Medido no `gate-lights`, 60 frames, contra `-- --budget 0`:
+
+| orçamento | pixels diferentes |
+|---|---|
+| 512×512 texels | **0** |
+| 128×128 texels (16× menos) | **0** |
+
+Ao frame 300 a pass de sombras custa **0.000 ms**: a cache convergiu e não há nada
+para desenhar. É esse o ponto.
+
+### Os números da fila
+
+1000 luzes, 334 projectores, atlas 2048², orçamento 512×512 texels:
+
+| | |
+|---|---|
+| tiles desenhados por frame | 0.40 |
+| adiados por frame | 3.00 |
+| pior espera | 11 frames |
+| projectores com sombra | **24 de 334** |
+
+Os 24 não são um bug: 334 projectores a pedir tiles de 512²/256² são 87 M texels
+num atlas de 4 M. O escalonador serve os mais importantes e adia o resto, que é o
+que um sistema com orçamento faz sob pressão. Dizer «temos sombras dinâmicas para
+1000 luzes» seria mentira; o que temos é uma fila que escolhe bem e nunca estoura o
+tecto.
+
+### O efeito na imagem é pequeno, e a razão é precisa
+
+Sombras ligadas contra desligadas: **1.73% dos pixels, delta máximo 5**. Parece
+nada. Mas cada uma das 24 luzes com sombra é uma de mil, e uma contribui até 59
+níveis: apagar **todas** as 24 dá 5.19% e delta 59, e uma sombra de esfera só tapa
+uma delas de cada vez.
+
+Antes de aceitar isto verifiquei se o mecanismo estava partido, e a maneira foi
+desenhar o factor de sombra em vez da cor: o poço de luz do projector aparece com
+as sombras redondas das esferas lá dentro, exactamente como deve ser. Era o
+mecanismo certo com um efeito pequeno, não um mecanismo partido.
+
+### O que o gate trava
+
+A comparação clustered-contra-força-bruta **não** apanha uma sombra partida: as
+duas correm o mesmo código de amostragem e concordam mesmo que ele esteja errado.
+Por isso há uma segunda verificação que lê o atlas e exige que os tiles tenham
+**variação de profundidade** — um tile constante é um tile onde nada foi desenhado.
+Controlo negativo: com o `draw_indexed` da pass de sombras removido, 0 de 24 tiles
+têm geometria e o gate sai com 1.
+
+E o escalonador tem 13 testes sem GPU. Quebrei-o de cinco maneiras e quatro foram
+apanhadas à primeira; a quinta — tirar o desempate por índice da luz — passou, e a
+razão é que o `sort_by` do Rust é estável, portanto a ordem já era determinista
+desde que o chamador não reordenasse. A propriedade que eu tinha afirmado no
+comentário era mais forte do que isso e não tinha teste. Agora tem.
+
+Dois deles chegaram a **pendurar** em vez de falhar, porque eu tinha escrito
+`while !plan.render.is_empty() {}`. Um teste que pendura bloqueia o CI e não diz
+nada; agora há um `fill_cache` com limite de 200 frames que falha a dizer porquê.

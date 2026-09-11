@@ -317,3 +317,16 @@ output.**
 - Quando tiras uma linha e nenhum teste falha, há duas hipóteses e só uma é «falta
   um teste»: a outra é que a linha era **redundante**. Vai ver qual das duas antes
   de escrever o teste — e corrige o comentário que dizia que ela era essencial (D51).
+- **`while <condição> {}` num teste é um pendurado à espera de acontecer.** Dois
+  testes do escalonador de sombras penduraram quando quebrei a cache de propósito,
+  em vez de falharem. Põe sempre um limite de iterações com uma mensagem (D52).
+- `color_formats: &[]` num PSO **não** dá zero alvos de cor: sem `depth_only: true`
+  o RHI cai para o formato da swapchain, e a validation reclama que o pipeline tem
+  1 alvo e a pass tem 0 (D52).
+- Os samplers do set 2 são **bindings separados** (0 wrap, 1 clamp, 2 compare), não
+  um array. Declarar `uniform sampler samplers[]` e usar `samplers[1]` pede 2
+  descritores num binding que só tem 1 (D52).
+- Quando um efeito mede pouco, verifica se o mecanismo está partido **antes** de
+  culpar a cena: desenha o valor intermédio em vez da cor. As sombras mudavam 1.7%
+  dos pixels e pareciam partidas; a visualização do factor de sombra mostrou o poço
+  do projector com as sombras certas lá dentro (D52).

@@ -36,7 +36,7 @@ demos=(
   "09-agua:gate-water:Gerstner, Fresnel, SSR e espuma."
   "10-chuva:gate-rain:Material molhado, ondulações e bátegas em espaço de ecrã."
   "11-terreno:gate-terrain:Clipmap por SV_VertexID: 7 niveis, culling de patches em compute, UM draw indirecto. Com -- --no-cull para o controlo."
-  "12-luzes:gate-lights:1000 luzes em clusters, 334 delas projectores, verificadas contra forca-bruta (0 ULP)."
+  "12-luzes:gate-lights:1000 luzes em clusters, 334 projectores com sombras por orcamento. Verificadas contra forca-bruta (0 ULP). Com -- --budget N, -- --no-shadows, -- --lights N."
   "13-furnace:gate-furnace:White furnace: o BRDF conserva energia? Mede, nao opina. Sem GPU pesada."
   "14-heightquery:gate-heightquery:Altura do terreno em CPU contra GPU, medida ponto a ponto."
   "15-ecs:gate-ecs:1e6 entidades em bevy_ecs contra hecs. Sem GPU: corre em qualquer maquina."

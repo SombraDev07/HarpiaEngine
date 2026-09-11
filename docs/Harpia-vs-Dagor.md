@@ -208,8 +208,16 @@ alcançáveis e por medirem algo.
       contra 2.220 ms, 5.75×**, e a imagem continua bit-idêntica à força-bruta
       (0 canais, 0 ULP). Era 3.1× só com omni: os projectores encarecem a
       força-bruta e não o clustered.
-- [ ] Sombras dinâmicas com **orçamento por frame** e prioridade (a ideia deles é
-      boa e é só uma fila ordenada).
+- [x] Sombras dinâmicas com **orçamento por frame** e prioridade (D52). Fila por
+      prioridade, tecto em **texels** (não em mapas), e atlas com cache por versão.
+      O invariante: numa cena parada, com orçamento de 512×512 **e** de 128×128, a
+      imagem é idêntica ao pixel a não haver tecto nenhum — o orçamento é uma
+      optimização, não outra resposta. Ao frame 300 a pass custa 0.000 ms.
+      24 de 334 projectores têm sombra, porque 334 tiles de 512² são 87 M texels
+      num atlas de 4 M: a fila serve os importantes e adia o resto.
+- [ ] **Sombras de omni** (seis faces por luz). Só os projectores é que entram hoje.
+- [ ] **Versões a sério**: hoje a cena está parada e a versão é constante. Falta
+      ligá-la ao que se mexe, que é onde o orçamento passa a ter trabalho contínuo.
 - [x] **Superar:** gate de correcção contra força-bruta. **Apanhou logo um bug**
       (caixa XY não conservadora, 1.68% dos canais errados); depois da correcção a
       imagem é **bit-idêntica**, 0 ULP. Era exactamente o tipo de erro invisível a

@@ -1820,11 +1820,24 @@ impl VulkanGpu {
             if let Some(img) = self.images.get_mut(dtex.id as usize) {
                 img.layout = vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             }
+            // `None` = **carrega** o que lá está, em vez de limpar.
+            //
+            // Antes `None` limpava a 1.0 na mesma, o que tornava impossível um
+            // atlas de sombras que persista entre frames -- e sem persistência um
+            // orçamento por frame não significa «metade das sombras tem um frame
+            // de atraso», significa «metade das luzes não tem sombra» (D52).
+            // Nenhum chamador passava `None` com depth ligado, por isso a mudança
+            // de significado não altera nada do que existia.
+            let load = if depth_clear.is_some() {
+                vk::AttachmentLoadOp::CLEAR
+            } else {
+                vk::AttachmentLoadOp::LOAD
+            };
             let z = depth_clear.unwrap_or(1.0);
             depth_attachment = vk::RenderingAttachmentInfo::default()
                 .image_view(view)
                 .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .load_op(load)
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .clear_value(vk::ClearValue {
                     depth_stencil: vk::ClearDepthStencilValue {
@@ -1866,6 +1879,49 @@ impl VulkanGpu {
         self.color_pass_depth = depth;
         self.in_pass = true;
         self.offscreen = true;
+        Ok(())
+    }
+
+    /// Limpa o depth de um rectângulo, dentro de uma pass já aberta.
+    ///
+    /// É o que um atlas com cache precisa: o `loadOp` da pass é LOAD, para o que
+    /// está válido sobreviver, e só os tiles que vão ser redesenhados é que levam
+    /// limpeza. Limpar o atlas inteiro apagaria a cache que justifica o orçamento.
+    pub fn clear_depth_rect(&mut self, x: u32, y: u32, w: u32, h: u32, value: f32) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        let clear = vk::ClearAttachment {
+            aspect_mask: vk::ImageAspectFlags::DEPTH,
+            color_attachment: 0,
+            clear_value: vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: value,
+                    stencil: 0,
+                },
+            },
+        };
+        let rect = vk::ClearRect {
+            rect: vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: x as i32,
+                    y: y as i32,
+                },
+                extent: vk::Extent2D {
+                    width: w,
+                    height: h,
+                },
+            },
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        unsafe {
+            self.device.cmd_clear_attachments(
+                self.frames[self.slot].cmd,
+                std::slice::from_ref(&clear),
+                std::slice::from_ref(&rect),
+            );
+        }
         Ok(())
     }
 

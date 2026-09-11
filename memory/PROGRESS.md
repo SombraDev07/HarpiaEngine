@@ -640,3 +640,38 @@ falso e foi corrigido.
 O gate ganhou chão. Sem superfície onde o cone pouse, um projector e uma omni dão a
 mesma imagem — e um gate cuja imagem não distingue o que testa é mais fraco do que
 parece.
+
+## Sombras dinâmicas: o orçamento é uma optimização, não outra resposta
+
+Fecha o ponto 7.2. O escalonador (`shadow_atlas.rs`) é uma fila por prioridade com
+um tecto de trabalho e uma cache por versão, e não sabe nada de Vulkan.
+
+Três decisões que valem a pena: o orçamento conta-se em **texels** e não em mapas
+(um 512² custa 64 vezes um 64², portanto «oito mapas» não é orçamento nenhum); a
+cache é o que torna o tecto honesto (sem ela «actualizei metade» quer dizer «metade
+das luzes não tem sombra»); e as omni ficam de fora, porque precisam de seis faces
+e isso é outro trabalho.
+
+**O invariante.** Numa cena parada o resultado com orçamento tem de ser igual ao
+resultado sem tecto. Com 512×512 texels: **0 pixels diferentes**. Com 128×128, 16×
+menos: **0 pixels diferentes**. Ao frame 300 a pass de sombras custa **0.000 ms** —
+a cache convergiu.
+
+Para isso o `begin_color_pass` passou a ler `depth_clear: None` como **carrega** em
+vez de limpar, e há um `clear_depth_rect` para limpar só os tiles do plano.
+
+**Os números.** 1000 luzes, 334 projectores, atlas 2048²: 0.40 tiles desenhados por
+frame, 3.00 adiados, pior espera 11 frames, e **24 de 334** projectores com sombra.
+Os 24 não são um bug — 334 tiles de 512² são 87 M texels num atlas de 4 M. A fila
+serve os importantes e adia o resto, que é o que um sistema com orçamento faz.
+
+**E uma coisa que quase dei por partida.** Sombras ligadas contra desligadas mudam
+1.73% dos pixels e o delta máximo é 5. Parecia avariado. Em vez de culpar a cena,
+desenhei o **factor de sombra** em vez da cor: apareceu o poço de luz do projector
+com as sombras redondas das esferas lá dentro, exactamente como deve ser. Era o
+mecanismo certo com efeito pequeno — cada uma das 24 luzes é uma de mil.
+
+O escalonador tem 13 testes sem GPU. Quebrei-o de cinco maneiras: quatro foram
+apanhadas, e a quinta mostrou que eu tinha afirmado no comentário uma propriedade
+mais forte do que a que estava testada. Dois testes chegaram a **pendurar** em vez
+de falhar, porque tinham `while !plan.render.is_empty() {}` — agora têm limite.

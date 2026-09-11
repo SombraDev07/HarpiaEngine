@@ -146,6 +146,7 @@ pub trait Device {
     /// Reescreve-o. O tamanho não pode crescer.
     fn write_storage_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Result<()>;
     /// Desenha com argumentos vindos de um buffer. Cinco `u32` por draw.
+    fn clear_depth_rect(&mut self, x: u32, y: u32, w: u32, h: u32, value: f32) -> Result<()>;
     fn draw_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()>;
     fn draw_indexed_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()>;
     /// Barreira de compute-escreve para indirect/vertex-lê.
@@ -284,6 +285,10 @@ impl Device for Gpu {
 
     fn write_storage_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Result<()> {
         gpu!(self, write_storage_buffer, buffer, bytes)
+    }
+
+    fn clear_depth_rect(&mut self, x: u32, y: u32, w: u32, h: u32, value: f32) -> Result<()> {
+        gpu!(self, clear_depth_rect, x, y, w, h, value)
     }
 
     fn draw_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()> {

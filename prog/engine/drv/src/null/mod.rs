@@ -151,6 +151,10 @@ impl NullGpu {
         Ok(())
     }
 
+    pub fn clear_depth_rect(&mut self, _x: u32, _y: u32, _w: u32, _h: u32, _v: f32) -> crate::Result<()> {
+        Ok(())
+    }
+
     pub fn draw_indirect(&mut self, _args: crate::types::Buffer, _offset: u64, _draws: u32) -> crate::Result<()> {
         Ok(())
     }
