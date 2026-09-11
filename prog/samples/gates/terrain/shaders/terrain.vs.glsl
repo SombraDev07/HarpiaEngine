@@ -14,6 +14,9 @@
 // bug mais desagradável que um terreno pode ter, porque parece um bug de física.
 
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
+// `texelFetch` sobre um `texture2D` sem amostrador precisa desta.
+#extension GL_EXT_samplerless_texture_functions : require
 
 layout(set = 0, binding = 0, std140) uniform Terrain {
     layout(offset = 0)   mat4 view_proj;
@@ -24,11 +27,17 @@ layout(set = 0, binding = 0, std140) uniform Terrain {
     layout(offset = 128) vec4 sky_zenith;
     layout(offset = 144) vec4 sky_horizon;
     layout(offset = 160) vec2 inv_extent;
+    // Índice bindless do campo de altura cozido. 0 é o dummy 1x1 e quer dizer
+    // «avalia o FBM aqui», que é o caminho de controlo do A/B.
+    layout(offset = 172) uint field;
 } cb;
 
 // A lista que o `terrain_cull.cs` escreveu. `gl_InstanceIndex` já não é o nível:
 // é a posição na lista dos patches que sobreviveram.
 layout(set = 3, binding = 0, std430) readonly buffer Vis { uint items[]; } visible[];
+
+// O campo de altura cozido, R32F, uma amostra por célula do nível 0.
+layout(set = 1, binding = 0) uniform texture2D heap[];
 
 layout(location = 0) out vec3 v_world;
 layout(location = 1) out vec3 v_normal;
@@ -82,6 +91,30 @@ float terrain_height(float x, float z) {
         frequency *= 2.0;
     }
     return (sum / norm * 2.0 - 1.0) * 60.0;
+}
+
+// A janela do campo, espelhada de `harpia_render::heightmap`. Se um lado mudar
+// sem o outro, a geometria muda de sítio -- por isso os três números estão aqui
+// com o nome que têm lá.
+const float FIELD_SPACING = 0.5;      // = CLIPMAP_CELL
+const int   FIELD_SIDE = 4096;
+const int   FIELD_ORIGIN_TEXEL = -2048;
+
+// Altura lida do campo cozido.
+//
+// `texelFetch` e não um amostrador: os vértices do clipmap caem **em cima** de
+// texels (o snap de cada nível é múltiplo da célula base), portanto não há meio
+// texel nem filtragem a inventar valores. É isso que torna esta leitura
+// bit-a-bit igual ao que o FBM daria no mesmo ponto.
+float field_height(vec2 world_xz) {
+    ivec2 t = ivec2(round(world_xz / FIELD_SPACING)) - ivec2(FIELD_ORIGIN_TEXEL);
+    t = clamp(t, ivec2(0), ivec2(FIELD_SIDE - 1));
+    return texelFetch(heap[nonuniformEXT(cb.field)], t, 0).r;
+}
+
+// Um só sítio a decidir de onde vem a altura. O ramo é uniforme no draw inteiro.
+float height_at(vec2 p) {
+    return cb.field != 0u ? field_height(p) : terrain_height(p.x, p.y);
 }
 
 void main() {
@@ -145,7 +178,7 @@ void main() {
         }
     }
 
-    float h = terrain_height(world_xz.x, world_xz.y);
+    float h = height_at(world_xz);
 
     // Saia na fronteira interior do anel.
     //
@@ -166,10 +199,8 @@ void main() {
     // Normal por diferenças centrais à escala da célula: mais fina e a normal
     // descreve detalhe que a malha não tem, o que dá luz a tremer nas bordas.
     float eps = cell;
-    float dx = terrain_height(world_xz.x + eps, world_xz.y)
-             - terrain_height(world_xz.x - eps, world_xz.y);
-    float dz = terrain_height(world_xz.x, world_xz.y + eps)
-             - terrain_height(world_xz.x, world_xz.y - eps);
+    float dx = height_at(world_xz + vec2(eps, 0.0)) - height_at(world_xz - vec2(eps, 0.0));
+    float dz = height_at(world_xz + vec2(0.0, eps)) - height_at(world_xz - vec2(0.0, eps));
 
     v_world = world;
     v_normal = normalize(vec3(-dx, 2.0 * eps, -dz));

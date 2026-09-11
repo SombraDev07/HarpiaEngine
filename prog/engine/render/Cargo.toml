@@ -11,4 +11,5 @@ harpia-core.workspace = true
 harpia-math.workspace = true
 harpia-rhi.workspace = true
 gltf.workspace = true
+rayon.workspace = true
 tracing.workspace = true

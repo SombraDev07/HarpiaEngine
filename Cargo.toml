@@ -63,5 +63,8 @@ gpu-allocator = { version = "0.27", default-features = false, features = ["vulka
 raw-window-handle = "0.6"
 winit = "0.30"
 bitflags = "2"
+# Fase 6, §14.1: bake de noise e geração de mips. **Não** para o frame graph,
+# que é single-thread por decisão (D0).
+rayon = "1"
 gltf = { version = "1.4", features = ["import"] }
 image = "0.25"

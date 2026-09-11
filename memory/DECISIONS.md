@@ -1845,3 +1845,65 @@ trouxe tudo de volta, commit e notas incluídas.
 Agora o repo tem `core.fsync = committed`. E antes de um reset à mão: **Alt+SysRq
 S, U, B** (o `kernel.sysrq` deste host é 176, que permite exactamente sync, remount
 e reboot) — grava o cache no disco antes de reiniciar.
+
+## D61 — O campo de altura cozido: mais barato, e **não** idêntico
+
+Primeiro passo da fase 6, e o que o roadmap §7.3 pedia: tirar o terreno de uma
+função analítica avaliada em três sítios e pô-lo num campo cozido.
+
+### O que ficou
+
+Em CPU (`harpia_render::heightmap`): tiles de 256 amostras à célula do nível 0,
+pirâmide min/max por tile, consultas que atravessam tiles, e a caixa de um patch
+tirada da pirâmide em vez de 81 avaliações de FBM. Oito testes, **quatro controlos
+negativos**, e todos apanharam a quebra que lhes competia.
+
+Na GPU: uma textura `R32Float` de 4096² (a janela inteira do clipmap) que o VS lê
+com `texelFetch` — sem amostrador, porque os vértices caem **em cima** de texels: o
+snap de cada nível é múltiplo da célula base.
+
+| | FBM no VS | campo cozido |
+|---|---|---|
+| passe do terreno | 0.093 ms | **0.057 ms** |
+| frame | 0.146 ms | 0.106 ms |
+| culling | 72 de 448 | 72 de 448 |
+| validation | 0 | 0 (lavapipe **e** RX 6700) |
+
+### O critério que fixei antes de medir, e que falhou
+
+Escrevi que as duas imagens tinham de ser **idênticas ao pixel**. Deram **930
+pixels diferentes** (0.10%, máx 23/255). O critério não se cumpriu, e a
+decomposição — que só existe porque se mediu outra vez com a câmara parada —
+mostra duas causas de tamanhos muito diferentes:
+
+| câmara | pixels diferentes |
+|---|---|
+| na origem (janela cobre o clipmap) | **28** |
+| deslocada, frame 16 | **930** |
+
+**902 são defeito meu.** A janela está centrada na origem do mundo e o clipmap está
+centrado na **câmara**. No frame 16 a câmara está em z ≈ −8.6; o nível 6 faz snap a
+64 e estende-se ±1024 à volta de −64, ou seja até **−1088**, contra uma janela que
+acaba em −1024. O que fica de fora entra no `clamp` e lê a borda: altura errada, e
+vê-se como riscos na linha do horizonte. A correcção não é alargar a janela — é a
+janela **seguir a câmara**, que é o item de streaming desta fase.
+
+**Os 28 que sobram não são defeito, e o critério é que estava errado.** O campo
+carrega os valores da CPU e o controlo avalia o FBM na GPU; a D41 já tinha medido
+que os dois lados não concordam bit a bit — **0.19 mm**. Pedir igualdade ao pixel
+entre eles era pedir uma coisa que a árvore já sabia não existir. O critério certo
+é o que fica: fora da borda, a diferença é de 28 pixels em 921 600 e vem de
+aritmética, não de mecanismo.
+
+### O que fica
+
+`-- --field` é **opt-in**, e o caminho analítico continua a ser o controlo do A/B.
+Não passa a omissão enquanto a janela não seguir a câmara — seria trocar 0.036 ms
+por um defeito visível no horizonte.
+
+### E o `rayon` entrou
+
+Autorizado no §14.1 para a fase 6 («bake de noise, build de clipmap, geração de
+mips»), e entrou **com número**: cozer os 256 tiles da janela media **1373 ms** em
+série no arranque, e **429 ms** em 16 cores. Não é o frame graph, que continua
+single-thread por D0.

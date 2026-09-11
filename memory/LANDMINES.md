@@ -417,3 +417,18 @@ output.**
   antes do `end_frame()` e inclui o `init`, onde os pipelines nascem — nada que a
   validation recusou chega à GPU. Um caminho novo que dê erro agora falha com
   `refusing to submit the frame` em vez de pendurar a máquina (D60).
+- **Uma janela de dados centrada no mundo não serve um clipmap centrado na
+  câmara.** O campo de altura cobria ±1024 a partir da origem e o nível 6 chega a
+  −1088 assim que a câmara anda 9 unidades: o que fica de fora entra no `clamp`, lê
+  a borda, e sai como riscos no horizonte. 902 dos 930 pixels errados eram isto.
+  Qualquer recurso indexado por posição do mundo tem de seguir a câmara ou cobrir
+  o pior caso, e o pior caso **não** é o alcance do clipmap (D61).
+- **O staging do heap são 64 MiB e uma textura 4096² R32F ocupa-os exactamente.**
+  O pitch de 16 384 já é múltiplo de 256, portanto não há padding a salvar a
+  diferença: passar a um formato maior, ou a uma janela maior, rebenta o
+  `write_staging` no primeiro upload (D61).
+- **Não peças imagem idêntica ao pixel entre a CPU e a GPU a correr a mesma
+  fórmula.** O `heightquery` mediu 0.19 mm de desacordo com o hash inteiro (D41);
+  trocar uma avaliação na GPU por um valor cozido na CPU herda esse desacordo e dá
+  dezenas de pixels diferentes nas silhuetas. O critério honesto é medir a
+  diferença e dizer de onde vem, não exigir zero (D61).

@@ -27,6 +27,7 @@
 use std::collections::HashMap;
 
 use harpia_math::{Vec2, Vec3};
+use rayon::prelude::*;
 
 use crate::terrain::{
     clipmap_patch_grid, clipmap_patches_per_level, terrain_height, CLIPMAP_CELL, CLIPMAP_N,
@@ -43,6 +44,16 @@ pub const TILE_SIZE: f32 = TILE_N as f32 * TILE_SPACING;
 /// Níveis da pirâmide, contando as amostras como nível 0. Com 256 de lado, o
 /// último nível é um único par (min, max) do tile inteiro.
 pub const TILE_MIPS: u32 = 9;
+
+/// Lado, em amostras, da janela do campo que vai para a GPU.
+///
+/// Cobre o alcance do clipmap **inteiro** à célula do nível 0: 4096 × 0.5 = 2048
+/// unidades, ou seja ±1024. Tem de cobrir tudo, senão os níveis de fora ficavam a
+/// avaliar o FBM e o terreno passava a ter dois mecanismos a meio da paisagem —
+/// duas superfícies que só coincidem se ninguém lhes tocar.
+pub const FIELD_SIDE: u32 = 4096;
+/// Índice global da primeira amostra da janela (o canto negativo).
+pub const FIELD_ORIGIN: i64 = -(FIELD_SIDE as i64) / 2;
 
 /// Em que tile cai uma coordenada de mundo.
 pub fn tile_of(x: f32, z: f32) -> (i32, i32) {
@@ -279,6 +290,50 @@ impl HeightmapField {
             }
         }
         Some((lo, hi))
+    }
+
+    /// Coze tudo o que a janela do campo precisa, e diz quantos tiles cozeu.
+    ///
+    /// **Em paralelo.** Cozer um tile é uma função pura de `(tx, tz)` e os tiles
+    /// não se tocam, portanto é o caso exacto para que o roadmap §14.1 autoriza o
+    /// `rayon` na fase 6. Não entrou por gosto: a janela de 256 tiles media
+    /// **1373 ms** em série no arranque do gate, e isso é tempo a olhar para uma
+    /// janela preta. O resultado é o mesmo, tile a tile — a ordem de inserção num
+    /// mapa não muda o que lá está.
+    pub fn ensure_window(&mut self, origin_gx: i64, origin_gz: i64, side: u32) -> usize {
+        let n = TILE_N as i64;
+        let mut missing: Vec<(i32, i32)> = Vec::new();
+        for tz in origin_gz.div_euclid(n)..=(origin_gz + side as i64 - 1).div_euclid(n) {
+            for tx in origin_gx.div_euclid(n)..=(origin_gx + side as i64 - 1).div_euclid(n) {
+                let coord = (tx as i32, tz as i32);
+                if !self.tiles.contains_key(&coord) {
+                    missing.push(coord);
+                }
+            }
+        }
+        let baked: Vec<((i32, i32), HeightTile)> = missing
+            .par_iter()
+            .map(|&(tx, tz)| ((tx, tz), HeightTile::bake(tx, tz)))
+            .collect();
+        let count = baked.len();
+        self.tiles.extend(baked);
+        count
+    }
+
+    /// A janela como bytes `R32Float`, linha a linha, para subir tal e qual.
+    ///
+    /// Sem conversão nem quantização: a textura fica **bit a bit** igual ao campo
+    /// em CPU, que é o que deixa o `heightquery` continuar a comparar os dois
+    /// lados sem tolerância. `None` se faltar um tile — nunca zeros.
+    pub fn window_r32(&self, origin_gx: i64, origin_gz: i64, side: u32) -> Option<Vec<u8>> {
+        let mut out = Vec::with_capacity(side as usize * side as usize * 4);
+        for iz in 0..side as i64 {
+            for ix in 0..side as i64 {
+                let h = self.sample_global(origin_gx + ix, origin_gz + iz)?;
+                out.extend_from_slice(&h.to_le_bytes());
+            }
+        }
+        Some(out)
     }
 
     /// A caixa de um patch do clipmap, tirada da pirâmide.
@@ -535,6 +590,46 @@ mod tests {
             PatchBounds::Missing,
             "sem tiles a caixa não pode existir"
         );
+    }
+
+    /// A janela que vai para a GPU tem de cobrir o clipmap todo.
+    ///
+    /// Se um dia o alcance crescer e este teste não falhar, o terreno passa a ter
+    /// dois mecanismos: campo perto e FBM longe, com uma costura no meio.
+    #[test]
+    fn the_field_window_covers_the_whole_clipmap() {
+        assert_eq!(FIELD_ORIGIN, -(FIELD_SIDE as i64) / 2);
+        let covered = FIELD_SIDE as f32 * TILE_SPACING;
+        assert!(
+            covered >= crate::terrain::clipmap_range() * 2.0,
+            "a janela cobre {covered} u e o clipmap precisa de {}",
+            crate::terrain::clipmap_range() * 2.0
+        );
+        // E a janela é um número inteiro de tiles, senão sobra meio tile por cozer.
+        assert_eq!(FIELD_SIDE % TILE_N, 0);
+    }
+
+    /// Os bytes da janela são as amostras, pela ordem que a textura espera.
+    #[test]
+    fn the_window_bytes_are_the_samples_in_order() {
+        let mut field = HeightmapField::new();
+        field.ensure(0, 0);
+        let side = 16u32;
+        let bytes = field.window_r32(0, 0, side).expect("o tile está cozido");
+        assert_eq!(bytes.len(), side as usize * side as usize * 4);
+        for iz in 0..side as i64 {
+            for ix in 0..side as i64 {
+                let at = ((iz * side as i64 + ix) * 4) as usize;
+                let got = f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+                assert_eq!(
+                    got,
+                    field.sample_global(ix, iz).unwrap(),
+                    "byte ({ix}, {iz}) não é a amostra"
+                );
+            }
+        }
+        // Fora dos tiles cozidos não há janela nenhuma: nem zeros, nem lixo.
+        assert!(field.window_r32(-1, 0, side).is_none());
     }
 
     /// Os tiles ladrilham o mundo: cada coordenada cai num e num só.

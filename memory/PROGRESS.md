@@ -903,3 +903,29 @@ actualizado: a fase 9 deixa de dizer que isto está por fazer.
 
 Isto foi trabalho **fora de fase** — a árvore está na 6 — e não se repete: a fase 6
 (terreno + vegetação + mundo) continua por fazer e é o passo seguinte.
+
+## Fase 6 arrancou: o terreno deixou de ser só uma fórmula (2026-09-11)
+
+Seis das oito caixas da fase 6 já estavam feitas (ECS, clipmap, culling de patches,
+heightquery, veg com Hi-Z, instâncias). O que falta é **streaming** e o exit dos
+gates — e o primeiro passo foi o item §7.3: tirar a altura de uma função avaliada
+em três sítios e pô-la num campo cozido.
+
+**Em CPU** (`harpia_render::heightmap`, D61): tiles de 256 amostras, pirâmide
+min/max, e a caixa de um patch por leitura em vez de 81 avaliações de FBM. Oito
+testes e quatro controlos negativos, todos a apanhar.
+
+**Na GPU**: textura `R32Float` 4096², lida com `texelFetch` porque os vértices caem
+em cima de texels. A passe do terreno **0.093 → 0.057 ms**, validation 0 no
+lavapipe e na placa, culling inalterado.
+
+**E o que a imagem apanhou:** 930 pixels diferentes, contra o zero que eu tinha
+fixado como critério. Medido outra vez com a câmara parada: **28**. Portanto 902
+eram defeito — a janela está centrada na origem e o clipmap na câmara, e o nível 6
+sai da janela assim que a câmara anda. Os 28 que sobram são a CPU e a GPU a
+discordarem 0.19 mm na mesma fórmula (D41): pedir igualdade ao pixel entre os dois
+era pedir o impossível.
+
+`-- --field` fica **opt-in** até a janela seguir a câmara — que é exactamente o
+item de streaming da fase. O `rayon` entrou (§14.1) com número: 1373 → **429 ms**
+para cozer os 256 tiles.

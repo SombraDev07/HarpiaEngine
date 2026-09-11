@@ -16,10 +16,11 @@ use anyhow::{Context, Result};
 use harpia_app::{AppConfig, Sample, run};
 use harpia_math::{Mat4, Vec2, Vec3, Vec4};
 use harpia_render::{
-    Access, CLIPMAP_LEVELS, CLIPMAP_N, CLIPMAP_PATCH, FlyCamera, GBUFFER_DEPTH_FORMAT, Load, Pass,
-    PassPlan, RenderGraph, TerrainCb, clipmap_patch_bounds, clipmap_patch_count,
-    clipmap_patch_vertex_count, clipmap_patches_per_level, clipmap_range, clipmap_vertex_count,
-    color_desc, depth_desc, terrain_height,
+    Access, CLIPMAP_LEVELS, CLIPMAP_N, CLIPMAP_PATCH, FIELD_ORIGIN, FIELD_SIDE, FlyCamera,
+    GBUFFER_DEPTH_FORMAT, HeightmapField, Load, Pass, PassPlan, RenderGraph, TerrainCb,
+    clipmap_patch_bounds, clipmap_patch_count, clipmap_patch_vertex_count,
+    clipmap_patches_per_level, clipmap_range, clipmap_vertex_count, color_desc, depth_desc,
+    sampled_desc, terrain_height,
 };
 use harpia_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
@@ -98,6 +99,13 @@ struct TerrainGate {
     /// `-- --no-cull`: desenha os 448 patches. O controlo que prova que o culling
     /// não muda a imagem — se mudasse, estaria a cortar chão que se vê.
     no_cull: bool,
+    /// `-- --field`: a altura vem do campo cozido em vez do FBM avaliado no VS.
+    ///
+    /// Opt-in enquanto não estiver medido. O caminho analítico fica a ser o
+    /// controlo do A/B: as duas imagens têm de ser idênticas ao pixel, porque as
+    /// amostras do campo **são** `terrain_height` nos mesmos pontos.
+    field: bool,
+    field_tex: Option<Texture>,
     /// Do último frame, para a CPU refazer o mesmo culling e comparar.
     last_view_proj: Mat4,
     last_camera_xz: Vec2,
@@ -118,6 +126,8 @@ impl Default for TerrainGate {
             frames_counted: 0,
             checked: false,
             no_cull: false,
+            field: false,
+            field_tex: None,
             last_view_proj: Mat4::IDENTITY,
             last_camera_xz: Vec2::ZERO,
             color: None,
@@ -266,6 +276,31 @@ impl Sample for TerrainGate {
         // `VkDrawIndirectCommand`: quatro u32.
         self.args_buf = Some(gpu.create_storage_buffer(SLOT_ARGS, as_bytes(&[0u32; 4]))?);
 
+        if self.field {
+            let t0 = std::time::Instant::now();
+            let mut heights = HeightmapField::new();
+            let tiles = heights.ensure_window(FIELD_ORIGIN, FIELD_ORIGIN, FIELD_SIDE);
+            let bytes = heights
+                .window_r32(FIELD_ORIGIN, FIELD_ORIGIN, FIELD_SIDE)
+                .context("a janela do campo ficou com tiles por cozer")?;
+            let bake_ms = t0.elapsed().as_secs_f32() * 1000.0;
+            // 4096² × 4 B são **exactamente** os 64 MiB do staging do heap, e o
+            // pitch de 16 384 já é múltiplo de 256, portanto não há padding a
+            // acrescentar. Não sobra um byte: mudar de formato aqui obriga a rever
+            // o staging antes de mudar o resto.
+            let tex =
+                gpu.create_texture(&sampled_desc(FIELD_SIDE, FIELD_SIDE, 1, Format::R32Float))?;
+            gpu.upload_texture_mip(tex, 0, &bytes)?;
+            self.field_tex = Some(tex);
+            tracing::info!(
+                tiles,
+                amostras = FIELD_SIDE * FIELD_SIDE,
+                mib = bytes.len() / (1024 * 1024),
+                bake_ms = format!("{bake_ms:.0}"),
+                "campo de altura cozido"
+            );
+        }
+
         self.recreate(gpu, gpu.extent())?;
         tracing::info!(
             levels = CLIPMAP_LEVELS,
@@ -318,6 +353,12 @@ impl Sample for TerrainGate {
             sun_dir: Vec4::new(sun.x, sun.y, sun.z, 0.0),
             inv_extent: Vec2::new(1.0 / w, 1.0 / h),
             sky_horizon: Vec4::new(0.62, 0.72, 0.86, clipmap_range() * 0.85),
+            // 0 quando não há campo: o slot 0 é o dummy e o VS lê isso como
+            // «avalia o FBM».
+            field: match self.field_tex {
+                Some(t) => gpu.bindless_index(t)?,
+                None => 0,
+            },
             ..Default::default()
         };
 
@@ -547,10 +588,12 @@ fn main() -> Result<std::process::ExitCode> {
         config.resize_at = vec![(6, 800, 600), (12, 1280, 720)];
     }
     let no_cull = config.extra.iter().any(|a| a == "--no-cull");
+    let field = config.extra.iter().any(|a| a == "--field");
     run(
         config,
         TerrainGate {
             no_cull,
+            field,
             ..TerrainGate::default()
         },
     )

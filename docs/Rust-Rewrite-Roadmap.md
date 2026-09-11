@@ -465,7 +465,7 @@ sem informação. A coluna «fase» é o contrato.
 |---|---|---|
 | **5** (clima) | `meshopt` | optimizar as malhas da Sponza e da vegetação. Já autorizada em `AGENTS.md`. |
 | **6** (terreno/veg/mundo) | **ECS** — ver decisão abaixo | milhões de instâncias de vegetação e streaming de células precisam de storage por arquétipo. Antes da fase 6 **não há entidades**, só sistemas. |
-| **6** | `rayon` | bake de noise, build de clipmap, geração de mips. **Não** para o frame graph — esse é single-thread por decisão (D0). |
+| **6** | `rayon` — **dentro** (2026-09-11) | bake de noise, build de clipmap, geração de mips. Entrou com medição: cozer os 256 tiles do campo de altura eram 1373 ms em série e 429 ms em 16 cores (D61). **Não** para o frame graph — esse é single-thread por decisão (D0). |
 | **6** | `serde` + `postcard` (ou `bincode`) | descrever mundo/células em disco. `rkyv` só se o profiling mostrar que a desserialização dói. |
 | **7** (GI/post) | `parry3d` | queries de geometria para probes e occlusion. Vem com o Rapier, mas usa-se sozinha. |
 | **8** (editor) | `egui` + **`egui-ash-renderer`** | tooling. **Não `egui-wgpu`** — ver o aviso sobre wgpu abaixo. Pool de descriptors à parte do heap 8192 (mina 7). |

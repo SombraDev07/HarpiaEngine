@@ -215,7 +215,12 @@ pub struct TerrainCb {
     pub inv_extent: Vec2,
     /// Índice bindless do alvo offscreen, para o blit.
     pub scene: u32,
-    pub _pad: u32,
+    /// Índice bindless do campo de altura cozido, ou 0 para avaliar o FBM.
+    ///
+    /// Zero é o slot do dummy 1×1 e nunca é um campo válido, portanto serve de
+    /// «desligado» sem gastar outro campo no CB — que está cheio nos 176 bytes que
+    /// o teste de layout fixa.
+    pub field: u32,
 }
 
 impl Default for TerrainCb {
@@ -232,7 +237,7 @@ impl Default for TerrainCb {
             sky_horizon: Vec4::new(0.62, 0.72, 0.86, 0.0),
             inv_extent: Vec2::ONE,
             scene: 0,
-            _pad: 0,
+            field: 0,
         }
     }
 }
@@ -267,6 +272,7 @@ mod tests {
             (6, offset_of!(TerrainCb, sky_horizon) as u32),
             (7, offset_of!(TerrainCb, inv_extent) as u32),
             (8, offset_of!(TerrainCb, scene) as u32),
+            (9, offset_of!(TerrainCb, field) as u32),
         ];
         for shader in [
             "prog/samples/gates/terrain/shaders/terrain.vs.glsl",
