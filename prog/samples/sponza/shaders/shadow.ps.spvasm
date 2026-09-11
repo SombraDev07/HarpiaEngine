@@ -14,10 +14,19 @@ OpCapability SampledImageArrayNonUniformIndexing
 OpCapability ShaderNonUniform
 OpExtension "SPV_EXT_descriptor_indexing"
 OpMemoryModel Logical GLSL450
-OpEntryPoint Fragment %PSMain "PSMain" %in_uv %out_alpha %cb %heap %samp
+OpEntryPoint Fragment %PSMain "PSMain" %in_uv %out_alpha %cb %heap %samp %in_albedo %in_cutoff
 OpExecutionMode %PSMain OriginUpperLeft
 OpName %PSMain "PSMain"
 OpDecorate %in_uv Location 0
+; O índice do albedo e o corte de alfa deixaram de vir do CBV: são
+; constantes **por primitiva**, e um CBV por primitiva é um draw por
+; primitiva. Chegam agora do VS, que os lê da tabela indexada pelo
+; `firstInstance` do comando indirecto (D56). `Flat` porque não há nada
+; para interpolar.
+OpDecorate %in_albedo Location 1
+OpDecorate %in_albedo Flat
+OpDecorate %in_cutoff Location 2
+OpDecorate %in_cutoff Flat
 OpDecorate %out_alpha Location 0
 OpDecorate %cb DescriptorSet 0
 OpDecorate %cb Binding 0
@@ -56,6 +65,10 @@ OpMemberDecorate %Lighting 15 Offset 156
 %mat4 = OpTypeMatrix %v4 4
 
 %ptr_in_v2 = OpTypePointer Input %v2
+%ptr_in_u = OpTypePointer Input %uint
+%ptr_in_fl = OpTypePointer Input %float
+%in_albedo = OpVariable %ptr_in_u Input
+%in_cutoff = OpVariable %ptr_in_fl Input
 %ptr_out_v4 = OpTypePointer Output %v4
 %in_uv = OpVariable %ptr_in_v2 Input
 %out_alpha = OpVariable %ptr_out_v4 Output
@@ -82,16 +95,14 @@ OpMemberDecorate %Lighting 15 Offset 156
 %PSMain = OpFunction %void None %fn0
 %entry = OpLabel
 %uv = OpLoad %v2 %in_uv
-%pg0 = OpAccessChain %ptr_u %cb %u4
-%ig0 = OpLoad %uint %pg0
+%ig0 = OpLoad %uint %in_albedo
 %pa0 = OpAccessChain %ptr_img %heap %ig0
 %ia0 = OpLoad %img %pa0
 %sw = OpLoad %samp_ty %samp
 %sm0 = OpSampledImage %sampled %ia0 %sw
 %alb4 = OpImageSampleImplicitLod %v4 %sm0 %uv
 %alpha = OpCompositeExtract %float %alb4 3
-%pcut = OpAccessChain %ptr_f %cb %u15
-%cut = OpLoad %float %pcut
+%cut = OpLoad %float %in_cutoff
 %cutme = OpFOrdLessThan %bool %alpha %cut
 OpSelectionMerge %keep None
 OpBranchConditional %cutme %cutout %keep

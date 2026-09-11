@@ -758,3 +758,36 @@ mesmos 60 pixels, o que me devia ter dito logo que o problema não era a cena. A
 causa: cada nível da pirâmide lia `texelFetch(..., 0)`, sempre o mip 0 em vez do
 anterior. Corrigido: 27% → 86%, e 60 pixels → zero. Ler o mip errado é legal e
 nenhuma camada de validação diz nada.
+
+## A Sponza passou a GPU-driven: 596 draws para 15
+
+Aplicar o Hi-Z à Sponza esbarrava numa coisa mais básica: ela desenhava um draw por
+primitiva, com um par de VB/IB por primitiva. Um draw indirecto múltiplo precisa de
+um só de cada.
+
+**Antes de construir, medi onde paga.** A pirâmide custa 0.032 ms fixos. A pass do
+terreno custa 0.042 — mesmo cortando tudo não pagava, e fica registado como medido.
+A da Sponza custa 0.350 mais 0.196 das cascatas: aí paga.
+
+O que mudou: um VB e um IB para as 103 primitivas (192 496 vértices), uma tabela
+por primitiva, e uma lista fixa de comandos cujo `instanceCount` o compute escreve.
+Os VS passaram de `.spvasm` escrito à mão a GLSL; os PS levaram um patch de duas
+cargas. O índice da primitiva vai no `firstInstance` e chega ao shader como
+`gl_InstanceIndex`, sem precisar de `gl_DrawID`.
+
+| | antes | depois |
+|---|---|---|
+| draws | 596 | **15** |
+| CPU do frame | 0.360 ms | **0.120 ms** |
+| GPU | 0.736 ms | 0.736 ms |
+| imagem | — | **0 pixels** no composite |
+
+**Dois erros, e nenhum deu erro.** O `firstInstance` precisa da feature
+`drawIndirectFirstInstance` e a validation não o apanha — o conteúdo do buffer
+indirecto é do lado da GPU. E ao tirar a escrita de CBV que era por primitiva,
+deixei de a escrever de todo: a pass da cena passou a ler o que ficou da anterior,
+e a Sponza ficou com um banho vermelho por cima das texturas certas.
+
+O ECS continua a marcar `Visible`, mas já não escolhe o que se desenha — passou a
+ser a **referência**: o `finish` lê os comandos de volta e exige que o número bata
+com o da CPU. 78 de 103, nos dois.

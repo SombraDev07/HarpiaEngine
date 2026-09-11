@@ -361,3 +361,11 @@ output.**
   eu testei folga de profundidade, rectângulo alargado e cena sem chão — os três
   deram o **mesmo** número de pixels errados, e foi isso que devia ter-me dito que
   o erro estava na pirâmide e não na cena (D55).
+- **`firstInstance` num comando indirecto precisa da feature
+  `drawIndirectFirstInstance`**, e a validation não o apanha: o conteúdo do buffer
+  indirecto é escrito do lado da GPU e ela não o lê. Sem a feature o campo é
+  ignorado em silêncio (D56).
+- Ao tirar uma escrita de CBV que era por draw, confirma que **alguém** ainda a
+  escreve por pass. Tirei a escrita por primitiva e a pass da cena passou a ler o
+  que ficou da anterior: a Sponza ficou com um banho vermelho e as texturas certas
+  por baixo (D56).

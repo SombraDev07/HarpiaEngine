@@ -20,6 +20,23 @@ pub struct Mesh {
     pub index_count: u32,
 }
 
+/// Onde esta entidade vive dentro dos buffers partilhados.
+///
+/// Toda a cena está num par de buffers, e cada primitiva é um intervalo neles.
+/// É isso que permite um draw indirecto múltiplo: um `vkCmdDrawIndexedIndirect`
+/// com N comandos precisa de **um** VB e **um** IB ligados, e cada comando leva o
+/// seu `firstIndex` e `vertexOffset`.
+///
+/// `prim` é o índice na tabela por primitiva que o shader lê — e vai no
+/// `firstInstance` do comando, para o VS o ler como `gl_InstanceIndex` sem
+/// precisar de `gl_DrawID` nem da extensão que ele obriga.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct MeshRange {
+    pub first_index: u32,
+    pub vertex_offset: i32,
+    pub prim: u32,
+}
+
 /// O material. `alpha_cutoff` 0 = opaco (glTF `OPAQUE`).
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Material {
@@ -105,7 +122,8 @@ impl Frustum {
         for plane in &self.planes {
             let n = Vec3::new(plane.x, plane.y, plane.z);
             // Raio da caixa projectado no normal do plano.
-            let radius = b.extents.x * n.x.abs() + b.extents.y * n.y.abs() + b.extents.z * n.z.abs();
+            let radius =
+                b.extents.x * n.x.abs() + b.extents.y * n.y.abs() + b.extents.z * n.z.abs();
             if n.dot(b.center) + plane.w + radius < 0.0 {
                 return false;
             }
@@ -116,11 +134,7 @@ impl Frustum {
 
 fn normalize_plane(p: Vec4) -> Vec4 {
     let len = Vec3::new(p.x, p.y, p.z).length();
-    if len > 0.0 {
-        p / len
-    } else {
-        p
-    }
+    if len > 0.0 { p / len } else { p }
 }
 
 /// O frustum deste frame, para os sistemas de culling lerem.
@@ -187,11 +201,8 @@ mod tests {
 
     #[test]
     fn bounds_wrap_their_points() {
-        let b = Bounds::from_points([
-            Vec3::new(-1.0, 0.0, 2.0),
-            Vec3::new(3.0, 4.0, -2.0),
-        ])
-        .unwrap();
+        let b =
+            Bounds::from_points([Vec3::new(-1.0, 0.0, 2.0), Vec3::new(3.0, 4.0, -2.0)]).unwrap();
         assert_eq!(b.center, Vec3::new(1.0, 2.0, 0.0));
         assert_eq!(b.extents, Vec3::new(2.0, 2.0, 2.0));
         assert!(Bounds::from_points([]).is_none());
@@ -208,10 +219,22 @@ mod tests {
     #[test]
     fn behind_and_beyond_are_outside() {
         let f = Frustum::from_view_proj(camera());
-        assert!(!f.intersects(&point(Vec3::new(0.0, 0.0, 20.0))), "atrás da câmara");
-        assert!(!f.intersects(&point(Vec3::new(0.0, 0.0, -200.0))), "para lá do far");
-        assert!(!f.intersects(&point(Vec3::new(500.0, 0.0, 0.0))), "muito à direita");
-        assert!(!f.intersects(&point(Vec3::new(0.0, 500.0, 0.0))), "muito acima");
+        assert!(
+            !f.intersects(&point(Vec3::new(0.0, 0.0, 20.0))),
+            "atrás da câmara"
+        );
+        assert!(
+            !f.intersects(&point(Vec3::new(0.0, 0.0, -200.0))),
+            "para lá do far"
+        );
+        assert!(
+            !f.intersects(&point(Vec3::new(500.0, 0.0, 0.0))),
+            "muito à direita"
+        );
+        assert!(
+            !f.intersects(&point(Vec3::new(0.0, 500.0, 0.0))),
+            "muito acima"
+        );
     }
 
     /// Uma caixa grande a meio de um plano tem de continuar visível: cortá-la
@@ -244,11 +267,18 @@ mod tests {
         assert_eq!(world.resource::<CullStats>().total, 2);
 
         // Vira a câmara ao contrário: quem estava dentro sai, quem estava fora entra.
-        let back = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, 400.0), Vec3::Y);
+        let back = Mat4::look_at_rh(
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, 400.0),
+            Vec3::Y,
+        );
         let vp = perspective_vk(60.0_f32.to_radians(), 16.0 / 9.0, 0.1, 1000.0) * back;
         world.insert_resource(ActiveFrustum(Frustum::from_view_proj(vp)));
         schedule.run(&mut world);
-        assert!(world.get::<Visible>(inside).is_none(), "Visible tem de ser retirado");
+        assert!(
+            world.get::<Visible>(inside).is_none(),
+            "Visible tem de ser retirado"
+        );
         assert!(world.get::<Visible>(outside).is_some());
     }
 }

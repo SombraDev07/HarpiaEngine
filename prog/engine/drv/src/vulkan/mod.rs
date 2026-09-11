@@ -245,6 +245,12 @@ impl VulkanGpu {
             avail12.descriptor_binding_storage_image_update_after_bind,
             "descriptorBindingStorageImageUpdateAfterBind",
         )?;
+        let core_features = unsafe { instance.get_physical_device_features(phys) };
+        require_true(core_features.multi_draw_indirect, "multiDrawIndirect")?;
+        require_true(
+            core_features.draw_indirect_first_instance,
+            "drawIndirectFirstInstance",
+        )?;
         require_true(avail12.runtime_descriptor_array, "runtimeDescriptorArray")?;
         require_true(
             avail12.shader_sampled_image_array_non_uniform_indexing,
@@ -275,6 +281,16 @@ impl VulkanGpu {
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
             .features(
                 vk::PhysicalDeviceFeatures::default()
+                    // Um `vkCmdDrawIndexedIndirect` com mais de um comando precisa
+                    // disto. É o que permite uma cena inteira num draw em vez de
+                    // um por primitiva (D56).
+                    .multi_draw_indirect(true)
+                    // Sem isto o `firstInstance` de um comando indirecto tem de ser
+                    // zero, e é por lá que o índice da primitiva chega ao VS. A
+                    // validation **não** o apanha: o conteúdo do buffer indirecto é
+                    // do lado da GPU e ela não o lê. O sintoma foi a Sponza inteira
+                    // a amostrar a mesma textura (D56).
+                    .draw_indirect_first_instance(true)
                     .shader_sampled_image_array_dynamic_indexing(true)
                     .shader_storage_image_write_without_format(
                         storage_write_without_format == vk::TRUE,

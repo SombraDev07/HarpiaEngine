@@ -1466,3 +1466,78 @@ o culling passou de 27% para 86% e o erro de 60 pixels para zero. Ler o mip erra
   desde D52. Queria dizer «limpa a preto», e por isso a pass da vegetação apagava
   os oclusores que a pass anterior tinha desenhado — sem erro nenhum, só um ecrã
   preto com erva.
+
+## D56 — A Sponza passou a GPU-driven: 596 draws para 15
+
+O `veg` provou o culling por oclusão, mas aplicá-lo à Sponza esbarrava numa coisa
+mais básica: ela desenhava **um draw por primitiva**, com um par de VB/IB por
+primitiva e uma escrita de CBV por draw para o pixel shader saber o seu albedo.
+Um draw indirecto múltiplo precisa de **um** VB e **um** IB ligados, portanto o
+Hi-Z não entrava sem primeiro mudar isto.
+
+### Antes de construir, medi onde paga
+
+A pirâmide Hi-Z custa 0.032 ms fixos. A pergunta é onde há mais do que isso para
+poupar:
+
+| | pass de geometria |
+|---|---|
+| `gate-terrain` | 0.042 ms |
+| `sponza` | **0.350 ms** (cena) + 0.196 (cascatas) |
+
+**No terreno não vale a pena**: mesmo cortando tudo poupava 0.042 e custava 0.032.
+Fica registado que foi medido, não esquecido.
+
+### O que mudou
+
+* **Um VB e um IB para a cena toda.** 103 primitivas, 192 496 vértices, 786 801
+  índices. Os índices não são rebaseados: cada comando leva o seu `vertexOffset`,
+  que é para isso que ele existe.
+* **Uma tabela por primitiva** (matriz do mundo, índice de albedo, corte de alfa,
+  caixa envolvente) num storage buffer.
+* **Uma lista fixa de comandos indirectos**, com as primitivas de uma face
+  primeiro e as de duas a seguir, porque são dois PSOs e cada um quer um intervalo
+  contíguo. Duas listas: uma que o culling escreve, e outra sempre a 1 para as
+  sombras e o mapa de chuva, que **não** respeitam o culling da câmara — um caster
+  fora do ecrã continua a projectar sombra dentro dele.
+* **O culling em compute** escreve `instanceCount` 0 ou 1. A lista de comandos não
+  se compacta: um comando com zero instâncias não desenha nada e custa quase nada.
+* Os VS passaram de `.spvasm` escrito à mão a GLSL; os PS levaram um patch de duas
+  cargas (o albedo e o corte vêm agora do VS como varyings `flat`).
+
+**`gl_InstanceIndex`, não `gl_DrawID`.** Em Vulkan
+`gl_InstanceIndex = firstInstance + nº da instância`, e com `instanceCount = 1` o
+primeiro termo é tudo. O índice da primitiva vai no `firstInstance` do comando —
+que é onde o culling já escreve — e chega ao shader sem precisar de
+`shaderDrawParameters`.
+
+### Os números
+
+| | antes | depois |
+|---|---|---|
+| draws por frame | 596 | **15** |
+| CPU do frame (`cpu_min`) | 0.360 ms | **0.120 ms** |
+| GPU | 0.736 ms | 0.736 ms |
+| imagem | — | **0 pixels** de diferença no composite, 1 pixel com delta 1 na cena |
+
+Três vezes menos CPU. A GPU não mudou, e não devia: desenha-se exactamente a mesma
+geometria com o mesmo shading — o que mudou foi quem manda.
+
+### Dois erros, e nenhum deu erro
+
+**O `firstInstance` estava a ser ignorado.** Precisa da feature
+`drawIndirectFirstInstance`, e a validation **não** o apanha: o conteúdo do buffer
+indirecto é do lado da GPU e ela não o lê. O sintoma foi a Sponza com a geometria
+certa e a textura errada.
+
+**O CBV deixou de ser escrito.** Era escrito por primitiva, porque o índice do
+albedo vivia lá dentro; ao tirar isso, deixei de o escrever de todo, e a pass da
+cena passou a ler o que ficou da pass anterior. O sintoma foi a cena com um banho
+vermelho e as texturas certas por baixo. Uma escrita por pass resolve.
+
+### E a verificação
+
+O ECS continua a marcar `Visible` com a mesma caixa e os mesmos planos. Já não
+escolhe o que se desenha — passou a ser a **referência**: o `finish` lê os comandos
+de volta, conta os que têm `instanceCount == 1`, e exige que dê o mesmo que a CPU.
+**78 de 103, nos dois.**

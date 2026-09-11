@@ -232,8 +232,15 @@ alcançáveis e por medirem algo.
       instância que sobrevive, sem intrínseca nenhuma, e sem o frame de atraso.
       **86.2% cortados**, a pass de 0.070 para 0.015 ms, e **0 canais diferentes**
       da versão sem oclusão.
-- [ ] Aplicar o mesmo Hi-Z ao terreno e às malhas da Sponza — hoje só a vegetação
-      o usa, e o custo da pirâmide já está pago.
+- [x] **A Sponza passou a GPU-driven** (D56): um VB e um IB para a cena toda, uma
+      tabela por primitiva, e o culling em compute a escrever o `instanceCount` de
+      uma lista fixa de comandos. **596 draws para 15**, CPU do frame de 0.360 para
+      **0.120 ms**, imagem idêntica. Era o que faltava para o Hi-Z poder lá entrar.
+- [ ] **Hi-Z na Sponza**, agora que o caminho é indirecto. Precisa de duas fases
+      (desenhar o que se via no frame anterior, construir a pirâmide, testar o
+      resto) porque os oclusores da cena são a própria cena.
+- [~] **Hi-Z no terreno: medido e arrumado.** A pass do terreno custa 0.042 ms e a
+      pirâmide custa 0.032 — mesmo cortando tudo não pagava. Não é esquecimento.
 - [ ] Impostores à distância, que é o que eles têm e nós não.
 
 ### 7.3 Terreno — aqui podemos genuinamente passar à frente

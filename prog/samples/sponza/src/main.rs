@@ -8,11 +8,11 @@ use harpia_render::{
     load_gltf, rain_map_view_proj, sampled_desc, shadow_atlas_desc,
 };
 use harpia_rhi::{
-    ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
+    Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
     GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture,
 };
 use harpia_scene::{
-    ActiveFrustum, Bounds, CullStats, Frustum, Material, Mesh, TwoSided, Visible, WorldTransform,
+    ActiveFrustum, Bounds, CullStats, Frustum, Material, Mesh, MeshRange, TwoSided, WorldTransform,
     cull_to_frustum,
 };
 
@@ -71,12 +71,33 @@ struct Sponza {
     cull: bevy_ecs::schedule::Schedule,
     atlas: Option<Texture>,
     scene: Option<SceneRt>,
+    vb: Option<Buffer>,
+    ib: Option<Buffer>,
+    /// A cena toda como dados: uma entrada por primitiva, e uma lista fixa de
+    /// comandos indirectos cujo `instanceCount` o culling escreve.
+    prim_buf: Option<Buffer>,
+    args_buf: Option<Buffer>,
+    args_all_buf: Option<Buffer>,
+    cull_pso: Option<ComputePipeline>,
+    /// Quantas primitivas, e onde acabam as de uma face só.
+    prim_count: u32,
+    one_sided_count: u32,
+    last_cpu_visible: u32,
+    checked: bool,
     scene_extent: Extent2D,
 }
 
 impl Default for Sponza {
     fn default() -> Self {
         Self {
+            prim_buf: None,
+            args_buf: None,
+            args_all_buf: None,
+            cull_pso: None,
+            prim_count: 0,
+            one_sided_count: 0,
+            last_cpu_visible: 0,
+            checked: false,
             shadow_pso: None,
             color_pso: None,
             color_pso_two_sided: None,
@@ -102,6 +123,8 @@ impl Default for Sponza {
             cull: bevy_ecs::schedule::Schedule::default(),
             atlas: None,
             scene: None,
+            vb: None,
+            ib: None,
             scene_extent: Extent2D {
                 width: 0,
                 height: 0,
@@ -133,6 +156,13 @@ impl Sponza {
         let scatter = g.texture("fog-scatter", self.scatter.context("scatter")?);
         let integrated = g.texture("fog-integrated", self.integrated.context("integrated")?);
 
+        let prims = g.persistent_buffer("prims", self.prim_buf.context("prims")?);
+        let args = g.persistent_buffer("args", self.args_buf.context("args")?);
+        g.pass(
+            Pass::new("cull")
+                .uses(prims, Access::StorageRead)
+                .uses(args, Access::StorageWrite),
+        );
         g.pass(
             Pass::new("cascades")
                 .uses(atlas, Access::DepthWrite)
@@ -145,6 +175,7 @@ impl Sponza {
         );
         g.pass(
             Pass::new("scene")
+                .uses(args, Access::Indirect)
                 .uses(atlas, Access::Sampled)
                 .uses(color, Access::ColorWrite)
                 .uses(view_depth, Access::ColorWrite)
@@ -256,42 +287,89 @@ fn upload_images(gpu: &mut Gpu, scene: &CpuScene) -> Result<Vec<Texture>> {
 /// chuva **não** a respeitam: um caster fora do ecrã continua a projectar sombra
 /// para dentro dele, e cortá-lo faz a sombra desaparecer.
 #[allow(clippy::too_many_arguments)]
-fn draw_set(
-    world: &mut bevy_ecs::world::World,
+/// Desenha um intervalo da lista de comandos com **um** draw indirecto.
+///
+/// Era um `draw_indexed` por primitiva, com uma escrita de CBV por cada uma para
+/// o pixel shader saber o seu albedo — 596 draws por frame. Agora a matriz e o
+/// material vêm de uma tabela que o VS indexa pelo `firstInstance` do comando, e
+/// cada pass é um draw.
+///
+/// As primitivas estão ordenadas com as de uma face primeiro, porque são dois
+/// PSOs e cada um quer um intervalo contíguo.
+#[allow(clippy::too_many_arguments)]
+fn draw_indirect_set(
     gpu: &mut Gpu,
-    pso: GraphicsPipeline,
+    pso: &GraphicsPipeline,
     two_sided: bool,
-    culled: bool,
     view_proj: Mat4,
-    write_material: bool,
-    cb: &mut LightingCb,
+    vb: Buffer,
+    ib: Buffer,
+    args: Buffer,
+    one_sided: u32,
+    total: u32,
 ) -> Result<()> {
-    gpu.set_pipeline(&pso)?;
-    gpu.bind_graphics_bindless()?;
-    let mut q = world.query::<(
-        &Mesh,
-        &Material,
-        &WorldTransform,
-        Option<&TwoSided>,
-        Option<&Visible>,
-    )>();
-    let batch: Vec<(Mesh, Material, Mat4)> = q
-        .iter(world)
-        .filter(|(_, _, _, ts, vis)| ts.is_some() == two_sided && (!culled || vis.is_some()))
-        .map(|(m, mat, x, _, _)| (*m, *mat, x.0))
-        .collect();
-    for (mesh, mat, world_m) in batch {
-        if write_material {
-            cb.gbuf0 = gpu.bindless_index(mat.albedo)?;
-            cb.alpha_cutoff = mat.alpha_cutoff;
-            gpu.write_frame_bytes(cb.as_bytes())?;
-        }
-        gpu.set_push_constants(PushConstants::with_world(view_proj, world_m).as_bytes())?;
-        gpu.bind_vertex_buffer(mesh.vb, 0)?;
-        gpu.bind_index_buffer(mesh.ib)?;
-        gpu.draw_indexed(mesh.index_count, 1, 0, 0, 0)?;
+    let (start, count) = if two_sided {
+        (one_sided, total - one_sided)
+    } else {
+        (0, one_sided)
+    };
+    if count == 0 {
+        return Ok(());
     }
+    gpu.set_pipeline(pso)?;
+    gpu.bind_graphics_bindless()?;
+    gpu.set_push_constants(PushConstants::new(view_proj).as_bytes())?;
+    gpu.bind_vertex_buffer(vb, 0)?;
+    gpu.bind_index_buffer(ib)?;
+    // Cinco u32 por comando: o `stride` do lado do RHI já é esse.
+    gpu.draw_indexed_indirect(args, start as u64 * 20, count)?;
     Ok(())
+}
+
+impl Sponza {
+    /// O culling em compute concorda com o mesmo teste em CPU?
+    ///
+    /// O ECS continua a marcar `Visible` com a mesma caixa e os mesmos planos, e
+    /// isso deixou de escolher o que se desenha — passou a ser a referência. Se os
+    /// dois discordarem, um deles tem a caixa ou o plano errado, e o que se vê é
+    /// geometria a desaparecer num sítio qualquer da cena.
+    fn check_cull(&mut self, gpu: &mut Gpu) -> Result<()> {
+        if self.checked {
+            return Ok(());
+        }
+        self.checked = true;
+        let args = self.args_buf.context("args")?;
+        let bytes = gpu.read_buffer(args, self.prim_count as usize * 20)?;
+        let mut gpu_visible = 0u32;
+        for i in 0..self.prim_count as usize {
+            let o = i * 20 + 4;
+            let n = u32::from_ne_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+            anyhow::ensure!(
+                n <= 1,
+                "instanceCount {n} no comando {i}: o culling escreveu lixo"
+            );
+            gpu_visible += n;
+        }
+        tracing::info!(
+            primitivas = self.prim_count,
+            de_uma_face = self.one_sided_count,
+            visiveis_gpu = gpu_visible,
+            visiveis_cpu = self.last_cpu_visible,
+            "culling de primitivas"
+        );
+        anyhow::ensure!(
+            gpu_visible == self.last_cpu_visible,
+            "o culling em compute deixou passar {gpu_visible} primitivas e o mesmo \
+             teste em CPU {}: um dos dois tem a caixa errada",
+            self.last_cpu_visible
+        );
+        anyhow::ensure!(
+            gpu_visible > 0 && gpu_visible < self.prim_count,
+            "o culling não cortou nada ou cortou tudo: {gpu_visible} de {}",
+            self.prim_count
+        );
+        Ok(())
+    }
 }
 
 fn color_targets(cull_back: bool) -> PipelineTargets<'static> {
@@ -307,18 +385,92 @@ fn color_targets(cull_back: bool) -> PipelineTargets<'static> {
     }
 }
 
+const SLOT_PRIMS: u32 = 0;
+const SLOT_ARGS: u32 = 1;
+const SLOT_ARGS_ALL: u32 = 2;
+
+/// Uma primitiva, como a GPU a vê.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PrimGpu {
+    world: Mat4,
+    /// x = índice bindless do albedo, y = corte de alfa
+    material: Vec4,
+    centre: Vec4,
+    extents: Vec4,
+}
+
+fn as_bytes<T>(v: &[T]) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), std::mem::size_of_val(v)) }
+}
+
+/// A caixa em espaço do mundo. Calculada aqui porque é o último sítio onde os
+/// vértices ainda existem em CPU.
+fn bounds_of(p: &harpia_render::CpuPrimitive) -> Bounds {
+    Bounds::from_points(p.vertices.iter().map(|v| {
+        p.world
+            .transform_point3(Vec3::new(v.pos[0], v.pos[1], v.pos[2]))
+    }))
+    .unwrap_or(Bounds {
+        center: Vec3::ZERO,
+        extents: Vec3::ZERO,
+    })
+}
+
 impl Sample for Sponza {
     fn init(&mut self, gpu: &mut Gpu) -> Result<()> {
         let path = sponza_gltf();
         let cpu = load_gltf(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
         let textures = upload_images(gpu, &cpu)?;
 
-        let mut two_sided = 0;
+        // **Um** vertex buffer e **um** index buffer para a cena toda.
+        //
+        // Eram 103 primitivas com um par de buffers cada, e um draw por primitiva
+        // com o VB e o IB a serem religados entre cada um: 596 draws por frame,
+        // 0.36 ms de CPU. Um draw indirecto múltiplo precisa de um só VB e um só
+        // IB — os índices não são rebaseados, cada comando leva o seu
+        // `vertexOffset`, que é exactamente para isto que ele existe.
+        let mut all_verts: Vec<harpia_render::MeshVertex> = Vec::new();
+        let mut all_idx: Vec<u32> = Vec::new();
+        let mut ranges: Vec<(u32, u32, i32)> = Vec::new(); // first_index, count, vertex_offset
         for p in &cpu.prims {
+            ranges.push((
+                all_idx.len() as u32,
+                p.indices.len() as u32,
+                all_verts.len() as i32,
+            ));
+            all_verts.extend_from_slice(&p.vertices);
+            all_idx.extend_from_slice(&p.indices);
+        }
+        let vb = gpu.create_vertex_buffer(unsafe {
+            std::slice::from_raw_parts(
+                all_verts.as_ptr().cast::<u8>(),
+                std::mem::size_of_val(all_verts.as_slice()),
+            )
+        })?;
+        let ib_handle = gpu.create_index_buffer(unsafe {
+            std::slice::from_raw_parts(
+                all_idx.as_ptr().cast::<u8>(),
+                std::mem::size_of_val(all_idx.as_slice()),
+            )
+        })?;
+        self.vb = Some(vb);
+        self.ib = Some(ib_handle);
+        let ib = ib_handle;
+        tracing::info!(
+            primitivas = cpu.prims.len(),
+            vertices = all_verts.len(),
+            indices = all_idx.len(),
+            "geometria fundida num par de buffers"
+        );
+
+        let mut two_sided = 0;
+        for (i, p) in cpu.prims.iter().enumerate() {
+            let (first_index, index_count, vertex_offset) = ranges[i];
             let mesh = Mesh {
-                vb: gpu.create_vertex_buffer(p.vertex_bytes())?,
-                ib: gpu.create_index_buffer(p.index_bytes())?,
-                index_count: p.indices.len() as u32,
+                vb,
+                ib,
+                index_count,
             };
             // A caixa é calculada aqui porque é o último sítio onde os vértices
             // ainda existem em CPU -- depois disto só há um handle de buffer.
@@ -332,6 +484,11 @@ impl Sample for Sponza {
             });
             let mut e = self.world.spawn((
                 mesh,
+                MeshRange {
+                    first_index,
+                    vertex_offset,
+                    prim: i as u32,
+                },
                 Material {
                     albedo: textures[p.albedo],
                     alpha_cutoff: p.alpha_cutoff,
@@ -345,6 +502,63 @@ impl Sample for Sponza {
                 two_sided += 1;
             }
         }
+        // A tabela por primitiva e a lista de comandos.
+        //
+        // As de uma face vêm primeiro e as de duas a seguir, porque são dois PSOs
+        // diferentes: assim cada um desenha um intervalo contíguo da mesma lista,
+        // com dois `drawIndexedIndirect` em vez de 103 `drawIndexed`.
+        let mut order: Vec<usize> = (0..cpu.prims.len()).collect();
+        order.sort_by_key(|&i| {
+            let p = &cpu.prims[i];
+            (p.alpha_cutoff > 0.0 || p.double_sided) as u8
+        });
+        self.one_sided_count = order
+            .iter()
+            .filter(|&&i| !(cpu.prims[i].alpha_cutoff > 0.0 || cpu.prims[i].double_sided))
+            .count() as u32;
+        self.prim_count = order.len() as u32;
+
+        let mut prims: Vec<PrimGpu> = Vec::with_capacity(order.len());
+        let mut args: Vec<u32> = Vec::with_capacity(order.len() * 5);
+        for (slot, &i) in order.iter().enumerate() {
+            let p = &cpu.prims[i];
+            let (first_index, index_count, vertex_offset) = ranges[i];
+            let b = bounds_of(p);
+            prims.push(PrimGpu {
+                world: p.world,
+                material: Vec4::new(
+                    gpu.bindless_index(textures[p.albedo])? as f32,
+                    p.alpha_cutoff,
+                    0.0,
+                    0.0,
+                ),
+                centre: Vec4::new(b.center.x, b.center.y, b.center.z, 0.0),
+                extents: Vec4::new(b.extents.x, b.extents.y, b.extents.z, 0.0),
+            });
+            args.extend_from_slice(&[
+                index_count,
+                1,
+                first_index,
+                vertex_offset as u32,
+                // `firstInstance` = o índice na tabela. É por aqui que o VS sabe
+                // qual é a sua matriz, sem `gl_DrawID`.
+                slot as u32,
+            ]);
+        }
+        self.prim_buf = Some(gpu.create_storage_buffer(SLOT_PRIMS, as_bytes(&prims))?);
+        self.args_buf = Some(gpu.create_storage_buffer(SLOT_ARGS, as_bytes(&args))?);
+        // Uma segunda lista, com `instanceCount` sempre a 1: as sombras e o mapa
+        // de chuva **não** respeitam o culling da câmara, porque um caster fora do
+        // ecrã continua a projectar sombra dentro dele.
+        self.args_all_buf = Some(gpu.create_storage_buffer(SLOT_ARGS_ALL, as_bytes(&args))?);
+        self.cull_pso = Some(
+            gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/cull.cs.spv")),
+                cs_entry: "CSMain",
+            })
+            .context("cull CS")?,
+        );
+
         self.world.insert_resource(CullStats::default());
         self.world
             .insert_resource(ActiveFrustum(Frustum::from_view_proj(Mat4::IDENTITY)));
@@ -500,6 +714,9 @@ impl Sample for Sponza {
         out
     }
 
+    fn finish(&mut self, gpu: &mut Gpu) -> Result<()> {
+        self.check_cull(gpu)
+    }
     fn frame(&mut self, gpu: &mut Gpu, info: FrameInfo) -> Result<()> {
         if info.extent.width != self.scene_extent.width
             || info.extent.height != self.scene_extent.height
@@ -542,10 +759,10 @@ impl Sample for Sponza {
         self.world
             .insert_resource(ActiveFrustum(Frustum::from_view_proj(view_proj)));
         self.cull.run(&mut self.world);
-        if info.frame_index == 0 {
-            let c = *self.world.resource::<CullStats>();
-            tracing::info!(visible = c.visible, total = c.total, "frustum cull");
-        }
+        // A marca `Visible` já não escolhe o que se desenha — isso é do compute —
+        // mas continua a correr porque é a **referência** contra a qual o culling
+        // na GPU é verificado no `finish`.
+        self.last_cpu_visible = self.world.resource::<CullStats>().visible;
 
         let mut cb = LightingCb {
             inv_view_proj: view_proj.inverse(),
@@ -561,34 +778,67 @@ impl Sample for Sponza {
         cb.apply_csm(&csm, gpu.bindless_index(atlas)?);
         gpu.write_frame_bytes(cb.as_bytes())?;
 
+        // O que os draws indirectos precisam. Copiado para locais porque as
+        // chamadas a seguir levam `&mut gpu` e não podem ter `self` emprestado.
+        let (vb, ib) = (self.vb.context("vb")?, self.ib.context("ib")?);
+        let args_culled = self.args_buf.context("args")?;
+        let args_all = self.args_all_buf.context("args all")?;
+        let one_sided = self.one_sided_count;
+        let total = self.prim_count;
+
         let mut plans = self.build_graph()?.into_iter();
         let mut next_barriers = move || plans.next().map(|p| p.barriers).unwrap_or_default();
+
+        // O culling da câmara, em compute: escreve `instanceCount` em cada comando.
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct CullCb {
+            planes: [Vec4; 6],
+            params: Vec4,
+        }
+        let cull = CullCb {
+            planes: Frustum::from_view_proj(view_proj).planes(),
+            params: Vec4::new(total as f32, 0.0, 0.0, 0.0),
+        };
+        gpu.write_frame_bytes(unsafe {
+            std::slice::from_raw_parts(
+                (&cull as *const CullCb).cast::<u8>(),
+                std::mem::size_of::<CullCb>(),
+            )
+        })?;
+        gpu.barriers(&next_barriers())?;
+        gpu.set_compute_pipeline(self.cull_pso.as_ref().context("cull pso")?)?;
+        gpu.bind_compute_bindless()?;
+        gpu.dispatch(total.div_ceil(64), 1, 1)?;
+        gpu.mark("cull");
 
         gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(&[], Some(atlas), &[], Some(1.0))?;
         for i in 0..4 {
             let (x, y, tw, th) = csm.tile_viewport(i);
             gpu.set_viewport(x, y, tw, th)?;
-            draw_set(
-                &mut self.world,
+            draw_indirect_set(
                 gpu,
-                *shadow_pso,
-                false,
+                shadow_pso,
                 false,
                 csm.view_proj[i],
-                false,
-                &mut cb,
+                vb,
+                ib,
+                args_all,
+                one_sided,
+                total,
             )?;
             // Cutout casters need the albedo alpha, so they carry material.
-            draw_set(
-                &mut self.world,
+            draw_indirect_set(
                 gpu,
-                *shadow_cutout_pso,
+                shadow_cutout_pso,
                 true,
-                false,
                 csm.view_proj[i],
-                true,
-                &mut cb,
+                vb,
+                ib,
+                args_all,
+                one_sided,
+                total,
             )?;
         }
         gpu.end_color_pass()?;
@@ -604,25 +854,19 @@ impl Sample for Sponza {
         );
         gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(&[], Some(rain_map), &[], Some(1.0))?;
-        draw_set(
-            &mut self.world,
-            gpu,
-            *shadow_pso,
-            false,
-            false,
-            rain_vp,
-            false,
-            &mut cb,
+        draw_indirect_set(
+            gpu, shadow_pso, false, rain_vp, vb, ib, args_all, one_sided, total,
         )?;
-        draw_set(
-            &mut self.world,
+        draw_indirect_set(
             gpu,
-            *shadow_cutout_pso,
+            shadow_cutout_pso,
             true,
-            false,
             rain_vp,
-            true,
-            &mut cb,
+            vb,
+            ib,
+            args_all,
+            one_sided,
+            total,
         )?;
         gpu.end_color_pass()?;
         gpu.mark("rain map");
@@ -630,6 +874,14 @@ impl Sample for Sponza {
         // The clear is sky radiance, not a colour: the scene target is linear HDR
         // now and the tonemap happens in the fog apply. Depth clears to the fog
         // far plane so the sky gets a full froxel march instead of zero fog.
+        // O CBV da iluminação, **uma** vez por pass.
+        //
+        // Era escrito por primitiva, porque o índice do albedo vivia lá dentro e
+        // cada draw precisava do seu. Agora o albedo vem da tabela por primitiva —
+        // mas o CBV continua a trazer o sol, as cascatas e o IBL, e sem esta
+        // escrita a pass lia o que ficou da anterior. O sintoma foi a cena inteira
+        // com um banho vermelho, com as texturas certas por baixo.
+        gpu.write_frame_bytes(cb.as_bytes())?;
         gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(
             &[scene.color, scene.view_depth],
@@ -637,25 +889,27 @@ impl Sample for Sponza {
             &[[0.62, 0.86, 1.20, 1.0], [FOG_FAR, 0.0, 0.0, 0.0]],
             Some(1.0),
         )?;
-        draw_set(
-            &mut self.world,
+        draw_indirect_set(
             gpu,
-            *color_pso,
+            color_pso,
             false,
-            true,
             view_proj,
-            true,
-            &mut cb,
+            vb,
+            ib,
+            args_culled,
+            one_sided,
+            total,
         )?;
-        draw_set(
-            &mut self.world,
+        draw_indirect_set(
             gpu,
-            *two_sided_pso,
-            true,
+            two_sided_pso,
             true,
             view_proj,
-            true,
-            &mut cb,
+            vb,
+            ib,
+            args_culled,
+            one_sided,
+            total,
         )?;
         gpu.end_color_pass()?;
         gpu.mark("scene");

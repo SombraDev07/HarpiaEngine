@@ -10,12 +10,21 @@ OpCapability ShaderNonUniform
 OpExtension "SPV_EXT_descriptor_indexing"
 %glsl = OpExtInstImport "GLSL.std.450"
 OpMemoryModel Logical GLSL450
-OpEntryPoint Fragment %PSMain "PSMain" %in_world %in_nrm %in_uv %in_z %frag %out_color %out_depth %cb %heap %samp %samp_c %samp_cmp
+OpEntryPoint Fragment %PSMain "PSMain" %in_world %in_nrm %in_uv %in_z %frag %out_color %out_depth %cb %heap %samp %samp_c %samp_cmp %in_albedo %in_cutoff
 OpExecutionMode %PSMain OriginUpperLeft
 OpName %PSMain "PSMain"
 OpDecorate %in_world Location 0
 OpDecorate %in_nrm Location 1
 OpDecorate %in_uv Location 2
+; O índice do albedo e o corte de alfa deixaram de vir do CBV: são
+; constantes **por primitiva**, e um CBV por primitiva é um draw por
+; primitiva. Chegam agora do VS, que os lê da tabela indexada pelo
+; `firstInstance` do comando indirecto (D56). `Flat` porque não há nada
+; para interpolar.
+OpDecorate %in_albedo Location 4
+OpDecorate %in_albedo Flat
+OpDecorate %in_cutoff Location 5
+OpDecorate %in_cutoff Flat
 OpDecorate %frag BuiltIn FragCoord
 OpDecorate %in_z Location 3
 OpDecorate %out_color Location 0
@@ -88,6 +97,10 @@ OpDecorate %ig0 NonUniform
 
 %ptr_in_v3 = OpTypePointer Input %v3
 %ptr_in_v2 = OpTypePointer Input %v2
+%ptr_in_u = OpTypePointer Input %uint
+%ptr_in_fl = OpTypePointer Input %float
+%in_albedo = OpVariable %ptr_in_u Input
+%in_cutoff = OpVariable %ptr_in_fl Input
 %ptr_in_v4 = OpTypePointer Input %v4
 %ptr_out_v4 = OpTypePointer Output %v4
 %in_world = OpVariable %ptr_in_v3 Input
@@ -178,8 +191,7 @@ OpDecorate %ig0 NonUniform
 %nrm = OpLoad %v3 %in_nrm
 %uv = OpLoad %v2 %in_uv
 %fc = OpLoad %v4 %frag
-%pg0 = OpAccessChain %ptr_u %cb %u4
-%ig0 = OpLoad %uint %pg0
+%ig0 = OpLoad %uint %in_albedo
 %pa0 = OpAccessChain %ptr_img %heap %ig0
 %ia0 = OpLoad %img %pa0
 %sw = OpLoad %samp_ty %samp
@@ -187,8 +199,7 @@ OpDecorate %ig0 NonUniform
 %alb4 = OpImageSampleImplicitLod %v4 %sm0 %uv
 ; MASK cutout. The sample above already resolved derivatives, so the kill is safe here.
 %alpha = OpCompositeExtract %float %alb4 3
-%pcut = OpAccessChain %ptr_f %cb %u15
-%cut = OpLoad %float %pcut
+%cut = OpLoad %float %in_cutoff
 %cutme = OpFOrdLessThan %bool %alpha %cut
 OpSelectionMerge %opaque None
 OpBranchConditional %cutme %cutout %opaque
