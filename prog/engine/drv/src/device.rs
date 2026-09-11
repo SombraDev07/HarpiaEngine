@@ -145,6 +145,13 @@ pub trait Device {
     fn create_storage_buffer(&mut self, slot: u32, bytes: &[u8]) -> Result<Buffer>;
     /// Reescreve-o. O tamanho não pode crescer.
     fn write_storage_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Result<()>;
+    /// Desenha com argumentos vindos de um buffer. Cinco `u32` por draw.
+    fn draw_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()>;
+    fn draw_indexed_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()>;
+    /// Barreira de compute-escreve para indirect/vertex-lê.
+    fn storage_barrier_buffer(&mut self, buffer: Buffer) -> Result<()>;
+    /// Lê um buffer. Fora de um frame: espera pelo device.
+    fn read_buffer(&mut self, buffer: Buffer, bytes: usize) -> Result<Vec<u8>>;
     fn bind_vertex_buffer(&mut self, buf: Buffer, binding: u32) -> Result<()>;
     fn bind_index_buffer(&mut self, buf: Buffer) -> Result<()>;
     fn draw_indexed(
@@ -277,6 +284,22 @@ impl Device for Gpu {
 
     fn write_storage_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Result<()> {
         gpu!(self, write_storage_buffer, buffer, bytes)
+    }
+
+    fn draw_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()> {
+        gpu!(self, draw_indirect, args, offset, draws)
+    }
+
+    fn draw_indexed_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()> {
+        gpu!(self, draw_indexed_indirect, args, offset, draws)
+    }
+
+    fn storage_barrier_buffer(&mut self, buffer: Buffer) -> Result<()> {
+        gpu!(self, storage_barrier_buffer, buffer)
+    }
+
+    fn read_buffer(&mut self, buffer: Buffer, bytes: usize) -> Result<Vec<u8>> {
+        gpu!(self, read_buffer, buffer, bytes)
     }
 
     fn create_index_buffer(&mut self, bytes: &[u8]) -> Result<Buffer> {

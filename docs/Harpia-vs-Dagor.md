@@ -206,9 +206,13 @@ A abertura é esta: **a Dagor faz o culling de patches em CPU** e depois monta
 lotes de draws instanciados com parâmetros em constantes de VS. Um clipmap
 totalmente GPU-driven não tem esse trabalho nenhum.
 
-- [ ] **Culling em compute → draw indirecto.** Zero trabalho por patch em CPU, um
-      único `drawIndirect`. É a fase 6.5 do roadmap e o terreno é o melhor sítio
-      para a estrear.
+- [x] **Culling em compute → draw indirecto.** Feito e medido no gate `instances`
+      (D47): 2 500 a 1 000 000 de instâncias com **o mesmo 0.17 ms de CPU**, contra
+      0.17 → 2.72 ms a fazer o mesmo culling em CPU. Os dois modos dão o mesmo
+      número de visíveis em todas as escalas. Falta aplicá-lo aos patches do
+      terreno, que é onde a comparação com eles se fecha.
+- [ ] **Aplicar ao clipmap**: os anéis passam a instâncias num buffer, o compute
+      corta-os e o terreno inteiro sai de um `drawIndirect`. O RHI já tem a peça.
 - [ ] **Tesselação por hardware no anel interior**, com factor por aresta a partir
       do erro de ecrã (não uma constante).
 - [ ] **Virtual texture** para a texturação do terreno, com feedback buffer. É a

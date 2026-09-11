@@ -252,3 +252,18 @@ output.**
 - `read_texture` espera pelo device: só pode ser chamado fora de um frame. Usa
   `Sample::finish` (D42).
 
+- **Um draw indirecto indexado exige um index buffer ligado** mesmo que o
+  `firstIndex`/`vertexOffset` sejam zero (VUID-vkCmdDrawIndexedIndirect-None-07312).
+  Para geometria que nasce do `gl_VertexIndex` a variante é `vkCmdDrawIndirect`,
+  com quatro u32 em vez de cinco (D47).
+- **Ao mapear um quad 2D para as seis faces de um cubo, a permutação dos eixos tem
+  de ser cíclica.** `(q.x, q.y, sign)` para o eixo Z em vez de `(q.y, q.x, sign)` é
+  uma transposição: inverte o winding, e o back-face culling comeu as duas faces de
+  Z. Zero erros de validation. Não se vê a olho — o cubo continua a parecer um
+  sólido de três faces. Viu-se a calcular os 36 vértices em Python e a comparar o
+  normal do winding com o normal pretendido: 4 triângulos em 12 invertidos. A
+  correcção repôs 24.1% → 32.2% de cobertura do frame.
+- Verificar um resultado da GPU contra um teste de CPU **diferente** não verifica
+  nada: a folga entre os dois absorve o erro. Esfera na GPU contra caixa na CPU dava
+  496 contra 506 e passava. O teste da CPU tem de ser o mesmo, linha por linha, e a
+  igualdade tem de ser exacta (D47).

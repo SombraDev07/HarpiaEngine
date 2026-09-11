@@ -2008,11 +2008,135 @@ impl VulkanGpu {
     /// reescrevem todos os frames (luzes, clusters). Um buffer device-local
     /// exigia staging e um copy por frame para ganhar banda que estas listas,
     /// com dezenas de KB, não usam.
+    /// Desenha com os argumentos que estão num buffer, sem a CPU os ver.
+    ///
+    /// É isto que permite ao culling correr em compute: o shader decide quantas
+    /// instâncias sobrevivem e escreve o número aqui, e a CPU nunca fica a saber
+    /// nem precisa. `VkDrawIndexedIndirectCommand` são cinco `u32`:
+    /// `indexCount, instanceCount, firstIndex, vertexOffset, firstInstance`.
+    /// Espera que a escrita de um compute a este buffer fique visível.
+    ///
+    /// Sem isto, o `drawIndirect` pode ler o `instanceCount` antes de o compute o
+    /// ter escrito -- e o que sai é um número de instâncias do frame anterior ou
+    /// lixo, de forma intermitente, que é o pior modo de falhar.
+    pub fn storage_barrier_buffer(&mut self, buffer: Buffer) -> Result<()> {
+        if !self.in_frame || self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        let raw = self
+            .buffers
+            .get(buffer.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid buffer"))?;
+        let barrier = vk::BufferMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::INDIRECT_COMMAND_READ | vk::AccessFlags::SHADER_READ)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(raw.buffer)
+            .offset(0)
+            .size(vk::WHOLE_SIZE);
+        let cmd = self.frames[self.slot].cmd;
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::DRAW_INDIRECT | vk::PipelineStageFlags::VERTEX_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                std::slice::from_ref(&barrier),
+                &[],
+            );
+        }
+        Ok(())
+    }
+
+    /// Lê um buffer de volta. Espera pelo device: medição, não caminho quente.
+    pub fn read_buffer(&mut self, buffer: Buffer, bytes: usize) -> Result<Vec<u8>> {
+        if self.in_frame {
+            return Err(RhiError::msg("read_buffer during a frame"));
+        }
+        self.wait_idle()?;
+        let raw = self
+            .buffers
+            .get(buffer.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid buffer"))?;
+        let ptr = raw
+            .allocation
+            .mapped_ptr()
+            .ok_or_else(|| RhiError::msg("buffer is not host visible"))?;
+        let n = bytes.min(raw.size as usize);
+        let mut out = vec![0u8; n];
+        unsafe {
+            std::ptr::copy_nonoverlapping(ptr.as_ptr().cast::<u8>(), out.as_mut_ptr(), n);
+        }
+        Ok(out)
+    }
+
+    /// Draw indirecto **sem** índices: `VkDrawIndirectCommand`, quatro u32.
+    ///
+    /// É esta a variante para geometria que nasce do `gl_VertexIndex` -- os cubos
+    /// deste gate, e o clipmap do terreno. A indexada exige um index buffer ligado
+    /// (VUID-vkCmdDrawIndexedIndirect-None-07312) e não há nenhum para ligar.
+    pub fn draw_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        self.stat_draws += 1;
+        let raw = self
+            .buffers
+            .get(args.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid indirect buffer"))?;
+        let buffer = raw.buffer;
+        let cmd = self.frames[self.slot].cmd;
+        unsafe {
+            self.device.cmd_draw_indirect(
+                cmd,
+                buffer,
+                offset,
+                draws,
+                std::mem::size_of::<[u32; 4]>() as u32,
+            );
+        }
+        Ok(())
+    }
+
+    pub fn draw_indexed_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()> {
+        if !self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        // Os contadores não sabem quantas instâncias saíram: a GPU é que decide.
+        // Conta-se um draw, que é o que a CPU realmente submeteu.
+        self.stat_draws += 1;
+        let raw = self
+            .buffers
+            .get(args.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid indirect buffer"))?;
+        let buffer = raw.buffer;
+        let cmd = self.frames[self.slot].cmd;
+        unsafe {
+            self.device.cmd_draw_indexed_indirect(
+                cmd,
+                buffer,
+                offset,
+                draws,
+                std::mem::size_of::<[u32; 5]>() as u32,
+            );
+        }
+        Ok(())
+    }
+
     pub fn create_storage_buffer(&mut self, slot: u32, bytes: &[u8]) -> Result<Buffer> {
         if slot >= STORAGE_BUFFER_SLOTS {
             return Err(RhiError::msg("storage buffer slot out of range"));
         }
-        let buffer = self.create_host_buffer(bytes, vk::BufferUsageFlags::STORAGE_BUFFER, "ssbo")?;
+        // INDIRECT_BUFFER também: o caso que interessa é um compute a escrever os
+        // argumentos de um draw no mesmo buffer que depois o alimenta. Separá-los
+        // obrigava a um copy entre dois buffers para nada.
+        let buffer = self.create_host_buffer(
+            bytes,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDIRECT_BUFFER,
+            "ssbo",
+        )?;
         let raw = self
             .buffers
             .get(buffer.id as usize)

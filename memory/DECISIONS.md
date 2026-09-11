@@ -840,3 +840,63 @@ imagem clustered é bit-idêntica à força-bruta. Há um teste
 compute quando os draws indirectos chegarem, e **este gate é que vai provar que a
 versão em compute continua a concordar**.
 
+## D47 — Culling em compute e um draw indirecto: onde isto realmente paga
+
+O gate `instances` põe as instâncias num storage buffer uma vez, no arranque, e a
+CPU nunca mais lhes toca. Todos os frames um compute testa cada uma contra os seis
+planos, escreve a lista dos sobreviventes e enche o `instanceCount` do comando. A
+CPU submete um `vkCmdDrawIndirect` e **nunca chega a saber quantas instâncias foram
+desenhadas** — o contador `draws=1, triangles=0` do `--stats` diz exactamente isso,
+e é honesto: quem decidiu foi a GPU.
+
+É o ponto 7.3 da comparação com a Dagor. Eles fazem o culling dos patches do
+terreno em CPU e depois montam lotes de draws instanciados com os parâmetros em
+constantes de VS. Funciona, e tem um custo por instância do lado da CPU.
+
+**Indirecto não indexado, não indexado por engano.** A primeira versão usava
+`vkCmdDrawIndexedIndirect` e a validation apanhou-a: VUID-...-07312, é preciso um
+index buffer ligado. Geometria que nasce do `gl_VertexIndex` não tem nenhum para
+ligar — e o clipmap do terreno é exactamente esse caso. Ficaram as duas no RHI:
+`draw_indirect` (quatro u32) para geometria procedural, `draw_indexed_indirect`
+(cinco u32) para malhas a sério.
+
+### A medição, que é o que interessa
+
+`-- --cpu-cull` faz o mesmo ecrã com o culling do lado da CPU: percorre as
+instâncias, monta a lista, envia-a, e faz um draw instanciado normal. Os dois modos
+concordam no número de visíveis em **todas** as escalas, o que é a prova de que se
+está a comparar a mesma coisa.
+
+| cubos | CPU (compute) | CPU (`--cpu-cull`) | visíveis, os dois modos |
+|---|---|---|---|
+| 2 500 | 0.17 ms | 0.17 ms | 499 |
+| 25 000 | 0.17 ms | 0.23 ms | 4 923 |
+| 100 000 | 0.16 ms | 0.44 ms | 19 701 |
+| 400 000 | 0.18 ms | 1.14 ms | 78 883 |
+| 1 000 000 | **0.17 ms** | **2.72 ms** | 197 164 |
+
+`cpu_min_ms`, 300 frames, `--vsync 0`, RX 6700. O `cpu_avg` do caminho compute sobe
+com a escala mas isso é a CPU a esperar pela fence, não trabalho dela; o mínimo é
+que mede o lado da CPU.
+
+**A leitura: de 2 500 para 1 000 000 de instâncias — 400× — o custo de CPU não
+muda.** 0.17 ms nas duas pontas. O outro caminho cresce linearmente e chega a
+16×. A 2 500 não há diferença nenhuma, e dizer que havia seria inventar: a
+arquitectura só paga a partir de umas dezenas de milhar.
+
+### A prova de que o culling está certo
+
+Não basta o contador. O `finish` lê os dois buffers e exige:
+
+- o **mesmo** teste em CPU dá exactamente o mesmo número (496 = 496, não «parecido»);
+- a caixa envolvente, que contém a esfera, dá um majorante (506 ≥ 496);
+- os campos fixos do comando estão como o compute os escreveu;
+- cada id da lista existe, passa o teste, e **aparece uma só vez** — ids repetidos
+  seriam um `atomicAdd` a dar o mesmo slot a duas threads.
+
+A primeira versão comparava esfera (GPU) com caixa (CPU) e dava 496 contra 506.
+Passava, e não provava nada: qualquer erro cabia na folga entre os dois testes.
+Comparar contra um teste **diferente** é comparar contra nada.
+
+Controlo negativo corrido: com o raio a 0.3 em vez de 1.732 o gate falha com
+exit 1 e diz porquê.

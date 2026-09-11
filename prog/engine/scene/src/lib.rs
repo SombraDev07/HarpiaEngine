@@ -91,6 +91,11 @@ impl Frustum {
         }
     }
 
+    /// Os seis planos, para um shader os receber tal como estão.
+    pub fn planes(&self) -> [Vec4; 6] {
+        self.planes
+    }
+
     /// Conservador: verdadeiro se a caixa **puder** estar visível.
     ///
     /// Um falso positivo custa um draw; um falso negativo faz desaparecer

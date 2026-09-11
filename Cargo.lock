@@ -1081,6 +1081,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate-instances"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-math",
+ "harpia-memory",
+ "harpia-render",
+ "harpia-rhi",
+ "harpia-scene",
+ "harpia-shader-build",
+ "tracing",
+]
+
+[[package]]
 name = "gate-lights"
 version = "0.1.0"
 dependencies = [

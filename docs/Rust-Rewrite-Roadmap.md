@@ -622,7 +622,10 @@ Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
       trigonométrico dava 77 m de erro e 99.84% fora da tolerância, o inteiro dá
       0.19 mm e 0% (D41).
 - [ ] Veg cull + indirect (buffers soltos, sem arrays HLSL).
-- [ ] Instance cull 2500 cubos → 1 indirect.
+- [x] Instance cull 2500 cubos → 1 indirect. `gate-instances`: o compute escreve a
+      lista e o `instanceCount`, a CPU submete **um** `drawIndirect` e não sabe
+      quantos saíram. A CPU custa **0.17 ms de 2 500 a 1 000 000** de instâncias;
+      o mesmo culling em CPU vai de 0.17 a 2.72 ms (D47).
 - [ ] Streaming: CPU first; GPU cull sem `waitIdle` no frame.
 - [ ] **Exit:** gates `terrain` `heightquery` `veg` `instances`. VT/feedback a seguir.
 

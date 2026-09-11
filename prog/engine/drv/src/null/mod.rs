@@ -146,6 +146,23 @@ impl NullGpu {
         Ok(())
     }
 
+    /// Sem GPU não há argumentos para ler; conta como um draw e segue.
+    pub fn draw_indexed_indirect(&mut self, _args: crate::types::Buffer, _offset: u64, _draws: u32) -> crate::Result<()> {
+        Ok(())
+    }
+
+    pub fn draw_indirect(&mut self, _args: crate::types::Buffer, _offset: u64, _draws: u32) -> crate::Result<()> {
+        Ok(())
+    }
+
+    pub fn storage_barrier_buffer(&mut self, _buffer: crate::types::Buffer) -> crate::Result<()> {
+        Ok(())
+    }
+
+    pub fn read_buffer(&mut self, _buffer: crate::types::Buffer, bytes: usize) -> crate::Result<Vec<u8>> {
+        Ok(vec![0u8; bytes])
+    }
+
     pub fn mark(&mut self, _label: &'static str) {}
 
     /// The Null backend never touches a GPU, so there is nothing to time.

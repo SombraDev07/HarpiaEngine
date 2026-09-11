@@ -40,6 +40,11 @@ pub struct AppConfig {
     pub vsync: bool,
     /// `--stats` prints CPU and GPU timings when the run ends.
     pub stats: bool,
+    /// Everything after a bare `--`, untouched, for a sample's own switches.
+    ///
+    /// Without this the parser rejects any flag it does not know, so a gate that
+    /// wants an A/B mode has no way to ask for one.
+    pub extra: Vec<String>,
 }
 
 impl Default for AppConfig {
@@ -55,6 +60,7 @@ impl Default for AppConfig {
             capture: None,
             vsync: true,
             stats: false,
+            extra: Vec::new(),
         }
     }
 }
@@ -105,7 +111,7 @@ impl AppConfig {
                 }
                 "--help" | "-h" => {
                     eprintln!(
-                        "harpia sample\n  --frames N        default 90 (gate; window closes)\n  --interactive, -i keep the window open until you close it (AMD: not for overnight)\n  --backend vulkan|null\n  --validation 1|0  (default 1)\n  --capture PREFIX  PNG of each capture target after the last frame\n  --vsync 0|1       0 = fastest present mode, for measuring\n  --stats           CPU and GPU timings at the end\n  --width --height --title"
+                        "harpia sample\n  --frames N        default 90 (gate; window closes)\n  --interactive, -i keep the window open until you close it (AMD: not for overnight)\n  --backend vulkan|null\n  --validation 1|0  (default 1)\n  --capture PREFIX  PNG of each capture target after the last frame\n  --vsync 0|1       0 = fastest present mode, for measuring\n  --stats           CPU and GPU timings at the end\n  -- ARGS...        passed to the sample\n  --width --height --title"
                     );
                     std::process::exit(0);
                 }
@@ -114,6 +120,9 @@ impl AppConfig {
                     cfg.vsync = v != "0";
                 }
                 "--stats" => cfg.stats = true,
+                "--" => {
+                    cfg.extra.extend(it.by_ref());
+                }
                 other => anyhow::bail!("unknown argument `{other}`"),
             }
         }

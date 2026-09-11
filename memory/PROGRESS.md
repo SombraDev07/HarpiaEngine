@@ -477,3 +477,43 @@ Não mesh shaders, RT, FSR, editor. Não VSM.
 - Multiscattering do céu sem bounce do chão (albedo 0) → horizonte um pouco escuro.
 - Aerial perspective (froxel 32³) por fazer — entra quando a Sponza receber céu.
 - Sponza ainda não tem céu nem nuvens: os gates provam os passes isolados.
+
+## `instances`: um draw, e a CPU não sabe quantos cubos saíram
+
+O culling passou para a GPU. As instâncias vão para um storage buffer no arranque e
+a CPU nunca mais lhes toca: todos os frames um compute testa-as contra os seis
+planos, escreve a lista dos sobreviventes e enche o `instanceCount` do comando de
+draw. A CPU submete um `vkCmdDrawIndirect` e fica sem saber o resultado — o
+`--stats` mostra `draws=1, dispatches=1, triangles=0`, e o zero é honesto.
+
+É o ponto 7.3 da comparação com a Dagor, que faz este culling em CPU.
+
+**A medição.** `-- --cpu-cull` refaz o mesmo ecrã com o culling do lado da CPU, e
+os dois modos concordam no número de visíveis em todas as escalas — sem isso não se
+estaria a comparar a mesma coisa. `cpu_min_ms`, 300 frames, `--vsync 0`:
+
+| cubos | compute | CPU | visíveis |
+|---|---|---|---|
+| 2 500 | 0.17 ms | 0.17 ms | 499 |
+| 100 000 | 0.16 ms | 0.44 ms | 19 701 |
+| 1 000 000 | **0.17 ms** | **2.72 ms** | 197 164 |
+
+400× mais instâncias, o mesmo custo de CPU. A 2 500 não há diferença nenhuma e não
+vale a pena fingir que há: isto paga a partir das dezenas de milhar.
+
+**Dois erros pelo caminho, nenhum visível.** O primeiro: usei
+`drawIndexedIndirect` para geometria que nasce do `gl_VertexIndex` e não tem index
+buffer — a validation apanhou-o. Ficaram as duas variantes no RHI, porque o clipmap
+do terreno é o mesmo caso e as malhas a sério são o outro.
+
+O segundo não deu erro nenhum. O mapeamento do quad para as faces do cubo estava
+transposto no eixo Z, o winding invertia-se, e o back-face culling comia duas das
+seis faces. A imagem continuava a mostrar cubos plausíveis. Só apareceu a calcular
+os 36 vértices em Python e a comparar o normal do winding com o pretendido: 4
+triângulos em 12 invertidos. A cobertura do frame foi de 24.1% para 32.2%.
+
+**E a verificação, que também estava errada.** Comparava a esfera da GPU com uma
+caixa na CPU: 496 contra 506, passava, e não provava nada — qualquer erro cabia na
+folga entre os dois testes. Agora a CPU faz o **mesmo** teste, exige igualdade
+exacta, e lê a lista de volta para confirmar que cada id existe, passa o teste e
+aparece uma só vez. Com o raio errado no shader o gate falha com exit 1.
