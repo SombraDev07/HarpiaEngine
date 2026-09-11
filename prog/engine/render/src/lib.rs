@@ -45,7 +45,10 @@ pub use fog::{
     FROXEL_H, FROXEL_W, INJECT_GROUP, INTEGRATE_GROUP,
 };
 pub use gltf_scene::{load_path as load_gltf, CpuImage, CpuPrimitive, CpuScene, GltfError};
-pub use ibl::{generate as generate_ibl, IblCpu, RgbaImage};
+pub use ibl::{
+    generate as generate_ibl, generate_env, sample_latlong, sample_lod, sky_radiance, IblCpu,
+    RgbaImage,
+};
 pub use lighting::{LightingCb, PushConstants, PCSS_LIGHT_SIZE};
 pub use material::{MaterialGpu, SphereInstance};
 pub use mesh::{MeshVertex, SphereMesh, Vertex};

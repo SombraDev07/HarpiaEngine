@@ -1,0 +1,14 @@
+[package]
+name = "gate-ibl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Fase 7: o split-sum IBL contra uma integracao Monte Carlo de referencia."
+
+[dependencies]
+anyhow.workspace = true
+harpia-math.workspace = true
+harpia-render.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

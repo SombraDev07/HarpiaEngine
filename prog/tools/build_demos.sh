@@ -40,6 +40,7 @@ demos=(
   "13-furnace:gate-furnace:White furnace: o BRDF conserva energia? Mede, nao opina. Sem GPU pesada."
   "14-heightquery:gate-heightquery:Altura do terreno em CPU contra GPU, medida ponto a ponto."
   "15-ecs:gate-ecs:1e6 entidades em bevy_ecs contra hecs. Sem GPU: corre em qualquer maquina."
+  "17-ibl:gate-ibl:O split-sum IBL contra Monte Carlo de 4096 amostras. Sem GPU: corre em qualquer maquina."
   "16-instancias:gate-instances:Culling em compute e UM draw indirecto. Com -- --cubes N ate 1e6, e -- --cpu-cull para o A/B."
   "sponza:sponza:A cena de referência: glTF, CSM+PCSS, fog default-on, chuva mascarada pelo mapa de chuva."
 )

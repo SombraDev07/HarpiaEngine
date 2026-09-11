@@ -581,3 +581,31 @@ sinal fica em 0.0436 nas três.
 
 Três controlos negativos, cada um apanhado por uma verificação diferente. Nenhuma
 das três é redundante, e descobri isso a partir cada uma.
+
+## O gate de referência do IBL apanhou um bug de seis meses
+
+O roadmap pedia: comparar o split-sum com uma integração Monte Carlo e publicar o
+erro máximo. O `gate-ibl` faz isso em CPU, sem GPU, e a primeira coisa que publicou
+foi que a nossa LUT estava errada.
+
+`integrate_brdf` usava `G = Smith-Schlick com k = (a+1)²/8`. Esse `k` é a
+remapeação para luzes **analíticas**; num integral sobre a hemisfera colapsa a
+rasar. A N·V = 0.02 dava `G = 0.0196` onde a forma correcta dá `1.0`, e a LUT
+devolvia 0.0164 onde a resposta é 0.886. O reflexo rasante não existia.
+
+Era também uma incoerência interna: desde D44 a luz directa usa height-correlated.
+O mesmo material respondia de uma maneira ao sol e de outra ao céu.
+
+| F0 | médio antes | depois | máximo antes | depois |
+|---|---|---|---|---|
+| dieléctrico | 26.5% | **4.4%** | 98.1% | **18.4%** |
+| metal | 21.8% | **5.3%** | 98.3% | **23.8%** |
+
+O gate mede contra duas referências — sobre o mapa de 8 bits e sobre o céu
+analítico — e dão 4.43% e 4.49%. **O que resta é o método, não os dados**: subir a
+resolução do ambiente não ganharia nada mensurável.
+
+Na imagem a mudança é pequena (7.7% dos pixels no `pbr-grid`, +0.1% de brilho) e a
+razão é precisa: o erro era máximo em material liso a rasar contra céu brilhante, e
+aquela cena é sol e esferas rugosas. Dizer «corrigi um erro de 26%» sem dizer isto
+seria vender o peixe.

@@ -294,3 +294,15 @@ output.**
 - `tan(2*pi*xi + pi/2)` na amostragem anisotrópica tem singularidades em xi = 0 e
   xi = 0.5, e a sequência de Hammersley acerta nas duas. `atan2(ay*sin t, ax*cos t)`
   é a mesma inversão sem singularidade nenhuma.
+- **O `k` do Smith-Schlick não é o mesmo para luz directa e para IBL**, e usar o da
+  luz directa (`k = (a+1)²/8`) num integral sobre a hemisfera colapsa o termo a
+  rasar: `G = 0.0196` onde a forma height-correlated dá `1.0`. A LUT do IBL perdia
+  o reflexo rasante inteiro e ninguém reparava porque a imagem continuava
+  plausível (D50).
+- Quando duas partes do motor implementam o **mesmo** modelo (a luz directa e o
+  IBL), uma pode ficar para trás numa correcção sem que nada acuse. D44 corrigiu o
+  `G` da luz directa; a LUT do IBL ficou seis meses com o antigo. Procura as outras
+  cópias quando corriges um modelo.
+- Um erro medido num LUT ou num integral **não se traduz proporcionalmente na
+  imagem**: 26% de erro médio deu 0.1% de brilho no `pbr-grid`, porque o erro era
+  máximo onde aquela cena não tem sinal. Mede os dois, e diz qual é qual (D50).

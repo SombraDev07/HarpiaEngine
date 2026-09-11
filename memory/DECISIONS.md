@@ -1032,3 +1032,66 @@ Três controlos negativos, cada um apanhado por uma verificação diferente:
 
 Falta ligar isto ao renderer: tangente no GBuffer e o parâmetro no material. O
 modelo está medido; o que falta é transporte.
+
+## D50 — O IBL usava o G da luz directa, e a rasar errava 51×
+
+O roadmap pedia um gate de referência: «comparar o nosso split-sum IBL com uma
+integração Monte Carlo de 4096 amostras, erro máximo publicado». O `gate-ibl` faz
+isso, em CPU e sem GPU nenhuma — é matemática, não é desenho — e a primeira coisa
+que publicou foi um bug.
+
+### O que estava errado
+
+`integrate_brdf` construía a LUT com `G = Smith-Schlick, k = (a+1)²/8`. Esse `k` é
+a remapeação do Karis **para luzes analíticas**; para o IBL a própria publicação
+usa outro. Aplicado a um integral sobre a hemisfera, o termo colapsa a rasar:
+
+| | G a N·V = 0.02, rugosidade 0.016 |
+|---|---|
+| `k = (a+1)²/8` | **0.0196** |
+| height-correlated | **1.0** |
+
+A LUT devolvia `escala·F0 + viés = 0.0164` onde a resposta certa é 0.886. O reflexo
+rasante — o que faz a água, o vidro e o chão polido parecerem o que são —
+simplesmente não existia.
+
+Isto também era uma **incoerência interna**: desde D44 a luz directa usa
+height-correlated. O mesmo material respondia de uma maneira ao sol e de outra ao
+céu, e nada no motor apontava para isso.
+
+### Medido, antes e depois
+
+Grelha 32×32 de (N·V, rugosidade), 4096 amostras de referência, erro relativo em
+luminância:
+
+| F0 | médio antes | médio depois | máximo antes | máximo depois |
+|---|---|---|---|---|
+| dieléctrico (0.04) | 26.5% | **4.4%** | 98.1% | **18.4%** |
+| metal (0.95) | 21.8% | **5.3%** | 98.3% | **23.8%** |
+
+O pior caso mudou de sítio: era a rasar num quase-espelho (um bug), passou a ser
+rugosidade alta (onde o split-sum é genuinamente fraco). Os 4–5% que sobram são a
+aproximação a trabalhar.
+
+### O erro vem decomposto, e isso responde à pergunta seguinte
+
+O gate mede contra duas referências: a mesma integração sobre o **mapa de 8 bits**
+que o pré-filtro viu (erro algorítmico) e sobre o **céu analítico** (erro total).
+Dão 4.43% e 4.49%. A diferença é 0.06 pontos: **o que resta é o método, não os
+dados.** Aumentar a resolução do ambiente ou passá-lo a HDR não ia ganhar nada
+mensurável; melhorar o split-sum, sim. Sem a decomposição eu não saberia qual das
+duas atacar.
+
+### O efeito na imagem é pequeno, e vale a pena dizer porquê
+
+No `gate-pbr-grid` mudam 7.7% dos pixels e o brilho médio sobe 0.1%. Parece pouco
+para um erro de 26%, e a razão é precisa: o erro era máximo em **material liso a
+rasar contra céu brilhante**, e aquela cena é dominada pelo sol, com esferas
+rugosas. 10 359 pixels mudam mais de 8/255, todos nas esferas.
+
+Só o `gate-pbr-grid` consome o IBL hoje, portanto o ganho visível é esse. O que
+muda é que o próximo material iluminado pelo céu já nasce certo.
+
+Dois testes sem GPU travam a regressão: a LUT tem de dar mais de 0.8 a rasar num
+material liso, e o dieléctrico e o metal têm de convergir nesse limite. Com o `G`
+antigo o primeiro falha.

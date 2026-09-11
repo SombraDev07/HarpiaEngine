@@ -86,15 +86,11 @@ fn sky(dir: Vec3) -> Vec3 {
 
 fn convolve_irradiance(env: &RgbaImage, w: u32, h: u32) -> RgbaImage {
     let mut px = vec![0u8; (w * h * 4) as usize];
-            let samples = 16u32;
+    let samples = 16u32;
     for y in 0..h {
         for x in 0..w {
             let n = uv_to_dir((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
-            let up = if n.y.abs() > 0.999 {
-                Vec3::X
-            } else {
-                Vec3::Y
-            };
+            let up = if n.y.abs() > 0.999 { Vec3::X } else { Vec3::Y };
             let tangent = up.cross(n).normalize_or_zero();
             let bitan = n.cross(tangent);
             let mut acc = Vec3::ZERO;
@@ -212,10 +208,26 @@ fn integrate_brdf(size: u32) -> RgbaImage {
     }
 }
 
+/// Smith height-correlated — a mesma forma que a luz directa usa desde D44.
+///
+/// Estava aqui `k = (a+1)²/8`, que é a remapeação do Schlick **para luzes
+/// analíticas** e não tem nada que fazer num integral sobre a hemisfera. O
+/// `gate-ibl` mediu o estrago: a rugosidade 0.016 e N·V 0.02 esta LUT devolvia
+/// 0.0164 onde a resposta é 0.886 — 51 vezes a menos. O reflexo rasante, que é o
+/// que faz a água, o vidro e o chão polido parecerem o que são, simplesmente não
+/// existia. Média de 26% de erro sobre a grelha toda.
+///
+/// Devolve G, não V.
 fn g_smith(ndv: f32, ndl: f32, a: f32) -> f32 {
-    let k = (a + 1.0).powi(2) / 8.0;
-    let g1 = |x: f32| x / (x * (1.0 - k) + k).max(1e-4);
-    g1(ndv) * g1(ndl)
+    let a2 = a * a;
+    let lambda_v = ndl * (ndv * ndv * (1.0 - a2) + a2).sqrt();
+    let lambda_l = ndv * (ndl * ndl * (1.0 - a2) + a2).sqrt();
+    let denom = lambda_v + lambda_l;
+    if denom > 0.0 {
+        (0.5 / denom) * 4.0 * ndv * ndl
+    } else {
+        0.0
+    }
 }
 
 fn importance_ggx(xi: (f32, f32), n: Vec3, a: f32) -> Vec3 {
@@ -238,10 +250,72 @@ fn radical_inverse(bits: u32) -> f32 {
     bits.reverse_bits() as f32 * 2.3283064e-10
 }
 
+/// A radiância do céu como **função**, sem passar por textura nenhuma.
+///
+/// É a verdade contra a qual o `gate-ibl` mede tudo o resto: o mapa de ambiente
+/// é uma amostragem desta função em 8 bits, e o split-sum é uma aproximação do
+/// integral sobre ela. Ter a função separada é o que permite dizer qual das duas
+/// coisas está a custar o erro.
+pub fn sky_radiance(dir: Vec3) -> Vec3 {
+    sky(dir)
+}
+
+/// Amostra um mapa lat-long com filtragem trilinear, como o sampler da GPU.
+///
+/// O `sample_latlong` interno usa o vizinho mais próximo, que serve para
+/// construir os mips mas não descreve o que o shader faz em tempo de execução.
+/// O gate precisa do segundo para comparar o que realmente se desenha.
+pub fn sample_lod(img: &RgbaImage, dir: Vec3, lod: f32) -> Vec3 {
+    let max_lod = (img.mip_levels - 1) as f32;
+    let l = lod.clamp(0.0, max_lod);
+    let lo = l.floor() as u32;
+    let hi = (lo + 1).min(img.mip_levels - 1);
+    let t = l - lo as f32;
+    let a = sample_mip_bilinear(img, dir, lo);
+    if hi == lo {
+        return a;
+    }
+    a.lerp(sample_mip_bilinear(img, dir, hi), t)
+}
+
+fn sample_mip_bilinear(img: &RgbaImage, dir: Vec3, mip: u32) -> Vec3 {
+    let w = (img.width >> mip).max(1);
+    let h = (img.height >> mip).max(1);
+    let (u, v) = dir_to_uv(dir);
+    // Centros de texel, como o hardware: a coordenada -0.5 e depois interpola.
+    let fx = u * w as f32 - 0.5;
+    let fy = v * h as f32 - 0.5;
+    let x0 = fx.floor();
+    let y0 = fy.floor();
+    let tx = fx - x0;
+    let ty = fy - y0;
+    let px = &img.mips[mip as usize];
+    let fetch = |xi: i32, yi: i32| {
+        // U dá a volta (é longitude), V encosta (é latitude).
+        let x = xi.rem_euclid(w as i32) as u32;
+        let y = yi.clamp(0, h as i32 - 1) as u32;
+        let i = ((y * w + x) * 4) as usize;
+        Vec3::new(px[i] as f32, px[i + 1] as f32, px[i + 2] as f32) / 255.0
+    };
+    let (xi, yi) = (x0 as i32, y0 as i32);
+    let top = fetch(xi, yi).lerp(fetch(xi + 1, yi), tx);
+    let bottom = fetch(xi, yi + 1).lerp(fetch(xi + 1, yi + 1), tx);
+    top.lerp(bottom, ty)
+}
+
+/// O mapa de ambiente cru, para o gate poder integrar sobre ele.
+pub fn generate_env(w: u32, h: u32) -> RgbaImage {
+    generate_sky(w, h)
+}
+
 fn uv_to_dir(u: f32, v: f32) -> Vec3 {
     let phi = (u * 2.0 - 1.0) * PI;
     let theta = v * PI;
-    Vec3::new(theta.sin() * phi.cos(), theta.cos(), theta.sin() * phi.sin())
+    Vec3::new(
+        theta.sin() * phi.cos(),
+        theta.cos(),
+        theta.sin() * phi.sin(),
+    )
 }
 
 fn dir_to_uv(d: Vec3) -> (f32, f32) {
@@ -251,7 +325,7 @@ fn dir_to_uv(d: Vec3) -> (f32, f32) {
     (u.fract().rem_euclid(1.0), v.clamp(0.0, 1.0))
 }
 
-fn sample_latlong(img: &RgbaImage, dir: Vec3) -> Vec3 {
+pub fn sample_latlong(img: &RgbaImage, dir: Vec3) -> Vec3 {
     let (u, v) = dir_to_uv(dir);
     let x = (u * (img.width - 1) as f32).round() as u32;
     let y = (v * (img.height - 1) as f32).round() as u32;
@@ -272,10 +346,61 @@ fn write_px(px: &mut [u8], w: u32, x: u32, y: u32, c: Vec3) {
 mod tests {
     use super::*;
 
+    /// A LUT tem de ter reflexo a rasar. Sem GPU, e trava o bug que o `gate-ibl`
+    /// apanhou: com `k = (a+1)²/8` o canal de escala dava 0.02 onde tem de dar ~1.
+    ///
+    /// A rasar e com o material liso, a reflexão especular é quase total — é o que
+    /// faz a água e o vidro. Se este valor cair, desapareceu.
+    #[test]
+    fn the_lut_keeps_its_grazing_reflection() {
+        let lut = integrate_brdf(128);
+        let px = &lut.mips[0];
+        // Coluna 1 de 128 = N·V ~ 0.012; linha 2 = rugosidade ~ 0.02.
+        let at = |x: u32, y: u32| {
+            let i = ((y * 128 + x) * 4) as usize;
+            (px[i] as f32 / 255.0, px[i + 1] as f32 / 255.0)
+        };
+        let (scale, bias) = at(1, 2);
+        let total = scale + bias;
+        assert!(
+            total > 0.8,
+            "a rasar num material liso a LUT dá escala {scale:.3} + viés {bias:.3} \
+             = {total:.3}; o reflexo rasante é quase total e isto apagou-o"
+        );
+        // E no centro tem de continuar a ser um número sensato, não 1 em todo o lado.
+        let (s_mid, b_mid) = at(64, 64);
+        assert!(
+            (0.2..0.95).contains(&(s_mid + b_mid)),
+            "no meio da LUT: {:.3}",
+            s_mid + b_mid
+        );
+    }
+
+    /// Um dieléctrico a rasar reflecte quase tudo, e um metal também: a diferença
+    /// entre os dois tem de **desaparecer** no limite rasante. É o que o termo de
+    /// Schlick diz, e é o que separa uma LUT certa de uma escalada à mão.
+    #[test]
+    fn grazing_fresnel_converges_for_every_f0() {
+        let lut = integrate_brdf(128);
+        let px = &lut.mips[0];
+        let i = ((2 * 128 + 1) * 4) as usize;
+        let (scale, bias) = (px[i] as f32 / 255.0, px[i + 1] as f32 / 255.0);
+        let dielectric = 0.04 * scale + bias;
+        let metal = 0.95 * scale + bias;
+        assert!(
+            (dielectric - metal).abs() < 0.15,
+            "a rasar o dieléctrico dá {dielectric:.3} e o metal {metal:.3}: \
+             deviam convergir"
+        );
+    }
+
     #[test]
     fn ibl_mips_are_complete() {
         let ibl = generate();
-        assert_eq!(ibl.prefiltered.mips.len(), ibl.prefiltered.mip_levels as usize);
+        assert_eq!(
+            ibl.prefiltered.mips.len(),
+            ibl.prefiltered.mip_levels as usize
+        );
         assert_eq!(ibl.irradiance.mips.len(), 1);
         assert_eq!(ibl.brdf_lut.mips.len(), 1);
         let last = ibl.prefiltered.mips.last().unwrap();

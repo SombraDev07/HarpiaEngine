@@ -192,8 +192,11 @@ alcançáveis e por medirem algo.
       passavam com o `Lambda` quebrado de propósito.
 - [x] **Multiscatter GGX** validado pelo furnace: desvio máximo 0.0005 em 4096
       células. A compensação que existia está correcta — agora está provado.
-- [ ] Gate de **referência**: comparar o nosso split-sum IBL com uma integração
-      Monte Carlo de 4096 amostras feita offline. Erro máximo publicado.
+- [x] Gate de **referência**: `gate-ibl` compara o split-sum com Monte Carlo de
+      4096 amostras, em CPU e sem GPU (D50). **Apanhou um bug logo**: a LUT usava
+      o `G` da luz directa e a rasar errava 51×. Erro médio 26.5% → **4.4%**,
+      máximo 98.1% → **18.4%**. O erro vem decomposto em algorítmico e total, e a
+      diferença (0.06 pontos) diz que o que resta é o método e não os dados.
 
 ### 7.2 Luzes — sem isto o resto é conversa
 
