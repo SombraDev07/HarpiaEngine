@@ -32,7 +32,8 @@ pub use water::{wave_omega, WaterCb, WATER_GRID, WATER_HALF};
 pub use fly_camera::FlyCamera;
 pub use rain::{rain_map_view_proj, RainCb, RAIN_MAP_SIZE};
 pub use lights::{
-    assign as assign_lights, depth_slice, slice_depth, ClusterAssignment, ClusterRange, PointLight,
+    assign as assign_lights, assign_counted as assign_lights_counted, depth_slice, slice_depth,
+    ClusterAssignment, ClusterRange, ConeStats, Light, PointLight,
     CLUSTER_COUNT, CLUSTER_X, CLUSTER_Y, CLUSTER_Z, MAX_LIGHT_INDICES,
 };
 pub use terrain::{CLIPMAP_PATCH, clipmap_patch_grid, clipmap_patches_per_level, clipmap_patch_count, clipmap_patch_vertex_count, clipmap_patch_bounds, 

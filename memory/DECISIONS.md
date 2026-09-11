@@ -1095,3 +1095,62 @@ muda é que o próximo material iluminado pelo céu já nasce certo.
 Dois testes sem GPU travam a regressão: a LUT tem de dar mais de 0.8 a rasar num
 material liso, e o dieléctrico e o metal têm de convergir nesse limite. Com o `G`
 antigo o primeiro falha.
+
+## D51 — Projectores: uma estrutura só, e o cone corta metade dos clusters
+
+Omni e spot são **a mesma** `Light`, não duas. Um projector é uma luz pontual com
+um cone; uma omni é um projector cujo cone é a esfera inteira, que é o que
+`cos_outer = -1` diz. Uma lista de luzes, uma lista de índices, um percurso por
+pixel. Duas listas separadas obrigariam a dois percursos e a dois caminhos de
+código que divergem com o tempo.
+
+O cone entra no clustering como um segundo teste, depois da caixa da esfera: para
+cada cluster candidato constrói-se a esfera que o envolve e faz-se cone-contra-
+esfera. A esfera do cluster é conservadora face ao tronco de pirâmide — pode
+aceitar um cone que passa ao lado, nunca rejeitar um que toque, que é o lado certo
+do erro.
+
+### Os números
+
+| | |
+|---|---|
+| luzes | 1000, das quais **334 projectores** |
+| slots de cluster pela esfera | 45 394 |
+| depois do teste de cone | **21 364** |
+| cortado pelo cone | **52.9%** |
+| clustered | **0.386 ms** |
+| força-bruta | 2.220 ms |
+| ganho | **5.75×** |
+| canais diferentes da força-bruta | **0**, 0 ULP |
+
+O ganho subiu de 3.1× (só omni) para 5.75×: os projectores encarecem a
+força-bruta, que os percorre todos, e não encarecem o clustered.
+
+### O que aprendi a partir os meus próprios testes
+
+Escrevi o teste que interessa — «nenhum ponto iluminado fica num cluster que
+descartou a luz», a amostrar o interior do cone — e depois quebrei o código de
+quatro maneiras. Duas passaram:
+
+- **A direcção do cone transformada como ponto em vez de vector.** A minha câmara
+  de teste estava na **origem**, e aí `transform_point3` e `transform_vector3` dão
+  o mesmo. Movida para 13 unidades da origem o erro desvia o cone 19.6 graus — e o
+  teste **continuou a passar**, porque o cone tinha 28 graus e sobrava
+  sobreposição. Só caiu com duas correcções: estreitar o cone do teste para 11
+  graus e acrescentar um invariante directo — **deslocar câmara e luz juntas não
+  pode mudar nada**, que é exactamente a propriedade que a transformação errada
+  quebra.
+- **A rejeição «atrás do ápice».** Tirei-a e nada falhou. Fui ver porquê em vez de
+  acrescentar um teste: atrás do ápice o `along` é negativo, logo `-along·sin_half`
+  é positivo e cresce, e o teste de ângulo já rejeita o cone espelhado sozinho. A
+  rejeição é **redundante**. Fica escrita por ser um corte barato, mas o comentário
+  que eu tinha posto — «sem a última, tudo o que está atrás seria iluminado» — era
+  falso e foi corrigido.
+
+### O chão
+
+O gate ganhou um chão (uma esfera de raio 900 por baixo). Não é decoração: sem
+superfície onde o cone pouse, um projector e uma luz pontual dão a mesma imagem, e
+um gate cuja imagem não distingue o que testa é mais fraco do que parece. O número
+já provava a correcção; o chão é para se **ver** o que está provado. De caminho é
+uma superfície rasante que cobre muitos clusters, o que torna o teste mais duro.

@@ -14,12 +14,12 @@
 //! atribuir à causa.
 
 use anyhow::{Context, Result};
-use harpia_app::{run, AppConfig, Sample};
-use harpia_math::{perspective_vk, Mat4, Vec3, Vec4};
+use harpia_app::{AppConfig, Sample, run};
+use harpia_math::{Mat4, Vec3, Vec4, perspective_vk};
 use harpia_render::{
-    assign_lights, color_desc, depth_desc, MaterialGpu, PointLight, PushConstants, SphereInstance,
-    SphereMesh, CLUSTER_X, CLUSTER_Y, CLUSTER_Z, GBUFFER_DEPTH_FORMAT, INSTANCE_STRIDE,
-    VERTEX_STRIDE,
+    CLUSTER_X, CLUSTER_Y, CLUSTER_Z, ConeStats, GBUFFER_DEPTH_FORMAT, INSTANCE_STRIDE, MaterialGpu,
+    PointLight, PushConstants, SphereInstance, SphereMesh, VERTEX_STRIDE, assign_lights_counted,
+    color_desc, depth_desc,
 };
 use harpia_rhi::{
     Buffer, Device, Extent2D, Format, FrameInfo, Gpu, GraphicsPipeline, GraphicsPipelineDesc,
@@ -95,6 +95,7 @@ struct LightsGate {
     rt: Option<Targets>,
     extent: Extent2D,
     compared: bool,
+    cone: ConeStats,
 }
 
 /// Luzes espalhadas sobre a cena, de cores variadas e raio pequeno.
@@ -115,13 +116,42 @@ fn make_lights() -> Vec<PointLight> {
                 0.5 + 0.5 * (f * 2.3).sin(),
                 0.5 + 0.5 * (f * 3.7).sin(),
             );
-            PointLight::new(pos, 4.5, color, 6.0)
+            // Uma em cada três é um projector. Misturadas de propósito: o gate
+            // tem de provar que os dois tipos convivem na mesma lista e no mesmo
+            // percurso, não que cada um funciona sozinho.
+            if i % 3 == 0 {
+                let dir = Vec3::new((f * 0.9).cos() * 0.6, -1.0, (f * 1.3).sin() * 0.6);
+                // Raio maior que as omni: um cone estreito com raio pequeno mal
+                // toca em clusters nenhuns, e então não há nada para verificar.
+                PointLight::spot(pos, dir, 9.0, 0.22, 0.38, color, 14.0)
+            } else {
+                PointLight::point(pos, 4.5, color, 6.0)
+            }
         })
         .collect()
 }
 
 fn spheres() -> Vec<SphereInstance> {
     let mut out = Vec::new();
+    // Chão. Uma esfera enorme por baixo, porque o gate já sabe desenhar esferas e
+    // não vale a pena um segundo pipeline para um plano.
+    //
+    // Existe por uma razão concreta: sem superfície onde o cone pouse, um
+    // projector e uma luz pontual dão a mesma imagem, e um gate cuja imagem não
+    // distingue o que testa é mais fraco do que parece. O número (0 ULP contra
+    // força-bruta) continuava a provar a correcção; o chão é para se **ver** o
+    // que está a ser provado. E de caminho é uma superfície rasante que cobre
+    // muitos clusters, o que torna o teste mais exigente.
+    let mut floor = MaterialGpu::default();
+    floor.base_color = [0.34, 0.33, 0.32];
+    floor.roughness = 0.55;
+    floor.metallic = 0.0;
+    const FLOOR_R: f32 = 900.0;
+    out.push(SphereInstance::from_material(
+        [0.0, -FLOOR_R, -30.0],
+        FLOOR_R,
+        &floor,
+    ));
     for row in 0..9 {
         for col in 0..21 {
             let mut m = MaterialGpu::default();
@@ -129,11 +159,7 @@ fn spheres() -> Vec<SphereInstance> {
             m.roughness = 0.25 + row as f32 * 0.08;
             m.metallic = if col % 3 == 0 { 1.0 } else { 0.0 };
             out.push(SphereInstance::from_material(
-                [
-                    -30.0 + col as f32 * 3.0,
-                    0.9,
-                    -8.0 - row as f32 * 6.0,
-                ],
+                [-30.0 + col as f32 * 3.0, 0.9, -8.0 - row as f32 * 6.0],
                 1.1,
                 &m,
             ));
@@ -151,7 +177,10 @@ impl LightsGate {
             brute: gpu.create_texture(&color_desc(w, h, HDR))?,
             depth: gpu.create_texture(&depth_desc(w, h))?,
         });
-        self.extent = Extent2D { width: w, height: h };
+        self.extent = Extent2D {
+            width: w,
+            height: h,
+        };
         Ok(())
     }
 }
@@ -230,7 +259,9 @@ impl Sample for LightsGate {
         // indirectos chegarem (fase 6.5) -- e aí este gate prova que a versão em
         // compute continua a concordar com a força-bruta.
         let tan_half = (FOV_Y.to_radians() * 0.5).tan();
-        let assignment = assign_lights(&self.lights, view, NEAR, FAR, tan_half, w / h);
+        let (assignment, cone) =
+            assign_lights_counted(&self.lights, view, NEAR, FAR, tan_half, w / h);
+        self.cone = cone;
         if assignment.dropped > 0 {
             tracing::warn!(perdidas = assignment.dropped, "lista de índices cheia");
         }
@@ -240,7 +271,10 @@ impl Sample for LightsGate {
             .flat_map(|r| [r.offset, r.count])
             .collect();
         gpu.write_storage_buffer(self.range_buf.context("ranges")?, as_bytes(&flat))?;
-        gpu.write_storage_buffer(self.index_buf.context("indices")?, as_bytes(&assignment.indices))?;
+        gpu.write_storage_buffer(
+            self.index_buf.context("indices")?,
+            as_bytes(&assignment.indices),
+        )?;
 
         let base = LitCb {
             inv_view_proj: view_proj.inverse(),
@@ -250,12 +284,7 @@ impl Sample for LightsGate {
             sun_color: Vec4::new(1.4, 1.35, 1.2, 1.0),
             params: Vec4::new(NEAR, FAR, LIGHTS as f32, 0.0),
             screen: Vec4::new(w, h, 1.0 / w, 1.0 / h),
-            cluster_dims: Vec4::new(
-                CLUSTER_X as f32,
-                CLUSTER_Y as f32,
-                CLUSTER_Z as f32,
-                0.0,
-            ),
+            cluster_dims: Vec4::new(CLUSTER_X as f32, CLUSTER_Y as f32, CLUSTER_Z as f32, 0.0),
         };
 
         for (target, brute, label) in [
@@ -319,6 +348,10 @@ impl Sample for LightsGate {
         tracing::info!(
             luzes = LIGHTS,
             canais = total,
+            spots = self.lights.iter().filter(|l| l.is_spot()).count(),
+            slots_pela_esfera = self.cone.sphere_slots,
+            slots_depois_do_cone = self.cone.cone_slots,
+            cortado_pelo_cone = format!("{:.1}", self.cone.saved() * 100.0),
             canais_diferentes = differing,
             percent = format!("{pct:.3}"),
             maior_diferenca_ulp = worst,
@@ -348,8 +381,7 @@ fn instance_bytes(v: &[SphereInstance]) -> &[u8] {
 fn main() -> Result<std::process::ExitCode> {
     let mut config = AppConfig::parse(std::env::args())?;
     config.title = "Harpia — lights".into();
-    let user_set =
-        std::env::args().any(|a| a == "--frames" || a == "--interactive" || a == "-i");
+    let user_set = std::env::args().any(|a| a == "--frames" || a == "--interactive" || a == "-i");
     if !user_set {
         config.max_frames = std::num::NonZeroU32::new(16);
     }

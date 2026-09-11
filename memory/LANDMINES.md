@@ -306,3 +306,14 @@ output.**
 - Um erro medido num LUT ou num integral **não se traduz proporcionalmente na
   imagem**: 26% de erro médio deu 0.1% de brilho no `pbr-grid`, porque o erro era
   máximo onde aquela cena não tem sinal. Mede os dois, e diz qual é qual (D50).
+- **Uma câmara de teste na origem não distingue `transform_point3` de
+  `transform_vector3`.** Sem translação as duas dão o mesmo, e um teste escrito
+  assim fica cego à classe inteira de erros «direcção transformada como ponto».
+  Há um teste que verifica que a câmara de teste **não** está na origem (D51).
+- Um teste de cone/frustum com ângulo largo tolera erros de direcção grandes: com
+  28 graus de meio-ângulo, um desvio de 19.6 graus passava. Para testar direcção,
+  usa o **caso estreito** — ou, melhor, um invariante que não dependa da margem
+  (deslocar câmara e objecto juntos não pode mudar o resultado) (D51).
+- Quando tiras uma linha e nenhum teste falha, há duas hipóteses e só uma é «falta
+  um teste»: a outra é que a linha era **redundante**. Vai ver qual das duas antes
+  de escrever o teste — e corrige o comentário que dizia que ela era essencial (D51).

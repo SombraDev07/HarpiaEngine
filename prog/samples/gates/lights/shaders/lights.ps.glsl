@@ -11,9 +11,12 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-struct PointLight {
-    vec4 position_radius;
-    vec4 color;
+// Omni e spot são a mesma estrutura: uma omni é um spot com o cone aberto à
+// esfera toda, que é o que `cos_outer = -1` diz. Uma lista, um percurso.
+struct Light {
+    vec4 position_radius;   // xyz posição, w raio
+    vec4 color;             // rgb cor, w cosseno do ângulo interior
+    vec4 dir_cos_outer;     // xyz direcção, w cosseno do exterior (-1 = omni)
 };
 
 struct ClusterRange {
@@ -25,7 +28,7 @@ struct ClusterRange {
 // array de texturas. Três tipos diferentes sobre o mesmo array é o mesmo padrão
 // que já usamos para o heap: o slot é que escolhe qual é qual.
 //   slot 0 = luzes · slot 1 = intervalos por cluster · slot 2 = índices
-layout(set = 3, binding = 0, std430) readonly buffer Lights { PointLight lights[]; } light_buf[];
+layout(set = 3, binding = 0, std430) readonly buffer Lights { Light lights[]; } light_buf[];
 layout(set = 3, binding = 0, std430) readonly buffer Ranges { ClusterRange ranges[]; } range_buf[];
 layout(set = 3, binding = 0, std430) readonly buffer Indices { uint indices[]; } index_buf[];
 
@@ -94,6 +97,26 @@ float attenuation(float dist, float radius) {
     return (t * t) / (dist * dist + 1.0);
 }
 
+// Queda do cone, entre o ângulo interior e o exterior.
+//
+// `l` aponta do ponto **para** a luz, e a direcção do cone aponta para fora dela:
+// por isso o cosseno que interessa é o de `-l` contra a direcção. Trocar o sinal
+// aqui acende tudo o que está atrás do projector e nada do que está à frente, e é
+// um erro que numa imagem parece «o cone está do lado errado» e não «o sinal está
+// trocado» -- por isso é o teste de correcção que o apanha, não o olho.
+//
+// Tem de chegar exactamente a zero no ângulo exterior, pela mesma razão que a
+// atenuação radial: o teste de cone no lado da CPU corta ali, e se o shader ainda
+// contribuísse um pouco para lá disso, o clustered discordava da força-bruta.
+float cone_falloff(vec3 l, vec4 dir_cos_outer, float cos_inner) {
+    float cos_outer = dir_cos_outer.w;
+    if (cos_outer <= -1.0) return 1.0;          // omni
+    float cd = dot(-l, dir_cos_outer.xyz);
+    // `max` no denominador: com interior == exterior a queda é um degrau, e sem
+    // isto seria uma divisão por zero.
+    return clamp((cd - cos_outer) / max(cos_inner - cos_outer, 1e-4), 0.0, 1.0);
+}
+
 void main() {
     vec3 n = normalize(v_normal);
     vec3 v = normalize(cb.camera_pos.xyz - v_world);
@@ -110,12 +133,15 @@ void main() {
 
     if (brute) {
         for (uint i = 0u; i < light_count; ++i) {
-            PointLight lt = light_buf[0].lights[i];
+            Light lt = light_buf[0].lights[i];
             vec3 d = lt.position_radius.xyz - v_world;
             float dist = length(d);
             if (dist >= lt.position_radius.w) continue;
-            color += shade(n, v, d / max(dist, 1e-4),
-                           lt.color.rgb * attenuation(dist, lt.position_radius.w),
+            vec3 l = d / max(dist, 1e-4);
+            float cone = cone_falloff(l, lt.dir_cos_outer, lt.color.w);
+            if (cone <= 0.0) continue;
+            color += shade(n, v, l,
+                           lt.color.rgb * (attenuation(dist, lt.position_radius.w) * cone),
                            v_albedo, rough, metal);
         }
     } else {
@@ -135,12 +161,15 @@ void main() {
         uint cluster = (cz * uint(dims.y) + cy) * uint(dims.x) + cx;
         ClusterRange r = range_buf[1].ranges[cluster];
         for (uint i = 0u; i < r.count; ++i) {
-            PointLight lt = light_buf[0].lights[index_buf[2].indices[r.offset + i]];
+            Light lt = light_buf[0].lights[index_buf[2].indices[r.offset + i]];
             vec3 d = lt.position_radius.xyz - v_world;
             float dist = length(d);
             if (dist >= lt.position_radius.w) continue;
-            color += shade(n, v, d / max(dist, 1e-4),
-                           lt.color.rgb * attenuation(dist, lt.position_radius.w),
+            vec3 l = d / max(dist, 1e-4);
+            float cone = cone_falloff(l, lt.dir_cos_outer, lt.color.w);
+            if (cone <= 0.0) continue;
+            color += shade(n, v, l,
+                           lt.color.rgb * (attenuation(dist, lt.position_radius.w) * cone),
                            v_albedo, rough, metal);
         }
     }

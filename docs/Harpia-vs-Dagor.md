@@ -201,8 +201,13 @@ alcançáveis e por medirem algo.
 ### 7.2 Luzes — sem isto o resto é conversa
 
 - [x] **Clustered lights**: 16×9×24, Z exponencial, storage buffers no set 3
-      (D45/D46). **Feito** para omni; spot falta.
-- [x] Gate `lights`: 1000 luzes — **0.294 ms contra 0.917 ms, 3.1×**.
+      (D45/D46). **Feito** para omni **e spot** (D51): a mesma estrutura para os
+      dois, e o teste de cone contra a esfera do cluster corta **52.9%** dos slots
+      que a esfera envolvente pediria.
+- [x] Gate `lights`: 1000 luzes, 334 delas projectores, com chão — **0.386 ms
+      contra 2.220 ms, 5.75×**, e a imagem continua bit-idêntica à força-bruta
+      (0 canais, 0 ULP). Era 3.1× só com omni: os projectores encarecem a
+      força-bruta e não o clustered.
 - [ ] Sombras dinâmicas com **orçamento por frame** e prioridade (a ideia deles é
       boa e é só uma fila ordenada).
 - [x] **Superar:** gate de correcção contra força-bruta. **Apanhou logo um bug**

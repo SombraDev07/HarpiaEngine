@@ -609,3 +609,34 @@ Na imagem a mudança é pequena (7.7% dos pixels no `pbr-grid`, +0.1% de brilho)
 razão é precisa: o erro era máximo em material liso a rasar contra céu brilhante, e
 aquela cena é sol e esferas rugosas. Dizer «corrigi um erro de 26%» sem dizer isto
 seria vender o peixe.
+
+## Projectores, e dois testes meus que não testavam o que eu julgava
+
+Omni e spot passaram a ser a mesma `Light`: um projector é uma luz pontual com um
+cone, e uma omni é um projector com o cone aberto à esfera toda. Uma lista, um
+percurso por pixel.
+
+O cone entra no clustering como segundo teste, depois da caixa da esfera: cone
+contra a esfera envolvente de cada cluster candidato. 1000 luzes, 334 projectores:
+os slots caem de 45 394 para **21 364**, 52.9% cortados. O clustered faz 0.386 ms
+contra 2.220 da força-bruta — **5.75×**, era 3.1× só com omni — e continua
+**bit-idêntico**: 0 canais diferentes, 0 ULP.
+
+Escrevi o teste que interessa (nenhum ponto iluminado num cluster que descartou a
+luz), quebrei o código de quatro maneiras, e **duas passaram**:
+
+A direcção do cone transformada como ponto em vez de vector passou porque a minha
+câmara de teste estava na **origem** — ali as duas transformações dão o mesmo.
+Movida para longe, o erro desvia o cone 19.6 graus e o teste **continuou a passar**,
+porque o cone tinha 28 graus e sobrava sobreposição. Precisou de duas correcções:
+estreitar o cone para 11 graus e um invariante directo — deslocar câmara e luz
+juntas não pode mudar nada.
+
+A rejeição «atrás do ápice» também podia sair sem nada falhar. Fui ver porquê antes
+de escrever mais um teste: é **redundante** nesta formulação. Ficou escrita por ser
+um corte barato, mas o comentário que eu tinha posto a dizer que era essencial era
+falso e foi corrigido.
+
+O gate ganhou chão. Sem superfície onde o cone pouse, um projector e uma omni dão a
+mesma imagem — e um gate cuja imagem não distingue o que testa é mais fraco do que
+parece.
