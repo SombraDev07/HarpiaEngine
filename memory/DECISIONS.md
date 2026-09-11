@@ -974,3 +974,61 @@ desenha os 448 patches, e a comparação é da imagem:
 
 Fica registado que o clipmap tem z-fighting na fronteira entre níveis. São 4 pixels
 e não se vê, mas é real e não foi este trabalho que o criou.
+
+## D49 — GGX anisotrópica, e três verificações minhas que não verificavam nada
+
+O `gate-furnace` passou a três painéis: isotrópico à esquerda (o que já havia),
+anisotrópico ao meio, e à direita **o mesmo material com os eixos trocados e a
+vista rodada 90 graus**.
+
+O modelo é o de Heitz 2014: `Lambda(w) = (sqrt(1 + (ax²wx² + ay²wy²)/wz²) - 1)/2`,
+`G2 = 1/(1 + Lambda(v) + Lambda(l))`. A amostragem inverte a marginal em phi com
+`atan2(ay·sin t, ax·cos t)` — a forma escrita com `tan(2πξ + π/2)` tem
+singularidades em ξ = 0 e ξ = 0.5, e a sequência de Hammersley acerta nas duas em
+cheio.
+
+### Os números
+
+| rugosidade | iso (ref) | aniso ax=ay | ao longo de T | ao longo de B |
+|---|---|---|---|---|
+| 0.070 | 0.9986 | 0.9986 | 0.9986 | 0.9994 |
+| 0.445 | 0.9065 | 0.9065 | 0.9255 | 0.9512 |
+| 0.945 | 0.5414 | 0.5414 | 0.7025 | 0.5866 |
+
+Com `alpha_x == alpha_y` o caminho anisotrópico dá o isotrópico com desvio máximo
+de **0.0005** — o chão do meio-float, o mesmo da compensação de multiscatter. Com
+razão 4:1 a perda média cai de 0.1706 para 0.1139 (tangente) e 0.1334
+(bitangente): um eixo mais liso dispersa menos.
+
+### A parte que interessa
+
+Escrevi primeiro duas verificações: «com ax == ay dá o isotrópico» e «ao longo da
+tangente e da bitangente o albedo é diferente». Depois quebrei o modelo de
+propósito — um `Lambda` a usar `ax` nas duas componentes — e **as duas passaram**.
+
+- A redução não o apanha por construção: com `ax == ay` o erro não existe.
+- O «faz alguma coisa» não o apanha porque continua a fazer — só que a coisa
+  errada. E o limiar estava em 0.02 sobre o **máximo** de |T − B|, quando o máximo
+  do ruído de Monte Carlo num material **isotrópico** é 0.0332. O teste passava com
+  a anisotropia desligada.
+
+O que faltava era um invariante do modelo, não do resultado: **trocar alpha_x com
+alpha_y e rodar a vista 90 graus é relabelar os eixos**, e qualquer modelo correcto
+devolve o mesmo número. O `Lambda` quebrado dá **2.66** contra uma tolerância de
+0.03. E a separação passou a ser medida pela **média**, não pelo máximo: 0.0436 com
+anisotropia, 0.0011 sem.
+
+O resíduo de 0.0161 no teste da troca é ruído, e há prova: medido a 1024, 4096 e
+16384 amostras dá 0.0332, 0.0161, 0.0073 — parte-se a meio quando as amostras
+quadruplicam, que é 1/sqrt(N). O sinal a sério não se mexe: 0.0436 nas três.
+
+Três controlos negativos, cada um apanhado por uma verificação diferente:
+
+| o que quebrei | quem apanha | valor contra limiar |
+|---|---|---|
+| `Lambda` ignora `ay` | troca de eixos | 2.66 vs 0.03 |
+| amostragem ignora `ay` | conservação de energia | cria 0.2295 |
+| razão 1.0 (isotrópico) | separação média | 0.0011 vs 0.02 |
+
+Falta ligar isto ao renderer: tangente no GBuffer e o parâmetro no material. O
+modelo está medido; o que falta é transporte.

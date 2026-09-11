@@ -556,3 +556,28 @@ corridas (28 pares) aquele pixel é bi-estável e mais nenhum muda.
 Pelo caminho: com uma thread por patch o dispatch custava 0.050 ms, porque 448
 threads são 7 workgroups e cada uma corria as 81 amostras em série. Um workgroup
 por patch, com redução em memória partilhada, deu 0.018 ms e imagem bit-idêntica.
+
+## GGX anisotrópica, e o que aprendi a partir as minhas próprias verificações
+
+O `gate-furnace` tem agora três painéis: isotrópico, anisotrópico, e o mesmo
+material com os eixos trocados. O modelo é o de Heitz 2014. Com `alpha_x ==
+alpha_y` reduz-se ao isotrópico com desvio de **0.0005** — o chão do meio-float — e
+com razão 4:1 a perda média de energia cai de 0.1706 para 0.1139 ao longo da
+tangente.
+
+Mas o que vale a pena contar é outra coisa. Escrevi duas verificações — «reduz-se
+ao isotrópico» e «a anisotropia faz alguma coisa» — parti o modelo de propósito, e
+**as duas passaram**. A primeira não podia apanhar o erro (com os eixos iguais ele
+não existe); a segunda tinha o limiar abaixo do ruído, e passava com a anisotropia
+**desligada**.
+
+A que faltava não era sobre o resultado, era sobre o modelo: trocar `alpha_x` com
+`alpha_y` e rodar a vista 90 graus é relabelar os eixos, e o número tem de ser o
+mesmo. O modelo partido dá 2.66 contra uma tolerância de 0.03.
+
+E o resíduo de 0.0161 que sobra é ruído, com prova: a 1024, 4096 e 16384 amostras
+dá 0.0332, 0.0161, 0.0073 — parte-se a meio ao quadruplicar, que é 1/sqrt(N). O
+sinal fica em 0.0436 nas três.
+
+Três controlos negativos, cada um apanhado por uma verificação diferente. Nenhuma
+das três é redundante, e descobri isso a partir cada uma.

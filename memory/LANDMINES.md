@@ -280,3 +280,17 @@ output.**
 - Quando um filtro de binários (`grep -E '^(gate-|...)$'`) não casa o que devia, o
   varrimento diz «0 falhados» e parece verde. Imprime **quantos** correram e
   confere o número antes de acreditares.
+- **Um limiar tem de ser calibrado contra o ruído, não escolhido.** «O máximo de
+  |T − B| > 0.02» parecia razoável e passava com a anisotropia **desligada**: o
+  máximo do ruído de Monte Carlo num material isotrópico é 0.0332. Sobre a média o
+  ruído é 0.0011 e o sinal 0.0436. Mede o ruído primeiro (D49).
+- Quando um resíduo pode ser ruído ou erro, **varia o número de amostras**. Se se
+  partir a meio ao quadruplicar, é 1/sqrt(N) e é ruído; se não se mexer, é erro.
+  Mediu-se 0.0332 → 0.0161 → 0.0073 para o resíduo e 0.0436 → 0.0436 → 0.0436 para
+  o sinal (D49).
+- Uma verificação que não falha quando quebras o código de propósito **não é uma
+  verificação**. Quebra sempre, uma vez por cada afirmação que o teste faz. Duas
+  das três que escrevi para a GGX anisotrópica passaram com o modelo partido (D49).
+- `tan(2*pi*xi + pi/2)` na amostragem anisotrópica tem singularidades em xi = 0 e
+  xi = 0.5, e a sequência de Hammersley acerta nas duas. `atan2(ay*sin t, ax*cos t)`
+  é a mesma inversão sem singularidade nenhuma.

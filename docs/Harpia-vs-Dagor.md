@@ -176,13 +176,20 @@ alcançáveis e por medirem algo.
 - [x] **Smith height-correlated** em vez do Schlick-k. **Feito** (D44): o furnace
       mediu 0.6922 contra 0.9986 a 0.07 de rugosidade — 31 pontos de energia
       perdida num quase-espelho.
-- [ ] **GGX anisotrópico** (tangente no GBuffer, que já tem espaço).
+- [~] **GGX anisotrópico** (Heitz 2014). O modelo está escrito e **medido** no
+      `gate-furnace`, que ganhou dois painéis (D49): com `ax == ay` reduz-se ao
+      isotrópico com desvio 0.0005, e a razão 4:1 baixa a perda média de 0.1706
+      para 0.1139. Falta a tangente no GBuffer e o parâmetro no material.
 - [ ] **Sheen/cloth** com NDF própria, não a aproximação que temos.
 
 **Superar:**
 
 - [x] **White furnace test como gate.** **Feito** (D44), `gate-furnace`. Falha com
       código ≠ 0 se a compensação não conservar energia; hoje desvia 0.0005.
+- [x] **Invariante de troca de eixos** para a anisotropia (D49): trocar `ax` com
+      `ay` e rodar a vista 90 graus tem de dar o mesmo albedo. É o que apanha um
+      modelo anisotrópico partido — as duas verificações que escrevi antes desta
+      passavam com o `Lambda` quebrado de propósito.
 - [x] **Multiscatter GGX** validado pelo furnace: desvio máximo 0.0005 em 4096
       células. A compensação que existia está correcta — agora está provado.
 - [ ] Gate de **referência**: comparar o nosso split-sum IBL com uma integração

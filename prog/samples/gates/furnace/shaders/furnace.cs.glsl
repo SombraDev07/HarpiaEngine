@@ -11,17 +11,36 @@
 // por importance sampling da GGX, onde o estimador se reduz a
 //     peso = G * VoH / (NoV * NoH).
 //
-// Três canais, para comparar modelos lado a lado:
-//   r = G de Smith com a aproximação de Schlick (k = (a+1)^2/8)  <- o que temos
+// A imagem tem dois painéis de N x N, lado a lado.
+//
+// Esquerda, isotrópico:
+//   r = G de Smith com a aproximação de Schlick (k = (a+1)^2/8)  <- o que tínhamos
 //   g = G de Smith height-correlated                             <- a forma exacta
 //   b = height-correlated + compensação de multiscatter          <- deve dar 1.0
+//
+// Meio, anisotrópico (Heitz 2014):
+//   r = alpha_x = alpha_y                <- tem de dar o mesmo que o `g` da esquerda
+//   g = alpha_y = alpha_x/4, vista ao longo da tangente
+//   b = o mesmo, vista ao longo da bitangente
+//
+// Direita, o **mesmo material com os eixos trocados**, visto do outro lado:
+//   r = E(ay, ax) com a vista na bitangente   <- tem de dar o `g` do meio
+//   g = E(ay, ax) com a vista na tangente     <- tem de dar o `b` do meio
+//
+// Este terceiro painel é o que apanha um modelo anisotrópico a sério. Trocar
+// alpha_x com alpha_y e rodar a vista 90 graus é relabelar os eixos: qualquer
+// modelo correcto devolve o mesmo número. Um Lambda que use `ax` nas duas
+// componentes passa a redução (com ax == ay não se nota) e passa o teste de «a
+// anisotropia faz alguma coisa» (faz, só que a errada) -- e falha este. Escrevi
+// as duas primeiras verificações antes desta, quebrei o Lambda de propósito, e
+// **passaram as duas**. Foi essa a razão de existir deste painel.
 
 #version 450
 
 layout(set = 4, binding = 0, rgba16f) uniform writeonly image2D result;
 
 layout(set = 0, binding = 0, std140) uniform Furnace {
-    layout(offset = 0) vec4 params;   // x = N da grelha, y = amostras
+    layout(offset = 0) vec4 params;   // x = N da grelha, y = amostras, z = razão de anisotropia
 } cb;
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -76,17 +95,85 @@ float g_smith_correlated(float ndv, float ndl, float alpha) {
     return vis * 4.0 * ndv * ndl;
 }
 
+// GGX anisotrópica, amostrada pela NDF.
+//
+// O phi sai de `atan2(ay sin t, ax cos t)`, que é a inversão da marginal em phi
+// escrita sem `tan`/`atan` -- a forma com `tan(2*pi*xi + pi/2)` tem singularidades
+// em xi = 0 e xi = 0.5, e a sequência de Hammersley acerta nas duas em cheio.
+vec3 importance_sample_ggx_aniso(vec2 xi, float ax, float ay) {
+    float t = 2.0 * PI * xi.x;
+    vec2 d = normalize(vec2(ax * cos(t), ay * sin(t)));
+    float a2 = 1.0 / (d.x * d.x / (ax * ax) + d.y * d.y / (ay * ay));
+    float tan2 = a2 * xi.y / max(1.0 - xi.y, 1e-6);
+    float cos_theta = inversesqrt(1.0 + tan2);
+    float sin_theta = sqrt(max(1.0 - cos_theta * cos_theta, 0.0));
+    return normalize(vec3(sin_theta * d.x, sin_theta * d.y, cos_theta));
+}
+
+// Lambda de Smith para a GGX anisotrópica. Com ax == ay reduz-se ao isotrópico,
+// e é isso que o painel da direita mede.
+float lambda_aniso(vec3 w, float ax, float ay) {
+    float a2 = (ax * ax * w.x * w.x + ay * ay * w.y * w.y) / max(w.z * w.z, 1e-12);
+    return 0.5 * (sqrt(1.0 + a2) - 1.0);
+}
+
+// G2 height-correlated, a mesma forma do isotrópico escrita em Lambda.
+float g2_aniso(vec3 v, vec3 l, float ax, float ay) {
+    return 1.0 / (1.0 + lambda_aniso(v, ax, ay) + lambda_aniso(l, ax, ay));
+}
+
+// O albedo direccional anisotrópico, com a vista num azimute dado.
+float e_aniso(float ndv, float phi_v, float ax, float ay, uint samples) {
+    float sin_v = sqrt(max(1.0 - ndv * ndv, 0.0));
+    vec3 v = vec3(sin_v * cos(phi_v), sin_v * sin(phi_v), ndv);
+    float e = 0.0;
+    for (uint i = 0u; i < samples; ++i) {
+        vec3 h = importance_sample_ggx_aniso(hammersley(i, samples), ax, ay);
+        vec3 l = 2.0 * dot(v, h) * h - v;
+        if (l.z <= 0.0) continue;
+        float ndh = max(h.z, 1e-6);
+        float vdh = max(dot(v, h), 1e-6);
+        // O mesmo estimador do isotrópico: com pdf = D*NoH/(4 VoH) o D cancela.
+        e += g2_aniso(v, l, ax, ay) * vdh / (ndv * ndh);
+    }
+    return e / float(samples);
+}
+
 void main() {
     ivec2 id = ivec2(gl_GlobalInvocationID.xy);
     int n = int(cb.params.x);
-    if (id.x >= n || id.y >= n) return;
+    if (id.x >= 3 * n || id.y >= n) return;
     uint samples = uint(cb.params.y);
 
+    int panel = id.x / n;
+    int col = id.x - panel * n;
     // NoV nunca chega a 0: a rasar, o integral é singular e mede ruído.
-    float ndv = max((float(id.x) + 0.5) / float(n), 0.02);
+    float ndv = max((float(col) + 0.5) / float(n), 0.02);
     // alpha = roughness^2, varrido em roughness para dar resolução onde interessa.
     float roughness = max((float(id.y) + 0.5) / float(n), 0.02);
     float alpha = roughness * roughness;
+
+    float ratio = max(cb.params.z, 1.0);
+    float ax = alpha;
+    float ay = max(alpha / ratio, 1e-3);
+
+    if (panel == 1) {
+        imageStore(result, id, vec4(
+            e_aniso(ndv, 0.0, alpha, alpha, samples),
+            e_aniso(ndv, 0.0, ax, ay, samples),
+            e_aniso(ndv, 0.5 * PI, ax, ay, samples),
+            1.0));
+        return;
+    }
+    if (panel == 2) {
+        // Os eixos trocados e a vista rodada 90 graus: o mesmo material.
+        imageStore(result, id, vec4(
+            e_aniso(ndv, 0.5 * PI, ay, ax, samples),
+            e_aniso(ndv, 0.0, ay, ax, samples),
+            0.0,
+            1.0));
+        return;
+    }
 
     vec3 v = vec3(sqrt(max(1.0 - ndv * ndv, 0.0)), 0.0, ndv);
 
