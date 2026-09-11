@@ -1054,6 +1054,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate-furnace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-math",
+ "harpia-memory",
+ "harpia-rhi",
+ "harpia-shader-build",
+ "tracing",
+]
+
+[[package]]
 name = "gate-heightquery"
 version = "0.1.0"
 dependencies = [

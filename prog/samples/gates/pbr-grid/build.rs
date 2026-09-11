@@ -4,5 +4,7 @@ fn main() {
         ("gbuffer.ps.spvasm", "gbuffer.ps.spv"),
         ("lighting.vs.spvasm", "lighting.vs.spv"),
         ("lighting.ps.spvasm", "lighting.ps.spv"),
+        // partilhado: uma cópia só, ou diverge
+        ("../../../sponza/shaders/blit.ps.spvasm", "blit.ps.spv"),
     ]);
 }

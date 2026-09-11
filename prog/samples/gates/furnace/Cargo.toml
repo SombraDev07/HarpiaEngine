@@ -1,0 +1,18 @@
+[package]
+name = "gate-furnace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "White furnace test: o BRDF especular conserva energia?"
+
+[dependencies]
+anyhow.workspace = true
+harpia-app.workspace = true
+harpia-math.workspace = true
+harpia-memory.workspace = true
+harpia-rhi.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+harpia-shader-build.workspace = true

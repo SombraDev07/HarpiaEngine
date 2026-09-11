@@ -13,7 +13,13 @@ use harpia_rhi::{
 #[global_allocator]
 static ALLOC: harpia_memory::Allocator = harpia_memory::Allocator::new();
 
+/// A imagem iluminada, para `--capture` a poder ler. Sem isto o gate do BRDF era
+/// o único que não se podia verificar em pixels.
+const LIT: Format = Format::Rgba8Unorm;
+const LIT_FORMATS: [Format; 1] = [LIT];
+
 struct GBuffer {
+    lit: Texture,
     albedo: Texture,
     normal: Texture,
     orm: Texture,
@@ -25,6 +31,7 @@ struct GBuffer {
 struct PbrGrid {
     gbuf_pso: Option<GraphicsPipeline>,
     light_pso: Option<GraphicsPipeline>,
+    blit_pso: Option<GraphicsPipeline>,
     vb: Option<Buffer>,
     ib: Option<Buffer>,
     inst: Option<Buffer>,
@@ -44,6 +51,7 @@ impl Default for PbrGrid {
         Self {
             gbuf_pso: None,
             light_pso: None,
+            blit_pso: None,
             vb: None,
             ib: None,
             inst: None,
@@ -68,6 +76,7 @@ impl PbrGrid {
         let w = extent.width.max(1);
         let h = extent.height.max(1);
         self.gbuffer = Some(GBuffer {
+            lit: gpu.create_texture(&color_desc(w, h, LIT))?,
             albedo: gpu.create_texture(&color_desc(w, h, Format::Rgba8Srgb))?,
             normal: gpu.create_texture(&color_desc(w, h, Format::Rgba8Unorm))?,
             orm: gpu.create_texture(&color_desc(w, h, Format::Rgba8Unorm))?,
@@ -116,9 +125,23 @@ impl Sample for PbrGrid {
                 vs_entry: "VSMain",
                 fs_entry: "PSMain",
                 bindless: true,
-                targets: PipelineTargets::default(),
+                targets: PipelineTargets {
+                    color_formats: &LIT_FORMATS,
+                    ..Default::default()
+                },
             })
             .context("lighting PSO")?,
+        );
+        self.blit_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/lighting.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/blit.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets::default(),
+            })
+            .context("blit PSO")?,
         );
 
         let mesh = SphereMesh::uv(24, 16);
@@ -143,7 +166,12 @@ impl Sample for PbrGrid {
 
     fn capture_targets(&self) -> Vec<(&'static str, Texture)> {
         match self.gbuffer.as_ref() {
-            Some(g) => vec![("albedo", g.albedo), ("normal", g.normal), ("orm", g.orm)],
+            Some(g) => vec![
+                ("lit", g.lit),
+                ("albedo", g.albedo),
+                ("normal", g.normal),
+                ("orm", g.orm),
+            ],
             None => Vec::new(),
         }
     }
@@ -157,6 +185,7 @@ impl Sample for PbrGrid {
         let gbuf = self.gbuffer.as_ref().context("gbuffer")?;
         let gbuf_pso = self.gbuf_pso.as_ref().context("gbuf pso")?;
         let light_pso = self.light_pso.as_ref().context("light pso")?;
+        let blit_pso = self.blit_pso.as_ref().context("blit pso")?;
         let vb = self.vb.context("vb")?;
         let ib = self.ib.context("ib")?;
         let inst = self.inst.context("inst")?;
@@ -170,7 +199,7 @@ impl Sample for PbrGrid {
         let inv_view_proj = view_proj.inverse();
         let sun = Vec3::new(0.38, 0.84, 0.38).normalize();
 
-        let cb = LightingCb {
+        let mut cb = LightingCb {
             inv_view_proj,
             camera_pos: Vec4::new(eye.x, eye.y, eye.z, 1.0),
             sun_dir: Vec4::new(sun.x, sun.y, sun.z, 0.0),
@@ -220,8 +249,18 @@ impl Sample for PbrGrid {
         gpu.draw_indexed(self.index_count, self.instance_count, 0, 0, 0)?;
         gpu.end_color_pass()?;
 
-        gpu.begin_swapchain_pass([0.02, 0.03, 0.05, 1.0])?;
+        gpu.begin_color_pass(&[gbuf.lit], None, &[[0.02, 0.03, 0.05, 1.0]], None)?;
         gpu.set_pipeline(light_pso)?;
+        gpu.bind_graphics_bindless()?;
+        gpu.draw(3, 1, 0, 0)?;
+        gpu.end_color_pass()?;
+        gpu.mark("lighting");
+
+        // O blit da Sponza serve: já liga o bloco Lighting e lê `gbuf0`.
+        cb.gbuf0 = gpu.bindless_index(gbuf.lit)?;
+        gpu.write_frame_bytes(cb.as_bytes())?;
+        gpu.begin_swapchain_pass([0.0, 0.0, 0.0, 1.0])?;
+        gpu.set_pipeline(blit_pso)?;
         gpu.bind_graphics_bindless()?;
         gpu.draw(3, 1, 0, 0)?;
         gpu.end_swapchain_pass()?;

@@ -17,6 +17,7 @@ members = [
     "prog/samples/gates/csm",
     "prog/samples/gates/ecs",
     "prog/samples/gates/fog",
+    "prog/samples/gates/furnace",
     "prog/samples/gates/heightquery",
     "prog/samples/gates/sky",
     "prog/samples/gates/taa",

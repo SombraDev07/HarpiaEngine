@@ -147,25 +147,41 @@ OpDecorate %ibrdf NonUniform
 OpReturnValue %Dout
 OpFunctionEnd
 
-; G_Smith(ndv, ndl, a) Schlick, k=(a+1)^2/8
+; G_Smith height-correlated (Heitz 2014).
+;
+; Substitui a aproximação de Schlick com k=(a+1)^2/8, que vinha do UE4 e foi
+; ajustada para luzes analíticas. O gate `furnace` mediu o custo dessa
+; aproximação: a 0.07 de rugosidade -- praticamente um espelho -- devolvia 0.6922
+; onde a forma correcta dá 0.9986. Trinta e um pontos percentuais de energia
+; perdida, e a perder-se mais onde a superfície é mais lisa, que é o contrário do
+; que se esperaria de um erro benigno.
+;
+; O mascaramento e o sombreamento estão correlacionados pela altura da
+; microsuperfície; tratá-los como independentes é que era a aproximação.
+; Devolve G, não V = G/(4 NoV NoL), para o resto do shader não mudar.
 %Gsm = OpFunction %float None %fn_fff_f
 %G_ndv = OpFunctionParameter %float
 %G_ndl = OpFunctionParameter %float
 %G_a = OpFunctionParameter %float
 %Glab = OpLabel
-%Gap = OpFAdd %float %G_a %f1
-%Gap2 = OpFMul %float %Gap %Gap
-%Gk = OpFDiv %float %Gap2 %f8
-%G1k = OpFSub %float %f1 %Gk
-%Gdv = OpFMul %float %G_ndv %G1k
-%Gdvk = OpFAdd %float %Gdv %Gk
-%Gdvk2 = OpExtInst %float %glsl FMax %Gdvk %feps
-%g1v = OpFDiv %float %G_ndv %Gdvk2
-%Gdl = OpFMul %float %G_ndl %G1k
-%Gdlk = OpFAdd %float %Gdl %Gk
-%Gdlk2 = OpExtInst %float %glsl FMax %Gdlk %feps
-%g1l = OpFDiv %float %G_ndl %Gdlk2
-%Gout = OpFMul %float %g1v %g1l
+%Ga2 = OpFMul %float %G_a %G_a
+%Gom = OpFSub %float %f1 %Ga2
+%Gvv = OpFMul %float %G_ndv %G_ndv
+%Gvv1 = OpFMul %float %Gvv %Gom
+%Gvv2 = OpFAdd %float %Gvv1 %Ga2
+%Gvs = OpExtInst %float %glsl Sqrt %Gvv2
+%GlamV = OpFMul %float %G_ndl %Gvs
+%Gll = OpFMul %float %G_ndl %G_ndl
+%Gll1 = OpFMul %float %Gll %Gom
+%Gll2 = OpFAdd %float %Gll1 %Ga2
+%Gls = OpExtInst %float %glsl Sqrt %Gll2
+%GlamL = OpFMul %float %G_ndv %Gls
+%Gden = OpFAdd %float %GlamV %GlamL
+%Gdenc = OpExtInst %float %glsl FMax %Gden %feps
+%Gvis = OpFDiv %float %f05 %Gdenc
+%Gnl = OpFMul %float %G_ndv %G_ndl
+%Gnl4 = OpFMul %float %Gnl %f4
+%Gout = OpFMul %float %Gvis %Gnl4
 OpReturnValue %Gout
 OpFunctionEnd
 

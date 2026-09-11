@@ -748,3 +748,41 @@ estritamente melhor), **clustered lights** (a maior distância), **culling em
 compute para o terreno** (onde podemos genuinamente passar à frente, porque eles
 fazem-no em CPU), **render graph**.
 
+## D44 — White furnace: o nosso G perdia 31 pontos de energia num quase-espelho
+
+Primeiro item do roadmap da D43, e mede-se em vez de se opinar.
+
+`gate-furnace` calcula o **albedo direccional** `E(NoV, α) = ∫ f·NoL dl` com `F = 1`
+por importance sampling da GGX, 1024 amostras, numa grelha 64×64. Num BRDF que não
+absorve, `E` **tem** de ser 1.0.
+
+| rugosidade | Schlick-k (o que tínhamos) | height-correlated | compensado |
+|---|---|---|---|
+| 0.070 | **0.6922** | 0.9986 | 1.0000 |
+| 0.320 | 0.6830 | 0.9538 | 0.9999 |
+| 0.570 | 0.6519 | 0.8361 | 0.9998 |
+| 0.945 | 0.4640 | 0.5414 | 0.9999 |
+
+Três leituras:
+
+1. **O `k = (α+1)²/8` do UE4 perdia 37% de energia em média**, e — o que é pior —
+   **31 pontos percentuais a 0.07 de rugosidade**, que é praticamente um espelho e
+   devia reflectir quase tudo. Um erro que *aumenta* quando a superfície fica mais
+   lisa não é um erro benigno. Aquele `k` foi ajustado para luzes analíticas, e
+   estava a ser usado como se fosse a forma correcta.
+2. **O height-correlated dá 0.9986 a baixa rugosidade** e perde energia
+   progressivamente à medida que a superfície fica áspera — o que é *física
+   correcta*: um único salto entre microfacetas perde mesmo energia.
+3. **A compensação de multiscatter está bem ligada**: desvio máximo de **0.0005**
+   em 4096 células. Isto valida código que existia e que ninguém tinha verificado.
+
+Aplicado ao `lighting.ps`. Em pixels, no `gate-pbr-grid`: média 0.09, **máximo
+165/255**, em 0.1% dos pixels. Pouca área porque a cena é dominada por IBL e
+difuso e o especular de **um** sol cobre pouco — mas onde cai, muda muito. Os dois
+números juntos é que contam a história: o erro do modelo era grande, o palco onde
+se vê é que é pequeno, **e o palco é pequeno porque só temos uma luz**.
+
+O `gate-pbr-grid` passou a ter alvo `lit` capturável. Sem isso era o único gate
+cuja saída não se podia medir em pixels, o que contradizia a disciplina do
+projecto.
+

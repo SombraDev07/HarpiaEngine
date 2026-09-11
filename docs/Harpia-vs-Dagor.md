@@ -173,20 +173,18 @@ alcançáveis e por medirem algo.
 
 **Apanhar (barato, faz-se já):**
 
-- [ ] **Smith height-correlated** em vez do Schlick-k. Meia dúzia de linhas,
-      estritamente mais exacto. Gate: a diferença contra o actual medida em pixels
-      no `03-luz-pbr`.
+- [x] **Smith height-correlated** em vez do Schlick-k. **Feito** (D44): o furnace
+      mediu 0.6922 contra 0.9986 a 0.07 de rugosidade — 31 pontos de energia
+      perdida num quase-espelho.
 - [ ] **GGX anisotrópico** (tangente no GBuffer, que já tem espaço).
 - [ ] **Sheen/cloth** com NDF própria, não a aproximação que temos.
 
 **Superar:**
 
-- [ ] **White furnace test como gate.** Iluminar uma esfera com radiância uniforme
-      1.0: um BRDF que conserva energia tem de devolver exactamente 1.0 em todos os
-      ângulos e rugosidades. Mede-se, falha com código ≠ 0, e **a Dagor não tem
-      nada disto**. É o mesmo método do `heightquery` aplicado ao BRDF.
-- [ ] **Multiscatter GGX** validado por esse furnace, não por olho. Hoje temos
-      «energy compensation»; ninguém provou que compensa.
+- [x] **White furnace test como gate.** **Feito** (D44), `gate-furnace`. Falha com
+      código ≠ 0 se a compensação não conservar energia; hoje desvia 0.0005.
+- [x] **Multiscatter GGX** validado pelo furnace: desvio máximo 0.0005 em 4096
+      células. A compensação que existia está correcta — agora está provado.
 - [ ] Gate de **referência**: comparar o nosso split-sum IBL com uma integração
       Monte Carlo de 4096 amostras feita offline. Erro máximo publicado.
 
