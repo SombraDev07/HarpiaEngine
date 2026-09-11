@@ -883,7 +883,13 @@ O app deixou de submeter um frame depois de um erro de validation — a conta é
 antes do `end_frame()` e inclui o `init`. Controlo negativo com o set 3 partido de
 propósito: `refusing to submit the frame` em vez do segfault de antes.
 
-**Falta:** nada disto correu na RX 6700 desde o hang, portanto **não há medição** —
-que é a única razão pela qual os mesh shaders existem aqui. Até haver, `-- --mesh`
-fica opt-in. E isto é trabalho **fora de fase**: a árvore está na 6 e os mesh
-shaders são da 9.
+Na RX 6700 o caminho **por omissão** está verde outra vez: 120 frames,
+`validation_errors=0`, **0.738 ms** de GPU contra os 0.737 do D58, com as passes a
+baterem uma a uma (cena 0.351, cascatas 0.196). `gate-pbr-grid`, `gate-csm` e
+`gate-bindless` idem. As push constants, o `maintenance4` e a guarda não custam
+frame nenhum.
+
+**Falta:** o `-- --mesh` não correu na placa — ficou no lavapipe, por decisão. Sem
+medição não se sabe se paga, que é a única razão pela qual os mesh shaders existem
+aqui, portanto fica opt-in. E isto é trabalho **fora de fase**: a árvore está na 6 e
+os mesh shaders são da 9.

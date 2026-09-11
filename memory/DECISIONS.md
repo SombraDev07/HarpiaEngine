@@ -1791,12 +1791,19 @@ segfault no lavapipe — e na RX 6700 tinha pendurado a máquina.
 O ±1 é arredondamento entre o VS e o MS a fazer a mesma conta — não é geometria
 diferente. Não se diz "idêntica ao pixel", diz-se 271 pixels a 1/255.
 
-### O que **não** está verificado
+### O que correu na placa, e o que não
 
-Nada disto correu na RX 6700 desde o hang, e **não há uma única medição de
-performance** — que é a única razão pela qual os mesh shaders existem aqui (D58: o
-custo por comando indirecto). Até haver um número na placa, `-- --mesh` continua
-opt-in e não se diz que paga.
+O caminho **por omissão** voltou à RX 6700 e está verde: 120 frames,
+`validation_errors=0`, **0.738 ms** de GPU contra os **0.737** que o D58 mediu antes
+de isto tudo começar, com as passes a baterem uma a uma (cena 0.351 contra 0.350,
+cascatas 0.196 contra 0.196). Os gates `pbr-grid`, `csm` e `bindless` idem. Portanto
+nem as `stageFlags` das push constants, nem o `maintenance4`, nem a guarda custam
+frame nenhum.
+
+O `-- --mesh` **não** correu na RX 6700 — por decisão, ficou no lavapipe. Continua
+sem **uma única medição de performance**, que é a única razão pela qual os mesh
+shaders existem aqui (D58: o custo por comando indirecto). Até haver um número na
+placa, é opt-in e não se diz que paga.
 
 E fica registado que isto é **fora de fase**: a INDEX põe a árvore na fase 6 e o D58
 põe os mesh shaders na 9.
