@@ -22,7 +22,7 @@ use crate::device::{ComputePipelineDesc, DeviceDesc, GraphicsPipelineDesc};
 use crate::types::{
     Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
     GpuStats, Texture, TextureData, TextureDesc, TextureDim, MAX_TIMESTAMPS,
-    PUSH_CONSTANTS_SIZE,
+    PUSH_CONSTANTS_SIZE, STORAGE_BUFFER_SLOTS,
 };
 use crate::{RhiError, Result, FRAMES_IN_FLIGHT};
 
@@ -2000,6 +2000,41 @@ impl VulkanGpu {
 
     pub fn create_index_buffer(&mut self, bytes: &[u8]) -> Result<Buffer> {
         self.create_host_buffer(bytes, vk::BufferUsageFlags::INDEX_BUFFER, "ib")
+    }
+
+    /// Buffer indexável por um shader, ligado a um slot do set 3.
+    ///
+    /// Host-visible de propósito: o caso que isto serve são listas que se
+    /// reescrevem todos os frames (luzes, clusters). Um buffer device-local
+    /// exigia staging e um copy por frame para ganhar banda que estas listas,
+    /// com dezenas de KB, não usam.
+    pub fn create_storage_buffer(&mut self, slot: u32, bytes: &[u8]) -> Result<Buffer> {
+        if slot >= STORAGE_BUFFER_SLOTS {
+            return Err(RhiError::msg("storage buffer slot out of range"));
+        }
+        let buffer = self.create_host_buffer(bytes, vk::BufferUsageFlags::STORAGE_BUFFER, "ssbo")?;
+        let raw = self
+            .buffers
+            .get(buffer.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid storage buffer"))?;
+        let vk_buffer = raw.buffer;
+        let size = bytes.len().max(1) as u64;
+        self.bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless heap missing"))?
+            .write_storage_buffer(&self.device, slot, vk_buffer, size);
+        Ok(buffer)
+    }
+
+    /// Reescreve um storage buffer. O tamanho não pode crescer: o descriptor já
+    /// aponta para a alocação que existe.
+    pub fn write_storage_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Result<()> {
+        let raw = self
+            .buffers
+            .get(buffer.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid storage buffer"))?;
+        // `write_staging` é genérico: escreve num buffer host-visible mapeado.
+        resources::write_staging(raw, bytes)
     }
 
     fn create_host_buffer(

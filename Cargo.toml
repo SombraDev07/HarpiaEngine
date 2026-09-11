@@ -19,6 +19,7 @@ members = [
     "prog/samples/gates/fog",
     "prog/samples/gates/furnace",
     "prog/samples/gates/heightquery",
+    "prog/samples/gates/lights",
     "prog/samples/gates/sky",
     "prog/samples/gates/taa",
     "prog/samples/gates/terrain",

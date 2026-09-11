@@ -200,3 +200,10 @@ pub struct GpuStats {
     pub triangles: u64,
 }
 
+/// Slots de storage buffer no set 3.
+///
+/// Um shader indexa-os por constante, tal como faz com os volumes. Dezasseis
+/// chegam para listas de luzes, argumentos indirectos e o que a fase 6.5 pedir;
+/// se um dia não chegarem, o custo de subir é um número.
+pub const STORAGE_BUFFER_SLOTS: u32 = 16;
+

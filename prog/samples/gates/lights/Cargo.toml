@@ -1,0 +1,19 @@
+[package]
+name = "gate-lights"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Fase 7: luzes pontuais em clusters, verificadas contra forca-bruta."
+
+[dependencies]
+anyhow.workspace = true
+harpia-app.workspace = true
+harpia-math.workspace = true
+harpia-memory.workspace = true
+harpia-render.workspace = true
+harpia-rhi.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+harpia-shader-build.workspace = true

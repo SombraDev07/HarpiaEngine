@@ -190,15 +190,15 @@ alcançáveis e por medirem algo.
 
 ### 7.2 Luzes — sem isto o resto é conversa
 
-- [ ] **Clustered lights**: grelha 3D de clusters, omni + spot, com o heap bindless
-      que já existe a segurar os índices.
-- [ ] Gate `lights`: 1 000 luzes pontuais, medidas com `--stats`, contra o mesmo
-      sem clustering.
+- [x] **Clustered lights**: 16×9×24, Z exponencial, storage buffers no set 3
+      (D45/D46). **Feito** para omni; spot falta.
+- [x] Gate `lights`: 1000 luzes — **0.294 ms contra 0.917 ms, 3.1×**.
 - [ ] Sombras dinâmicas com **orçamento por frame** e prioridade (a ideia deles é
       boa e é só uma fila ordenada).
-- [ ] **Superar:** gate de correcção que compara o clustered contra um laço
-      força-bruta sobre todas as luzes. Diferença máxima publicada. Isto apanha
-      erros de atribuição a clusters que a olho são invisíveis.
+- [x] **Superar:** gate de correcção contra força-bruta. **Apanhou logo um bug**
+      (caixa XY não conservadora, 1.68% dos canais errados); depois da correcção a
+      imagem é **bit-idêntica**, 0 ULP. Era exactamente o tipo de erro invisível a
+      olho de que falava este ponto.
 
 ### 7.3 Terreno — aqui podemos genuinamente passar à frente
 

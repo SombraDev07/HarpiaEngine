@@ -17,6 +17,10 @@ cd "$root"
 echo "==> cargo build --release --workspace"
 cargo build --release --workspace
 
+# Limpa primeiro: os nomes têm números e um demo novo no meio renumera os
+# seguintes. Sem isto ficavam órfãos das numerações antigas a fingir que ainda
+# são demos.
+rm -rf "$out"
 mkdir -p "$out"
 
 # demo name              cargo package     what it is for
@@ -32,9 +36,10 @@ demos=(
   "09-agua:gate-water:Gerstner, Fresnel, SSR e espuma."
   "10-chuva:gate-rain:Material molhado, ondulações e bátegas em espaço de ecrã."
   "11-terreno:gate-terrain:Clipmap por SV_VertexID: 7 niveis, 1024 de alcance, ZERO vertex buffers."
-  "12-furnace:gate-furnace:White furnace: o BRDF conserva energia? Mede, nao opina. Sem GPU pesada."
-  "13-heightquery:gate-heightquery:Altura do terreno em CPU contra GPU, medida ponto a ponto."
-  "14-ecs:gate-ecs:1e6 entidades em bevy_ecs contra hecs. Sem GPU: corre em qualquer maquina."
+  "12-luzes:gate-lights:1000 luzes pontuais em clusters, verificadas contra forca-bruta."
+  "13-furnace:gate-furnace:White furnace: o BRDF conserva energia? Mede, nao opina. Sem GPU pesada."
+  "14-heightquery:gate-heightquery:Altura do terreno em CPU contra GPU, medida ponto a ponto."
+  "15-ecs:gate-ecs:1e6 entidades em bevy_ecs contra hecs. Sem GPU: corre em qualquer maquina."
   "sponza:sponza:A cena de referência: glTF, CSM+PCSS, fog default-on, chuva mascarada pelo mapa de chuva."
 )
 
@@ -94,9 +99,10 @@ que uma captura seja sempre a mesma imagem. Só `-i` tem relógio e input a sér
 | `09-agua` | Gerstner, Fresnel, SSR, espuma |
 | `10-chuva` | material molhado, ondulações, bátegas |
 | `11-terreno` | **terreno**: clipmap, LOD por níveis, snap, saia |
-| `12-furnace` | **conservação de energia** do BRDF, medida contra 1.0 |
-| `13-heightquery` | **CPU vs GPU**: a mesma função de altura, medida |
-| `14-ecs` | ECS: spawn, iteração, query esparsa, churn (sem GPU) |
+| `12-luzes` | **clustered lights**: 1000 luzes, imagem provada contra força-bruta |
+| `13-furnace` | **conservação de energia** do BRDF, medida contra 1.0 |
+| `14-heightquery` | **CPU vs GPU**: a mesma função de altura, medida |
+| `15-ecs` | ECS: spawn, iteração, query esparsa, churn (sem GPU) |
 | `sponza` | **integração**: tudo junto numa cena a sério |
 
 `sponza` precisa dos assets: `python3 prog/tools/fetch_sponza.py` (o glTF está no

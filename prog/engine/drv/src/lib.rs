@@ -18,7 +18,8 @@ pub use types::{
     Backend, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GpuStats,
     GraphicsPipeline,
     PipelineTargets, PrimitiveTopology, Texture, TextureData, TextureDesc, TextureDim,
-    FRAME_CBV_CHUNKS, FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE, VOLUME_SRV_SLOTS, VOLUME_UAV_SLOTS,
+    FRAME_CBV_CHUNKS, FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE, STORAGE_BUFFER_SLOTS,
+    VOLUME_SRV_SLOTS, VOLUME_UAV_SLOTS,
 };
 
 pub type Result<T, E = RhiError> = std::result::Result<T, E>;

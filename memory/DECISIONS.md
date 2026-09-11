@@ -786,3 +786,57 @@ O `gate-pbr-grid` passou a ter alvo `lit` capturável. Sem isso era o único gat
 cuja saída não se podia medir em pixels, o que contradizia a disciplina do
 projecto.
 
+## D45 — Storage buffers no set 3
+
+O `set3` estava vazio desde a fase 0 e era o que faltava para qualquer coisa
+GPU-driven. Agora é um **array de 16 storage buffers**, indexado por slot tal como
+o heap de texturas é indexado por índice — três tipos de bloco diferentes sobre o
+mesmo binding, que é o mesmo padrão.
+
+Host-visible de propósito: o caso que isto serve são listas reescritas todos os
+frames (luzes, clusters, mais tarde argumentos indirectos). Device-local exigia
+staging e um copy por frame para ganhar banda que listas de dezenas de KB não
+usam.
+
+Desbloqueia também os draws indirectos da fase 6.5.
+
+## D46 — Clustered lights, e o gate de correcção apanhou um bug meu
+
+Fecha a maior distância medida contra a Dagor (D43): a engine tinha **uma** luz.
+
+Grelha de 16×9×24 = 3456 clusters, Z exponencial como nos froxels do fog. Cada
+cluster guarda um intervalo numa lista plana de índices; um pixel encontra o seu
+cluster pela posição no ecrã e pela profundidade de vista.
+
+**O mesmo shader faz clustered e força-bruta**, com um interruptor no CB. É
+deliberado: se fossem shaders diferentes, uma divergência podia ser diferença de
+código em vez de erro de clustering. Sendo o mesmo corpo com uma lista diferente,
+qualquer diferença na imagem é da grelha.
+
+### O bug que isto apanhou
+
+Primeira corrida: **1.68% dos canais diferentes da força-bruta, até 6345 ULP.**
+
+A caixa em XY estava a ser calculada só à profundidade **mais próxima** da esfera.
+Parece o conservador — é aí que o frustum é mais estreito, logo a mesma distância
+no mundo cobre mais ecrã — mas também empurra o **centro** para fora. Para uma luz
+descentrada isso desloca o intervalo inteiro e perde as células do lado de dentro.
+Aparece como um candeeiro que não ilumina a parede ao lado: fácil de não reparar,
+e impossível de atribuir à causa sem um arnês.
+
+Calculando nas duas profundidades e unindo: **0 canais diferentes, 0 ULP.** A
+imagem clustered é bit-idêntica à força-bruta. Há um teste
+(`coverage_contains_every_cluster_the_sphere_reaches`) que trava isto sem GPU.
+
+### Os números
+
+| | |
+|---|---|
+| clustered | **0.294 ms** |
+| força-bruta | 0.917 ms |
+| ganho | **3.1×**, com imagem idêntica |
+
+1000 luzes, 189 esferas, 3456 clusters. A atribuição é em CPU por agora; passa a
+compute quando os draws indirectos chegarem, e **este gate é que vai provar que a
+versão em compute continua a concordar**.
+

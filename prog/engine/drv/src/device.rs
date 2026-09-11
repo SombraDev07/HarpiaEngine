@@ -141,6 +141,10 @@ pub trait Device {
     fn end_color_pass(&mut self) -> Result<()>;
     fn create_vertex_buffer(&mut self, bytes: &[u8]) -> Result<Buffer>;
     fn create_index_buffer(&mut self, bytes: &[u8]) -> Result<Buffer>;
+    /// Buffer que um shader indexa, ligado a um slot do set 3.
+    fn create_storage_buffer(&mut self, slot: u32, bytes: &[u8]) -> Result<Buffer>;
+    /// Reescreve-o. O tamanho não pode crescer.
+    fn write_storage_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Result<()>;
     fn bind_vertex_buffer(&mut self, buf: Buffer, binding: u32) -> Result<()>;
     fn bind_index_buffer(&mut self, buf: Buffer) -> Result<()>;
     fn draw_indexed(
@@ -267,6 +271,14 @@ impl Device for Gpu {
     fn create_vertex_buffer(&mut self, bytes: &[u8]) -> Result<Buffer> {
         gpu!(self, create_vertex_buffer, bytes)
     }
+    fn create_storage_buffer(&mut self, slot: u32, bytes: &[u8]) -> Result<Buffer> {
+        gpu!(self, create_storage_buffer, slot, bytes)
+    }
+
+    fn write_storage_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Result<()> {
+        gpu!(self, write_storage_buffer, buffer, bytes)
+    }
+
     fn create_index_buffer(&mut self, bytes: &[u8]) -> Result<Buffer> {
         gpu!(self, create_index_buffer, bytes)
     }

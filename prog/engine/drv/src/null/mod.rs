@@ -137,6 +137,15 @@ impl NullGpu {
         Ok(())
     }
 
+    /// O backend Null não tem GPU: um storage buffer é um handle e nada mais.
+    pub fn create_storage_buffer(&mut self, _slot: u32, bytes: &[u8]) -> crate::Result<crate::types::Buffer> {
+        self.create_vertex_buffer(bytes)
+    }
+
+    pub fn write_storage_buffer(&mut self, _buffer: crate::types::Buffer, _bytes: &[u8]) -> crate::Result<()> {
+        Ok(())
+    }
+
     pub fn mark(&mut self, _label: &'static str) {}
 
     /// The Null backend never touches a GPU, so there is nothing to time.

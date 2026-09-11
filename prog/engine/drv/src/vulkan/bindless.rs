@@ -9,7 +9,8 @@ use harpia_core::{BINDLESS_HEAP_SIZE, BINDLESS_NULL_SLOT};
 use super::resources::{self, GpuBuffer, GpuImage};
 use crate::types::{
     Format, FrameConstants, TextureDesc, TextureDim, FRAME_CBV_CHUNKS, FRAME_CBV_RING_SIZE,
-    FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE, VOLUME_SRV_SLOTS, VOLUME_UAV_SLOTS,
+    FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE, STORAGE_BUFFER_SLOTS, VOLUME_SRV_SLOTS,
+    VOLUME_UAV_SLOTS,
 };
 use crate::{RhiError, Result, FRAMES_IN_FLIGHT};
 
@@ -161,8 +162,23 @@ impl Bindless {
             )?
         };
 
+        // Set 3: storage buffers. Estava vazio, e é o que faltava para qualquer
+        // coisa GPU-driven -- listas de luzes, argumentos indirectos, contadores.
+        // Uma imagem não serve: estas listas são de tamanho variável e indexadas.
+        let storage_buffers = [vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(STORAGE_BUFFER_SLOTS)
+            .stage_flags(
+                vk::ShaderStageFlags::COMPUTE
+                    | vk::ShaderStageFlags::FRAGMENT
+                    | vk::ShaderStageFlags::VERTEX,
+            )];
         let set3_layout = unsafe {
-            device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default(), None)?
+            device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&storage_buffers),
+                None,
+            )?
         };
 
         // Set 4: binding 0 is the 2D UAV (gate-bindless), binding 1 the volume
@@ -240,6 +256,10 @@ impl Bindless {
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_IMAGE,
                 descriptor_count: 8 + VOLUME_UAV_SLOTS,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: STORAGE_BUFFER_SLOTS,
             },
         ];
         let pool = unsafe {
@@ -442,6 +462,26 @@ impl Bindless {
             .dst_array_element(slot)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .image_info(std::slice::from_ref(&info));
+        unsafe {
+            device.update_descriptor_sets(std::slice::from_ref(&write), &[]);
+        }
+    }
+
+    /// Liga um buffer a um slot do set 3.
+    ///
+    /// O descriptor fica escrito até alguém o substituir: um buffer de luzes que
+    /// se reescreve todos os frames liga-se uma vez e não mais.
+    pub fn write_storage_buffer(&self, device: &Device, slot: u32, buffer: vk::Buffer, size: u64) {
+        let info = vk::DescriptorBufferInfo::default()
+            .buffer(buffer)
+            .offset(0)
+            .range(size.max(1));
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.set3)
+            .dst_binding(0)
+            .dst_array_element(slot)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .buffer_info(std::slice::from_ref(&info));
         unsafe {
             device.update_descriptor_sets(std::slice::from_ref(&write), &[]);
         }

@@ -10,6 +10,7 @@ mod fog;
 mod gltf_scene;
 mod ibl;
 mod lighting;
+mod lights;
 mod material;
 mod mesh;
 mod packing;
@@ -30,6 +31,10 @@ pub use cloud_noise::{
 pub use water::{wave_omega, WaterCb, WATER_GRID, WATER_HALF};
 pub use fly_camera::FlyCamera;
 pub use rain::{rain_map_view_proj, RainCb, RAIN_MAP_SIZE};
+pub use lights::{
+    assign as assign_lights, depth_slice, slice_depth, ClusterAssignment, ClusterRange, PointLight,
+    CLUSTER_COUNT, CLUSTER_X, CLUSTER_Y, CLUSTER_Z, MAX_LIGHT_INDICES,
+};
 pub use terrain::{
     clipmap_range, clipmap_vertex_count, terrain_height, terrain_normal, TerrainCb, CLIPMAP_CELL,
     CLIPMAP_LEVELS, CLIPMAP_N, TERRAIN_OCTAVES,
