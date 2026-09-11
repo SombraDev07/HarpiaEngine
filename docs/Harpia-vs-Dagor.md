@@ -211,8 +211,19 @@ totalmente GPU-driven não tem esse trabalho nenhum.
       0.17 → 2.72 ms a fazer o mesmo culling em CPU. Os dois modos dão o mesmo
       número de visíveis em todas as escalas. Falta aplicá-lo aos patches do
       terreno, que é onde a comparação com eles se fecha.
-- [ ] **Aplicar ao clipmap**: os anéis passam a instâncias num buffer, o compute
-      corta-os e o terreno inteiro sai de um `drawIndirect`. O RHI já tem a peça.
+- [x] **Aplicado ao clipmap**: cada nível são 64 patches, o compute corta-os e o
+      terreno inteiro sai de **um** `drawIndirect` (D48). 84.8% dos patches
+      rejeitados, 172 032 vértices para 26 112, e a imagem prova-se contra um
+      controlo `--no-cull`: 921 599 de 921 600 pixels idênticos.
+      **Mas não acelerou nada:** a pass do terreno cai 0.083 → 0.061 ms e o
+      dispatch custa 0.018. O culling paga-se a si próprio e mais nada, porque
+      calcular a caixa exacta em Y são 81 avaliações de FBM por patch.
+- [ ] **Pirâmide de min/max da altura** em espaço do mundo, para o compute ler o
+      intervalo de um patch em vez de o calcular. É o que falta para o culling dar
+      lucro, e é o que eles têm para o heightmap. Sem isto o item está feito na
+      arquitectura e empatado no relógio.
+- [ ] **Z-fighting na costura entre níveis**: 4 pixels mudam de dono conforme a
+      ordem de desenho. Não se vê, mas é real (D48).
 - [ ] **Tesselação por hardware no anel interior**, com factor por aresta a partir
       do erro de ecrã (não uma constante).
 - [ ] **Virtual texture** para a texturação do terreno, com feedback buffer. É a

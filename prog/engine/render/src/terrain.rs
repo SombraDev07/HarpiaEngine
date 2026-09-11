@@ -31,6 +31,100 @@ pub const fn clipmap_vertex_count() -> u32 {
     CLIPMAP_N * CLIPMAP_N * 6
 }
 
+/// Células por lado de um patch — a unidade de culling.
+///
+/// Um nível inteiro é grande demais para cortar: ou se vê ou não se vê, e quase
+/// sempre vê-se um bocado. Dividido em patches, o que está atrás da câmara deixa
+/// de ser rasterizado. 8 dá 64 patches por nível, 448 no total — suficientes para
+/// o corte ser fino e poucos para o compute ser um arredondamento.
+pub const CLIPMAP_PATCH: u32 = 8;
+
+/// Patches por lado, num nível.
+pub const fn clipmap_patch_grid() -> u32 {
+    CLIPMAP_N / CLIPMAP_PATCH
+}
+
+/// Patches num nível.
+pub const fn clipmap_patches_per_level() -> u32 {
+    clipmap_patch_grid() * clipmap_patch_grid()
+}
+
+/// Total de patches do clipmap: é isto que o compute percorre.
+pub const fn clipmap_patch_count() -> u32 {
+    clipmap_patches_per_level() * CLIPMAP_LEVELS
+}
+
+/// Vértices de um patch: seis por célula.
+pub const fn clipmap_patch_vertex_count() -> u32 {
+    CLIPMAP_PATCH * CLIPMAP_PATCH * 6
+}
+
+/// A caixa envolvente de um patch, em mundo, ou `None` se ele cair todo no buraco
+/// do anel.
+///
+/// **Exacta, não estimada.** O `y` vem de avaliar a altura nos mesmos
+/// `(PATCH+1)²` vértices que o VS vai avaliar, portanto o intervalo é o intervalo
+/// verdadeiro da geometria — não há margem a adivinhar nem pop a temer. Menos a
+/// saia, que desce `cell * 2` na fronteira interior e por isso se subtrai sempre.
+///
+/// É a mesma função que o `terrain_cull.cs` corre. O gate compara as duas.
+pub fn clipmap_patch_bounds(patch: u32, camera_xz: Vec2) -> Option<(Vec3, Vec3)> {
+    let per_level = clipmap_patches_per_level();
+    let level = patch / per_level;
+    let p = patch % per_level;
+    let grid = clipmap_patch_grid();
+    let (px, py) = (p % grid, p / grid);
+
+    let cell = CLIPMAP_CELL * (1u32 << level) as f32;
+    let n = CLIPMAP_N as f32;
+    let snap = cell * 2.0;
+    let centre = Vec2::new(
+        (camera_xz.x / snap).floor() * snap,
+        (camera_xz.y / snap).floor() * snap,
+    );
+
+    let (c0x, c0y) = (px * CLIPMAP_PATCH, py * CLIPMAP_PATCH);
+
+    // O buraco do anel: o quarto central já está coberto pelo nível de dentro.
+    // Só se rejeita o patch se ele couber **todo** lá dentro.
+    if level > 0 {
+        let inside = |cx: u32, cy: u32| {
+            let dx = (cx as f32 - n * 0.5).abs();
+            let dy = (cy as f32 - n * 0.5).abs();
+            dx.max(dy) < n * 0.25
+        };
+        let all_in =
+            (0..CLIPMAP_PATCH).all(|i| (0..CLIPMAP_PATCH).all(|j| inside(c0x + i, c0y + j)));
+        if all_in {
+            return None;
+        }
+    }
+
+    let mut lo = f32::MAX;
+    let mut hi = f32::MIN;
+    for j in 0..=CLIPMAP_PATCH {
+        for i in 0..=CLIPMAP_PATCH {
+            let g = Vec2::new((c0x + i) as f32 - n * 0.5, (c0y + j) as f32 - n * 0.5);
+            let w = centre + g * cell;
+            let h = terrain_height(w.x, w.y);
+            lo = lo.min(h);
+            hi = hi.max(h);
+        }
+    }
+    // A saia desce a altura na fronteira interior do anel; subtrai-se sempre para
+    // a caixa nunca ficar por baixo da geometria.
+    lo -= cell * 2.0;
+
+    let g0 = Vec2::new(c0x as f32 - n * 0.5, c0y as f32 - n * 0.5);
+    let g1 = Vec2::new(
+        (c0x + CLIPMAP_PATCH) as f32 - n * 0.5,
+        (c0y + CLIPMAP_PATCH) as f32 - n * 0.5,
+    );
+    let w0 = centre + g0 * cell;
+    let w1 = centre + g1 * cell;
+    Some((Vec3::new(w0.x, lo, w0.y), Vec3::new(w1.x, hi, w1.y)))
+}
+
 /// Alcance do último nível, em unidades de mundo.
 pub fn clipmap_range() -> f32 {
     CLIPMAP_CELL * (1u32 << (CLIPMAP_LEVELS - 1)) as f32 * CLIPMAP_N as f32 * 0.5
@@ -49,12 +143,13 @@ pub fn clipmap_range() -> f32 {
 fn hash2(x: f32, y: f32) -> f32 {
     let ix = x as i32 as u32;
     let iy = y as i32 as u32;
-    let mut h = ix.wrapping_mul(374_761_393).wrapping_add(iy.wrapping_mul(668_265_263));
+    let mut h = ix
+        .wrapping_mul(374_761_393)
+        .wrapping_add(iy.wrapping_mul(668_265_263));
     h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
     h ^= h >> 16;
     h as f32 * (1.0 / 4_294_967_296.0)
 }
-
 
 fn smooth(t: f32) -> f32 {
     // Hermite: derivada zero nas pontas, senão as células do ruído dão vincos.
@@ -130,12 +225,9 @@ impl Default for TerrainCb {
             camera_pos: Vec4::W,
             sun_dir: Vec4::Y,
             sun_color: Vec4::new(3.4, 3.2, 2.9, 1.0),
-            params: Vec4::new(
-                CLIPMAP_CELL,
-                60.0,
-                CLIPMAP_N as f32,
-                CLIPMAP_LEVELS as f32,
-            ),
+            // w = lado do patch, não o nº de níveis: o VS já não deriva o nível
+            // do índice da instância, tira-o do id do patch que o culling escolheu.
+            params: Vec4::new(CLIPMAP_CELL, 60.0, CLIPMAP_N as f32, CLIPMAP_PATCH as f32),
             sky_zenith: Vec4::new(0.22, 0.38, 0.72, 0.0),
             sky_horizon: Vec4::new(0.62, 0.72, 0.86, 0.0),
             inv_extent: Vec2::ONE,
@@ -196,7 +288,10 @@ mod tests {
         assert_eq!(hash2(0.0, 0.0), 0.0);
         for (x, y) in [(1.0, 0.0), (-3.0, 7.0), (129.0, -45.0)] {
             let h = hash2(x, y);
-            assert!((0.0..1.0).contains(&h), "hash2({x}, {y}) = {h} fora de [0,1)");
+            assert!(
+                (0.0..1.0).contains(&h),
+                "hash2({x}, {y}) = {h} fora de [0,1)"
+            );
         }
         // Células vizinhas não podem colidir, senão o ruído tem riscas.
         let a = hash2(10.0, 20.0);
@@ -240,12 +335,124 @@ mod tests {
         }
     }
 
+    /// A caixa de um patch tem de **conter** a geometria que ele desenha.
+    ///
+    /// É a garantia que faz o culling seguro: se a caixa ficar aquém, o frustum
+    /// rejeita um patch cujo chão se vê, e abre-se um buraco.
+    ///
+    /// O que se desenha é a malha, não o campo de alturas: o VS avalia a altura
+    /// nos **vértices** e o rasterizador interpola em linha entre eles. Um ponto
+    /// dentro de um triângulo pode por isso ficar acima ou abaixo do terreno
+    /// verdadeiro — a primeira versão deste teste amostrava `terrain_height` no
+    /// interior das células e falhava por 13 mm, a acusar a caixa de um erro que
+    /// era do teste. Aqui percorrem-se os vértices que o VS emite, derivados da
+    /// mesma tabela de offsets, que é o que a caixa tem mesmo de conter.
+    #[test]
+    fn patch_bounds_contain_the_mesh() {
+        // A mesma tabela do `terrain.vs.glsl`, para um erro de alcance aparecer.
+        const OFFSETS: [(u32, u32); 6] = [(0, 0), (0, 1), (1, 0), (1, 0), (0, 1), (1, 1)];
+        let cam = Vec2::new(37.0, -91.0);
+        let n = CLIPMAP_N as f32;
+        let mut checked = 0;
+        for patch in 0..clipmap_patch_count() {
+            let Some((lo, hi)) = clipmap_patch_bounds(patch, cam) else {
+                continue;
+            };
+            checked += 1;
+            assert!(lo.x < hi.x && lo.z < hi.z, "patch {patch} degenerado em XZ");
+            assert!(lo.y <= hi.y, "patch {patch} com Y invertido");
+
+            let per_level = clipmap_patches_per_level();
+            let level = patch / per_level;
+            let p = patch % per_level;
+            let grid = clipmap_patch_grid();
+            let cell = CLIPMAP_CELL * (1u32 << level) as f32;
+            let snap = cell * 2.0;
+            let centre = Vec2::new((cam.x / snap).floor() * snap, (cam.y / snap).floor() * snap);
+            let (c0x, c0y) = ((p % grid) * CLIPMAP_PATCH, (p / grid) * CLIPMAP_PATCH);
+
+            for cy in c0y..c0y + CLIPMAP_PATCH {
+                for cx in c0x..c0x + CLIPMAP_PATCH {
+                    for (ox, oy) in OFFSETS {
+                        let g = Vec2::new((cx + ox) as f32 - n * 0.5, (cy + oy) as f32 - n * 0.5);
+                        let w = centre + g * cell;
+                        let h = terrain_height(w.x, w.y);
+                        assert!(
+                            h >= lo.y && h <= hi.y,
+                            "patch {patch}: vértice a {h} fora de [{}, {}]",
+                            lo.y,
+                            hi.y
+                        );
+                        assert!(
+                            w.x >= lo.x && w.x <= hi.x && w.y >= lo.z && w.y <= hi.z,
+                            "patch {patch}: vértice em ({}, {}) fora da caixa XZ",
+                            w.x,
+                            w.y
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 300,
+            "só {checked} patches com caixa, de {}",
+            clipmap_patch_count()
+        );
+    }
+
+    /// Só os patches que cabem **todos** no buraco do anel são rejeitados.
+    ///
+    /// Rejeitar um que faça fronteira com o buraco tiraria chão que se vê. Por
+    /// isso são 9 por nível e não 16: o buraco ocupa um quarto da área, mas as
+    /// suas células de bordo caem em patches que também têm células de fora, e
+    /// esses têm de ser desenhados (as células de dentro colapsam sozinhas no VS).
+    /// E o nível 0 não tem buraco nenhum: é a grelha cheia à volta da câmara.
+    #[test]
+    fn only_fully_interior_patches_are_dropped() {
+        let cam = Vec2::new(0.0, 0.0);
+        let per_level = clipmap_patches_per_level();
+        for p in 0..per_level {
+            assert!(
+                clipmap_patch_bounds(p, cam).is_some(),
+                "o nível 0 não tem buraco, e o patch {p} foi descartado"
+            );
+        }
+        for level in 1..CLIPMAP_LEVELS {
+            let dropped = (0..per_level)
+                .filter(|&p| clipmap_patch_bounds(level * per_level + p, cam).is_none())
+                .count();
+            assert_eq!(
+                dropped, 9,
+                "nível {level} descartou {dropped} patches, não 9"
+            );
+        }
+    }
+
+    /// Os patches têm de ladrilhar o nível sem sobrepor nem deixar espaço.
+    #[test]
+    fn patches_tile_their_level() {
+        assert_eq!(clipmap_patch_grid() * CLIPMAP_PATCH, CLIPMAP_N);
+        assert_eq!(
+            clipmap_patch_vertex_count() * clipmap_patches_per_level(),
+            clipmap_vertex_count(),
+            "os patches de um nível têm de dar os mesmos vértices que o nível"
+        );
+        assert_eq!(
+            clipmap_patch_count(),
+            clipmap_patches_per_level() * CLIPMAP_LEVELS
+        );
+    }
+
     /// O alcance tem de cobrir bem mais do que o nível 0, senão os níveis extra
     /// não estão a fazer nada.
     #[test]
     fn levels_extend_the_range() {
         let level0 = CLIPMAP_CELL * CLIPMAP_N as f32 * 0.5;
-        assert!(clipmap_range() > level0 * 30.0, "{} vs {level0}", clipmap_range());
+        assert!(
+            clipmap_range() > level0 * 30.0,
+            "{} vs {level0}",
+            clipmap_range()
+        );
         assert_eq!(clipmap_vertex_count(), 64 * 64 * 6);
     }
 }

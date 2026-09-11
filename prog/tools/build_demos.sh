@@ -35,7 +35,7 @@ demos=(
   "08-nuvens:gate-clouds:Raymarch Nubis a meia resolução + reprojecção temporal."
   "09-agua:gate-water:Gerstner, Fresnel, SSR e espuma."
   "10-chuva:gate-rain:Material molhado, ondulações e bátegas em espaço de ecrã."
-  "11-terreno:gate-terrain:Clipmap por SV_VertexID: 7 niveis, 1024 de alcance, ZERO vertex buffers."
+  "11-terreno:gate-terrain:Clipmap por SV_VertexID: 7 niveis, culling de patches em compute, UM draw indirecto. Com -- --no-cull para o controlo."
   "12-luzes:gate-lights:1000 luzes pontuais em clusters, verificadas contra forca-bruta."
   "13-furnace:gate-furnace:White furnace: o BRDF conserva energia? Mede, nao opina. Sem GPU pesada."
   "14-heightquery:gate-heightquery:Altura do terreno em CPU contra GPU, medida ponto a ponto."

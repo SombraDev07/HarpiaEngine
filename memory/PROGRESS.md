@@ -517,3 +517,32 @@ caixa na CPU: 496 contra 506, passava, e não provava nada — qualquer erro cab
 folga entre os dois testes. Agora a CPU faz o **mesmo** teste, exige igualdade
 exacta, e lê a lista de volta para confirmar que cada id existe, passa o teste e
 aparece uma só vez. Com o raio errado no shader o gate falha com exit 1.
+
+## O terreno deixou de precisar da CPU para decidir — e isso não o acelerou
+
+Cada nível do clipmap são agora 64 patches, e quem escolhe quais se desenham é um
+compute shader: um workgroup por patch, a caixa envolvente contra os seis planos,
+e a lista e o `instanceCount` escritos pela GPU. A CPU submete **um**
+`drawIndirect` para o clipmap inteiro. 448 patches, 84.8% cortados, 172 032
+vértices reduzidos a 26 112.
+
+E o frame não mudou: 0.113 ms com culling, 0.112 sem. A pass do terreno cai de
+0.083 para 0.061 ms e o dispatch do culling custa 0.018 — **paga-se a si próprio e
+mais nada**. A razão é que a caixa exacta em Y obriga a avaliar 81 alturas por
+patch, quando o VS avaliaria 384 vértices: 21% do trabalho só para decidir. Falta
+uma pirâmide de min/max da altura para o compute ler o intervalo em vez de o
+calcular; aí os 0.022 ms passam a lucro.
+
+Fica assim porque o que a fase pedia está feito e verificado, e porque o custo é
+zero e não negativo. Dizer que acelerou seria falso.
+
+**Como se prova que não corta chão que se vê.** O contador bater com a CPU não
+chega — os dois lados correm o mesmo algoritmo e um erro de desenho concordaria em
+ambos. Há um controlo `-- --no-cull` que desenha os 448, e compara-se a imagem:
+921 599 de 921 600 pixels idênticos. O pixel que difere é verde de terreno dos dois
+lados, e desenhar os **mesmos** 448 patches por ordem inversa muda 4 pixels na
+mesma zona — é empate de profundidade na costura entre níveis, não culling.
+
+Pelo caminho: com uma thread por patch o dispatch custava 0.050 ms, porque 448
+threads são 7 workgroups e cada uma corria as 81 amostras em série. Um workgroup
+por patch, com redução em memória partilhada, deu 0.018 ms e imagem bit-idêntica.

@@ -35,7 +35,7 @@ pub use lights::{
     assign as assign_lights, depth_slice, slice_depth, ClusterAssignment, ClusterRange, PointLight,
     CLUSTER_COUNT, CLUSTER_X, CLUSTER_Y, CLUSTER_Z, MAX_LIGHT_INDICES,
 };
-pub use terrain::{
+pub use terrain::{CLIPMAP_PATCH, clipmap_patch_grid, clipmap_patches_per_level, clipmap_patch_count, clipmap_patch_vertex_count, clipmap_patch_bounds, 
     clipmap_range, clipmap_vertex_count, terrain_height, terrain_normal, TerrainCb, CLIPMAP_CELL,
     CLIPMAP_LEVELS, CLIPMAP_N, TERRAIN_OCTAVES,
 };

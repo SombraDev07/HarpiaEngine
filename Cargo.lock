@@ -1172,6 +1172,7 @@ dependencies = [
  "harpia-memory",
  "harpia-render",
  "harpia-rhi",
+ "harpia-scene",
  "harpia-shader-build",
  "tracing",
 ]

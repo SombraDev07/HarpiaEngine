@@ -13,6 +13,7 @@ harpia-math.workspace = true
 harpia-memory.workspace = true
 harpia-render.workspace = true
 harpia-rhi.workspace = true
+harpia-scene.workspace = true
 tracing.workspace = true
 
 [build-dependencies]

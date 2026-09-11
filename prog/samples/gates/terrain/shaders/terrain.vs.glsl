@@ -20,11 +20,15 @@ layout(set = 0, binding = 0, std140) uniform Terrain {
     layout(offset = 64)  vec4 camera_pos;
     layout(offset = 80)  vec4 sun_dir;
     layout(offset = 96)  vec4 sun_color;
-    layout(offset = 112) vec4 params;      // x=célula base, y=escala, z=N, w=níveis
+    layout(offset = 112) vec4 params;      // x=célula base, y=escala, z=N, w=lado do patch
     layout(offset = 128) vec4 sky_zenith;
     layout(offset = 144) vec4 sky_horizon;
     layout(offset = 160) vec2 inv_extent;
 } cb;
+
+// A lista que o `terrain_cull.cs` escreveu. `gl_InstanceIndex` já não é o nível:
+// é a posição na lista dos patches que sobreviveram.
+layout(set = 3, binding = 0, std430) readonly buffer Vis { uint items[]; } visible[];
 
 layout(location = 0) out vec3 v_world;
 layout(location = 1) out vec3 v_normal;
@@ -81,16 +85,29 @@ float terrain_height(float x, float z) {
 }
 
 void main() {
-    float n    = cb.params.z;
+    float n     = cb.params.z;
     int   cells = int(n);
-    float cell = cb.params.x * float(1 << gl_InstanceIndex);
+    int   patch_side = int(cb.params.w);
+    int   patches    = cells / patch_side;   // patches por lado, num nível
+
+    // O patch que este draw desenha sai da lista, não do índice da instância: a
+    // GPU é que escolheu quais sobrevivem, e são só esses que chegam aqui.
+    uint patch_id = visible[0].items[gl_InstanceIndex];
+    int level  = int(patch_id) / (patches * patches);
+    int p      = int(patch_id) - level * patches * patches;
+    int px     = p % patches;
+    int py     = p / patches;
+
+    float cell = cb.params.x * float(1 << level);
 
     // Seis vértices por célula: dois triângulos, sem index buffer.
     int vid    = gl_VertexIndex;
     int cell_i = vid / 6;
     int corner = vid - cell_i * 6;
-    int cx     = cell_i % cells;
-    int cy     = cell_i / cells;
+    // A célula é local ao patch; `cx`/`cy` voltam a ser coordenadas no nível, que
+    // é o que todo o resto desta função espera.
+    int cx     = px * patch_side + (cell_i % patch_side);
+    int cy     = py * patch_side + (cell_i / patch_side);
 
     // CCW visto de cima (+Y). A ordem óbvia -- (0,0)(1,0)(0,1) -- dá o contrário:
     // o produto vectorial de +X com +Z aponta para **baixo**, portanto o
@@ -117,7 +134,7 @@ void main() {
     // Anel: o quarto central de um nível > 0 já está coberto pelo nível de dentro.
     // Colapsa-se num ponto em vez de se desenhar por cima -- z-fighting entre dois
     // níveis com resoluções diferentes é visível e feio.
-    if (gl_InstanceIndex > 0) {
+    if (level > 0) {
         vec2 from_centre = abs(vec2(float(cx), float(cy)) - n * 0.5);
         if (max(from_centre.x, from_centre.y) < n * 0.25) {
             gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // fora do clip, degenerado
@@ -137,7 +154,7 @@ void main() {
     // fina, e por aí vê-se o céu. Um clipmap "a sério" resolve isto com uma tira
     // de recorte em L de tamanho variável; uma saia faz o mesmo trabalho em duas
     // linhas, ao custo de uma dobra quase invisível a rasar o chão.
-    if (gl_InstanceIndex > 0) {
+    if (level > 0) {
         vec2 vert_from_centre = abs(vec2(float(cx + o.x), float(cy + o.y)) - n * 0.5);
         if (max(vert_from_centre.x, vert_from_centre.y) <= n * 0.25 + 0.01) {
             h -= cell * 2.0;

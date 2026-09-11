@@ -900,3 +900,61 @@ Comparar contra um teste **diferente** é comparar contra nada.
 
 Controlo negativo corrido: com o raio a 0.3 em vez de 1.732 o gate falha com
 exit 1 e diz porquê.
+
+## D48 — O terreno é GPU-driven, e o culling de patches não paga (ainda)
+
+Cada nível do clipmap passou a 64 patches de 8×8 células, e o culling é em
+compute: um workgroup por patch, a caixa envolvente contra os seis planos, a lista
+dos sobreviventes e o `instanceCount` escritos pela GPU. A CPU submete **um**
+`drawIndirect` para o clipmap inteiro e não percorre patch nenhum. Era isto o ponto
+7.3 da comparação com a Dagor, que faz este culling em CPU.
+
+A caixa é **exacta em Y**, não estimada: o compute avalia a altura nos mesmos
+`(PATCH+1)²` vértices que o VS vai avaliar. Uma caixa folgada (±60, a escala do
+terreno) seria correcta e não cortaria nada com a câmara a olhar para cima ou para
+baixo; uma estimada por amostragem esparsa cortaria chão que se vê.
+
+### E depois medi
+
+| | pass terrain | dispatch do cull | frame |
+|---|---|---|---|
+| com culling | 0.061 ms | +0.018 ms | 0.113 ms |
+| sem culling | 0.083 ms | — | 0.112 ms |
+
+Mediana de 8 corridas de 500 frames, `--vsync 0`. **O culling corta 26% da pass do
+terreno e gasta quase tudo a decidir.** 84.8% dos patches são rejeitados, 172 032
+vértices passam a 26 112, e o frame não muda.
+
+A causa é estrutural e devia ter-me ocorrido antes de escrever o shader: para a
+caixa ser exacta o compute corre 81 avaliações de FBM por patch, e o VS correria
+384 vértices × 3 (a normal usa diferenças centrais). Estamos a pagar ~21% do
+trabalho do VS só para decidir se o fazemos. Já foi pior: com uma thread por patch
+em vez de um workgroup, as 81 amostras corriam em série numa lane e os 448 patches
+davam 7 workgroups para uma GPU inteira — o dispatch custava **0.050 ms**. Um
+workgroup por patch com redução em memória partilhada levou-o a 0.018 ms, com a
+imagem bit-idêntica.
+
+**O que falta para pagar: uma pirâmide de min/max da altura em espaço do mundo.**
+O compute lê o intervalo do patch numa textura em vez de o calcular, o dispatch cai
+para o custo do teste de planos, e os 0.022 ms passam a ser lucro. É o que a Dagor
+tem para o heightmap dela, e é o próximo passo deste item.
+
+Fica como está porque o que a fase pedia — o terreno deixar de depender da CPU para
+decidir o que desenhar — está feito e verificado, e porque o custo é zero, não
+negativo. Mas dizer que «o culling de patches acelerou o terreno» seria falso.
+
+### A prova de que não corta chão que se vê
+
+O contador bater com a CPU não chega: os dois lados correm o **mesmo** algoritmo, e
+um erro de desenho concordaria em ambos. Por isso há o controlo `-- --no-cull`, que
+desenha os 448 patches, e a comparação é da imagem:
+
+- **921 599 de 921 600 pixels idênticos.** O único que difere é verde de terreno
+  dos dois lados, não céu — não é um buraco.
+- Desenhar **os mesmos 448 patches por ordem inversa** muda 4 pixels na mesma zona.
+  Logo o pixel não é culling: é um empate de profundidade na costura entre dois
+  níveis do clipmap, decidido por quem desenha primeiro.
+- A imagem com culling é idêntica entre corridas (0 pixels em 3 corridas).
+
+Fica registado que o clipmap tem z-fighting na fronteira entre níveis. São 4 pixels
+e não se vê, mas é real e não foi este trabalho que o criou.

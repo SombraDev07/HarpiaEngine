@@ -267,3 +267,16 @@ output.**
   nada: a folga entre os dois absorve o erro. Esfera na GPU contra caixa na CPU dava
   496 contra 506 e passava. O teste da CPU tem de ser o mesmo, linha por linha, e a
   igualdade tem de ser exacta (D47).
+- **Uma thread por item é pouco quando o item custa.** 448 patches, uma thread cada,
+  81 avaliações de FBM em série por thread: 7 workgroups para uma GPU inteira e
+  0.050 ms de dispatch. Um workgroup por patch, com as amostras repartidas pelas 64
+  lanes e uma redução em memória partilhada: 0.018 ms, imagem bit-idêntica (D48).
+- A caixa envolvente de um patch de terreno vem das alturas nos **vértices**, e o
+  que se desenha entre eles é a interpolação linear, não o campo verdadeiro. Um
+  teste que amostre `terrain_height` no interior de uma célula acusa a caixa de um
+  erro que é do teste — falhou por 13 mm ao primeiro. O que a caixa tem de conter
+  são os vértices que o VS emite (D48).
+- `patch` é palavra reservada em GLSL (tesselação). `patch_id` compila.
+- Quando um filtro de binários (`grep -E '^(gate-|...)$'`) não casa o que devia, o
+  varrimento diz «0 falhados» e parece verde. Imprime **quantos** correram e
+  confere o número antes de acreditares.
