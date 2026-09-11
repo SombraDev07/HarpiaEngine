@@ -901,7 +901,7 @@ Comparar contra um teste **diferente** é comparar contra nada.
 Controlo negativo corrido: com o raio a 0.3 em vez de 1.732 o gate falha com
 exit 1 e diz porquê.
 
-## D48 — O terreno é GPU-driven, e o culling de patches não paga (ainda)
+## D48 — Terreno GPU-driven: o culling de patches só paga depois de deixar de recalcular
 
 Cada nível do clipmap passou a 64 patches de 8×8 células, e o culling é em
 compute: um workgroup por patch, a caixa envolvente contra os seis planos, a lista
@@ -934,14 +934,27 @@ davam 7 workgroups para uma GPU inteira — o dispatch custava **0.050 ms**. Um
 workgroup por patch com redução em memória partilhada levou-o a 0.018 ms, com a
 imagem bit-idêntica.
 
-**O que falta para pagar: uma pirâmide de min/max da altura em espaço do mundo.**
-O compute lê o intervalo do patch numa textura em vez de o calcular, o dispatch cai
-para o custo do teste de planos, e os 0.022 ms passam a ser lucro. É o que a Dagor
-tem para o heightmap dela, e é o próximo passo deste item.
+### E a seguir separei o cálculo do teste, e passou a pagar
 
-Fica como está porque o que a fase pedia — o terreno deixar de depender da CPU para
-decidir o que desenhar — está feito e verificado, e porque o custo é zero, não
-negativo. Mas dizer que «o culling de patches acelerou o terreno» seria falso.
+A saída não foi uma pirâmide de min/max — foi notar que **um patch só muda de
+região do mundo quando o snap do seu nível muda**, e o snap é o dobro da célula:
+1 unidade no nível 0, 64 no nível 6. Um `terrain_bounds.cs` calcula as caixas e é
+despachado só para os níveis que mexeram; o `terrain_cull.cs` lê-as. Medido no
+gate: **2.2 níveis de 7 por frame**, 31% do trabalho.
+
+| | bounds | cull | terrain | soma |
+|---|---|---|---|---|
+| com culling | 0.005 ms | 0.003 ms | 0.069 ms | **0.077 ms** |
+| sem culling | — | — | 0.086 ms | 0.086 ms |
+
+Mediana de 12 corridas de 600 frames. O dispatch do culling caiu de 0.018 para
+**0.003 ms** (já não avalia ruído nenhum: uma leitura, o teste do anel, seis
+produtos escalares), a pass do terreno caiu 20%, e a soma ficou 10% abaixo. A
+imagem é bit-idêntica à versão que recalculava tudo todos os frames.
+
+Não é um número grande. Mas é positivo, medido, e o caminho para o tornar maior
+está aberto: a caixa deixou de ser recalculada, portanto o custo de decidir já não
+cresce com o custo do VS.
 
 ### A prova de que não corta chão que se vê
 
@@ -954,7 +967,10 @@ desenha os 448 patches, e a comparação é da imagem:
 - Desenhar **os mesmos 448 patches por ordem inversa** muda 4 pixels na mesma zona.
   Logo o pixel não é culling: é um empate de profundidade na costura entre dois
   níveis do clipmap, decidido por quem desenha primeiro.
-- A imagem com culling é idêntica entre corridas (0 pixels em 3 corridas).
+- Entre corridas a imagem é bi-estável **naquele mesmo pixel** e só nele: 8
+  corridas, 28 pares, 21 idênticos e 7 a diferir num pixel, sempre em (1128, 712).
+  (Com 3 corridas eu tinha visto 0 diferenças e escrito «idêntica entre corridas»;
+  com 8 vê-se que não é. A conclusão não muda — reforça-se.)
 
 Fica registado que o clipmap tem z-fighting na fronteira entre níveis. São 4 pixels
 e não se vê, mas é real e não foi este trabalho que o criou.

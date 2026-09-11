@@ -1,5 +1,6 @@
 fn main() {
     harpia_shader_build::build(&[
+        ("terrain_bounds.cs.glsl", "terrain_bounds.cs.spv"),
         ("terrain_cull.cs.glsl", "terrain_cull.cs.spv"),
         ("terrain.vs.glsl", "terrain.vs.spv"),
         ("terrain.ps.glsl", "terrain.ps.spv"),

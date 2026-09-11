@@ -619,8 +619,9 @@ Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
 - [x] Só `ClipmapTerrain` SV_VertexID. `gate-terrain`: 7 níveis, alcance 1024,
       **2 draws**, 0.077 ms de GPU, zero vertex buffers (D40).
 - [x] Culling de patches em compute → `drawIndirect`: 448 patches, 84.8% cortados,
-      a CPU não percorre nenhum. Imagem verificada contra `--no-cull`. O relógio
-      ficou igual: falta a pirâmide de min/max para o culling dar lucro (D48).
+      a CPU não percorre nenhum. Imagem verificada contra `--no-cull`. As caixas
+      só se recalculam quando o nível muda de snap (2.2 de 7 por frame), e a soma
+      bounds+cull+terrain fica 10% abaixo de não cortar (D48).
 - [x] HeightQuery GPU vs CPU. `gate-heightquery`: 256² pontos comparados; o hash
       trigonométrico dava 77 m de erro e 99.84% fora da tolerância, o inteiro dá
       0.19 mm e 0% (D41).

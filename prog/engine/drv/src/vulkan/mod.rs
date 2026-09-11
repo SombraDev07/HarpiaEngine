@@ -2040,7 +2040,12 @@ impl VulkanGpu {
             self.device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::DRAW_INDIRECT | vk::PipelineStageFlags::VERTEX_SHADER,
+                // COMPUTE também: um compute a escrever o que o próximo compute lê
+                // é o caso das caixas do terreno, e sem isto o culling lia as do
+                // frame anterior de forma intermitente.
+                vk::PipelineStageFlags::DRAW_INDIRECT
+                    | vk::PipelineStageFlags::VERTEX_SHADER
+                    | vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
                 &[],
                 std::slice::from_ref(&barrier),

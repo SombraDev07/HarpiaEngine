@@ -29,6 +29,20 @@ use harpia_scene::{Bounds, Frustum};
 
 const SLOT_VISIBLE: u32 = 0;
 const SLOT_ARGS: u32 = 1;
+const SLOT_BOUNDS: u32 = 2;
+
+/// O que o `terrain_bounds.cs` lê: que níveis refazer, e onde eles estão.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BoundsCb {
+    camera_pos: Vec4,
+    /// x = célula base, y = N, z = lado do patch, w = nº de patches
+    params: Vec4,
+    /// x = patches por nível, y = níveis a refazer
+    counts: Vec4,
+    /// Quais, um por componente.
+    levels: [Vec4; 2],
+}
 
 /// O que o `terrain_cull.cs` lê. Separado do `TerrainCb` porque o compute não
 /// precisa de sol nem de céu, e os planos não cabiam lá dentro sem o refazer.
@@ -65,8 +79,17 @@ struct TerrainGate {
     pso: Option<GraphicsPipeline>,
     blit_pso: Option<GraphicsPipeline>,
     cull_pso: Option<ComputePipeline>,
+    bounds_pso: Option<ComputePipeline>,
     visible_buf: Option<Buffer>,
     args_buf: Option<Buffer>,
+    bounds_buf: Option<Buffer>,
+    /// O centro a que cada nível fez snap da última vez. Um patch só muda de
+    /// região do mundo quando este valor muda, e é por isso que as caixas não
+    /// precisam de ser refeitas todos os frames.
+    last_centre: [Option<Vec2>; CLIPMAP_LEVELS as usize],
+    /// Quantos níveis se refizeram, somados — para o gate dizer o que poupou.
+    levels_rebuilt: u64,
+    frames_counted: u64,
     color: Option<Texture>,
     depth: Option<Texture>,
     extent: Extent2D,
@@ -86,8 +109,13 @@ impl Default for TerrainGate {
             pso: None,
             blit_pso: None,
             cull_pso: None,
+            bounds_pso: None,
             visible_buf: None,
             args_buf: None,
+            bounds_buf: None,
+            last_centre: [None; CLIPMAP_LEVELS as usize],
+            levels_rebuilt: 0,
+            frames_counted: 0,
             checked: false,
             no_cull: false,
             last_view_proj: Mat4::IDENTITY,
@@ -163,9 +191,21 @@ impl Sample for TerrainGate {
             })
             .context("terrain cull CS")?,
         );
+        self.bounds_pso = Some(
+            gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/terrain_bounds.cs.spv")),
+                cs_entry: "CSMain",
+            })
+            .context("terrain bounds CS")?,
+        );
         self.visible_buf = Some(gpu.create_storage_buffer(
             SLOT_VISIBLE,
             as_bytes(&vec![0u32; clipmap_patch_count() as usize]),
+        )?);
+        // (lo, hi) por patch.
+        self.bounds_buf = Some(gpu.create_storage_buffer(
+            SLOT_BOUNDS,
+            as_bytes(&vec![0f32; clipmap_patch_count() as usize * 2]),
         )?);
         // `VkDrawIndirectCommand`: quatro u32.
         self.args_buf = Some(gpu.create_storage_buffer(SLOT_ARGS, as_bytes(&[0u32; 4]))?);
@@ -250,6 +290,52 @@ impl Sample for TerrainGate {
                 0.0,
             ),
         };
+        // Que níveis mudaram de sítio? Só esses precisam de caixas novas.
+        let mut stale: Vec<u32> = Vec::new();
+        for level in 0..CLIPMAP_LEVELS {
+            let snap = harpia_render::CLIPMAP_CELL * (1u32 << level) as f32 * 2.0;
+            let centre = Vec2::new(
+                (self.last_camera_xz.x / snap).floor() * snap,
+                (self.last_camera_xz.y / snap).floor() * snap,
+            );
+            if self.last_centre[level as usize] != Some(centre) {
+                self.last_centre[level as usize] = Some(centre);
+                stale.push(level);
+            }
+        }
+        self.levels_rebuilt += stale.len() as u64;
+        self.frames_counted += 1;
+
+        if !stale.is_empty() {
+            let bounds_pso = self.bounds_pso.as_ref().context("bounds pso")?;
+            let mut levels = [Vec4::ZERO; 2];
+            for (i, &l) in stale.iter().enumerate() {
+                levels[i / 4][i % 4] = l as f32;
+            }
+            let upd = BoundsCb {
+                camera_pos: cb.camera_pos,
+                params: Vec4::new(
+                    harpia_render::CLIPMAP_CELL,
+                    CLIPMAP_N as f32,
+                    CLIPMAP_PATCH as f32,
+                    clipmap_patch_count() as f32,
+                ),
+                counts: Vec4::new(
+                    clipmap_patches_per_level() as f32,
+                    stale.len() as f32,
+                    0.0,
+                    0.0,
+                ),
+                levels,
+            };
+            gpu.write_frame_bytes(one(&upd))?;
+            gpu.set_compute_pipeline(bounds_pso)?;
+            gpu.bind_compute_bindless()?;
+            gpu.dispatch(stale.len() as u32 * clipmap_patches_per_level(), 1, 1)?;
+            gpu.storage_barrier_buffer(self.bounds_buf.context("bounds")?)?;
+        }
+        gpu.mark("bounds");
+
         if self.no_cull {
             let all: Vec<u32> = (0..clipmap_patch_count()).collect();
             gpu.write_storage_buffer(self.visible_buf.context("visible")?, as_bytes(&all))?;
@@ -365,6 +451,20 @@ impl Sample for TerrainGate {
         tracing::info!(
             patches = gpu_count,
             "lista: todos únicos e dentro do frustum"
+        );
+        // O que a cache das caixas poupa: um nível só se refaz quando muda de snap.
+        tracing::info!(
+            niveis = CLIPMAP_LEVELS,
+            refeitos_por_frame = format!(
+                "{:.2}",
+                self.levels_rebuilt as f64 / self.frames_counted.max(1) as f64
+            ),
+            percent = format!(
+                "{:.0}",
+                100.0 * self.levels_rebuilt as f64
+                    / (self.frames_counted.max(1) * CLIPMAP_LEVELS as u64) as f64
+            ),
+            "caixas recalculadas"
         );
         Ok(())
     }

@@ -215,13 +215,15 @@ totalmente GPU-driven não tem esse trabalho nenhum.
       terreno inteiro sai de **um** `drawIndirect` (D48). 84.8% dos patches
       rejeitados, 172 032 vértices para 26 112, e a imagem prova-se contra um
       controlo `--no-cull`: 921 599 de 921 600 pixels idênticos.
-      **Mas não acelerou nada:** a pass do terreno cai 0.083 → 0.061 ms e o
-      dispatch custa 0.018. O culling paga-se a si próprio e mais nada, porque
-      calcular a caixa exacta em Y são 81 avaliações de FBM por patch.
-- [ ] **Pirâmide de min/max da altura** em espaço do mundo, para o compute ler o
-      intervalo de um patch em vez de o calcular. É o que falta para o culling dar
-      lucro, e é o que eles têm para o heightmap. Sem isto o item está feito na
-      arquitectura e empatado no relógio.
+      À primeira não acelerou nada — a caixa exacta em Y custava 81 avaliações de
+      FBM por patch e o dispatch comia o que a pass poupava.
+- [x] **As caixas deixaram de ser recalculadas.** Um patch só muda de região do
+      mundo quando o snap do seu nível muda (1 unidade no nível 0, 64 no nível 6):
+      2.2 níveis de 7 por frame. O culling caiu para 0.003 ms e a soma
+      bounds+cull+terrain ficou 10% abaixo de não cortar nada (D48).
+- [ ] **Bounds a partir de um heightmap a sério**, com min/max em mips, quando o
+      terreno deixar de ser ruído procedural. Aí o `terrain_bounds.cs` passa a uma
+      leitura de textura e o custo de decidir vai a zero.
 - [ ] **Z-fighting na costura entre níveis**: 4 pixels mudam de dono conforme a
       ordem de desenho. Não se vê, mas é real (D48).
 - [ ] **Tesselação por hardware no anel interior**, com factor por aresta a partir

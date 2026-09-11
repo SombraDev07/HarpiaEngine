@@ -526,22 +526,32 @@ e a lista e o `instanceCount` escritos pela GPU. A CPU submete **um**
 `drawIndirect` para o clipmap inteiro. 448 patches, 84.8% cortados, 172 032
 vértices reduzidos a 26 112.
 
-E o frame não mudou: 0.113 ms com culling, 0.112 sem. A pass do terreno cai de
-0.083 para 0.061 ms e o dispatch do culling custa 0.018 — **paga-se a si próprio e
-mais nada**. A razão é que a caixa exacta em Y obriga a avaliar 81 alturas por
-patch, quando o VS avaliaria 384 vértices: 21% do trabalho só para decidir. Falta
-uma pirâmide de min/max da altura para o compute ler o intervalo em vez de o
-calcular; aí os 0.022 ms passam a lucro.
+À primeira isto não acelerou nada. O frame ficou igual: a pass do terreno caía de
+0.083 para 0.061 ms e o dispatch do culling custava 0.018 — pagava-se a si próprio
+e mais nada. A caixa exacta em Y obriga a avaliar 81 alturas por patch, quando o VS
+avaliaria 384 vértices: 21% do trabalho só para decidir se o faz.
 
-Fica assim porque o que a fase pedia está feito e verificado, e porque o custo é
-zero e não negativo. Dizer que acelerou seria falso.
+A saída foi notar que **um patch só muda de região do mundo quando o snap do seu
+nível muda**, e o snap é o dobro da célula: 1 unidade no nível 0, 64 no nível 6. As
+caixas passaram para um `terrain_bounds.cs` despachado só para os níveis que
+mexeram — 2.2 de 7 por frame — e o culling passou a lê-las.
+
+| | bounds | cull | terrain | soma |
+|---|---|---|---|---|
+| com culling | 0.005 ms | 0.003 ms | 0.069 ms | **0.077 ms** |
+| sem culling | — | — | 0.086 ms | 0.086 ms |
+
+O dispatch do culling caiu de 0.018 para 0.003 ms e a soma ficou 10% abaixo, com a
+imagem bit-idêntica à versão que recalculava tudo. Não é um número grande, mas é
+positivo e medido — e o custo de decidir deixou de crescer com o custo do VS.
 
 **Como se prova que não corta chão que se vê.** O contador bater com a CPU não
 chega — os dois lados correm o mesmo algoritmo e um erro de desenho concordaria em
 ambos. Há um controlo `-- --no-cull` que desenha os 448, e compara-se a imagem:
 921 599 de 921 600 pixels idênticos. O pixel que difere é verde de terreno dos dois
 lados, e desenhar os **mesmos** 448 patches por ordem inversa muda 4 pixels na
-mesma zona — é empate de profundidade na costura entre níveis, não culling.
+mesma zona — é empate de profundidade na costura entre níveis, não culling. Em 8
+corridas (28 pares) aquele pixel é bi-estável e mais nenhum muda.
 
 Pelo caminho: com uma thread por patch o dispatch custava 0.050 ms, porque 448
 threads são 7 workgroups e cada uma corria as 81 amostras em série. Um workgroup
