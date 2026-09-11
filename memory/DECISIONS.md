@@ -1791,7 +1791,7 @@ segfault no lavapipe — e na RX 6700 tinha pendurado a máquina.
 O ±1 é arredondamento entre o VS e o MS a fazer a mesma conta — não é geometria
 diferente. Não se diz "idêntica ao pixel", diz-se 271 pixels a 1/255.
 
-### O que correu na placa, e o que não
+### O que a placa disse
 
 O caminho **por omissão** voltou à RX 6700 e está verde: 120 frames,
 `validation_errors=0`, **0.738 ms** de GPU contra os **0.737** que o D58 mediu antes
@@ -1800,10 +1800,37 @@ cascatas 0.196 contra 0.196). Os gates `pbr-grid`, `csm` e `bindless` idem. Port
 nem as `stageFlags` das push constants, nem o `maintenance4`, nem a guarda custam
 frame nenhum.
 
-O `-- --mesh` **não** correu na RX 6700 — por decisão, ficou no lavapipe. Continua
-sem **uma única medição de performance**, que é a única razão pela qual os mesh
-shaders existem aqui (D58: o custo por comando indirecto). Até haver um número na
-placa, é opt-in e não se diz que paga.
+E o `-- --mesh` também correu, **sem pendurar nada**: 16 e 120 frames,
+`validation_errors=0`. Fica medido — e é o terceiro negativo seguido.
+
+| | por omissão | `-- --mesh` |
+|---|---|---|
+| **frame** | **0.738 ms** | **1.099 ms** |
+| cena | 0.351 | 0.366 |
+| cascatas | 0.196 | **0.461** |
+| mapa de chuva | 0.040 | **0.120** |
+| unidades desenhadas | 103 primitivas | 4 912 meshlets |
+
+**A passe que usa mesh shaders é a única que não mudou.** O que dispara são as
+outras duas: as cascatas e o mapa de chuva continuam a desenhar por comando
+indirecto, e com `--mesh` a unidade passa de 103 para 4 912. O custo por comando do
+D58 — ~0.1 ms por mil — aplicado a ~4 900 comandos dá os +0.35 ms que aparecem ali,
+quase ao décimo.
+
+E a cena não ganha porque **já não havia o que ganhar**: o D56 pôs a Sponza em 15
+draws indirectos, portanto o custo por comando que os mesh shaders apagam já tinha
+sido apagado. 0.366 contra 0.351 é a medição a favor do caminho antigo.
+
+Imagem na placa: **1 862 pixels de 921 600** (0.20%), média 0.04/255, em arestas de
+geometria fina — folhagem, cordas, os detalhes da arcada ao fundo. Nenhuma fissura
+nem buraco com forma de meshlet; o atlas de sombra é idêntico ao pixel. No lavapipe
+os mesmos dois caminhos davam 271 pixels a 1/255: a diferença entre os dois números
+é o rasterizador, não o código.
+
+**Conclusão:** como está, custa 49% do frame. Só volta a interessar se **todas** as
+passes passarem a mesh — cascatas e mapa de chuva incluídos — porque é o resto do
+frame, e não a cena, que paga a granularidade fina. Fica escrito, medido e opt-in
+atrás de `-- --mesh`. Não entra por omissão.
 
 E fica registado que isto é **fora de fase**: a INDEX põe a árvore na fase 6 e o D58
 põe os mesh shaders na 9.

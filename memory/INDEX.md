@@ -7,6 +7,8 @@ Persistência entre sessões da IA. **Não** é o allocator (`prog/engine/memory
 **Fase 5 (clima) FECHADA. Próxima = fase 6 (terreno + vegetação + mundo).**
 Céu, nuvens e sombra das nuvens entram na fase 6: num interior não se viam. Não comecees mesh shaders, RT, FSR, editor. Cena de referência: **Sponza** (`docs/Rust-Rewrite-Roadmap.md` §0.1).
 
+**Os mesh shaders (fase 9) foram escritos fora de ordem e medidos a negativo** — 1.099 ms contra 0.738 na Sponza, opt-in atrás de `-- --mesh`, roadmap §15 actualizado (D60). O desvio não se repete: a fase 6 continua por fazer e é o passo seguinte.
+
 Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abaixo em `PROGRESS.md`. Sem gate verde, a fase não está feita.
 
 | Fase | Gate | Estado |

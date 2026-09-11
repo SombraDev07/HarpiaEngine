@@ -889,7 +889,17 @@ baterem uma a uma (cena 0.351, cascatas 0.196). `gate-pbr-grid`, `gate-csm` e
 `gate-bindless` idem. As push constants, o `maintenance4` e a guarda não custam
 frame nenhum.
 
-**Falta:** o `-- --mesh` não correu na placa — ficou no lavapipe, por decisão. Sem
-medição não se sabe se paga, que é a única razão pela qual os mesh shaders existem
-aqui, portanto fica opt-in. E isto é trabalho **fora de fase**: a árvore está na 6 e
-os mesh shaders são da 9.
+E o `-- --mesh` foi medido na placa, sem pendurar nada: **1.099 ms contra 0.738** do
+caminho por omissão. A passe da cena — a única que usa mesh shaders — fica igual
+(0.366 contra 0.351); o que dispara são as cascatas (0.461 contra 0.196) e o mapa de
+chuva (0.120 contra 0.040), que continuam por comando indirecto e passam de 103
+unidades para 4 912. Imagem: 1 862 px de 921 600 (0.20%) em arestas finas, atlas de
+sombra idêntico.
+
+**Terceiro negativo seguido** (D57 → D58 → D60): desde o D56 a cena está em 15 draws,
+portanto o custo por comando que os mesh shaders apagam já tinha sido apagado. Fica
+opt-in atrás de `-- --mesh` e fora do caminho por omissão. O roadmap §15 foi
+actualizado: a fase 9 deixa de dizer que isto está por fazer.
+
+Isto foi trabalho **fora de fase** — a árvore está na 6 — e não se repete: a fase 6
+(terreno + vegetação + mundo) continua por fazer e é o passo seguinte.

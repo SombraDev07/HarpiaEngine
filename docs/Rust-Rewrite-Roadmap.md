@@ -15,7 +15,7 @@ Idioma: português para o plano; **identificadores, structs, shaders e crates em
 
 1. **Não clones a checklist.** Clona o 6 (PBR + IBL + fog + clima + bindless). Recusa o que puxa a nota para 4. Detalhe: `docs/Rust-Rewrite-Quality-Bar.md`.
 2. **Não clones o C++ linha a linha.** Clona o *contrato*: GBuffer packing, BRDF, bindless, rain, um clipmap. A implementação Rust deve ser mais limpa.
-3. **Não comeces por mesh shaders nem ray tracing.** Ordem: triângulo → bindless → deferred PBR → **CSM com câmara real + TAA** → clima → terreno → editor.
+3. **Não comeces por mesh shaders nem ray tracing.** Ordem: triângulo → bindless → deferred PBR → **CSM com câmara real + TAA** → clima → terreno → editor. *(Os mesh shaders acabaram por ser escritos na fase 6, fora de ordem, e medidos: §15, fase 9. Custam 49% do frame e ficaram opt-in — a regra estava certa.)*
 4. **Cada fase tem um binário de gate** (equivalente a `Samples/Gates/`). Sem gate verde, não avanças. Sempre `--frames N` em GPU AMD/RADV.
 5. **Lê os ficheiros-fonte listados** no fim de cada sistema. Este texto resume; o HLSL é a spec.
 6. **Superar ≠ mais passes.** Superar = menos mentiras no pixel: CSM honesto, TAA, um clipmap, occupancy no lighting *ou* apagada, nenhum sistema chamado VSM até ser variance.
@@ -533,7 +533,7 @@ Cada fase: código + **um binário que corre N frames e sai 0**. Sem pixel-ident
 | 6 | Terreno + veg + mundo | `terrain` `heightquery` `veg` `instances` | **próximo** |
 | 7 | GI + post extra | `ssr` `probes` (+ occupancy honesta ou 0 bytes) | — |
 | 8 | Editor | docking + viewport `--frames 8` | — |
-| 9 | Opcional | mesh shaders / RT / OIT / física | depois do editor |
+| 9 | Opcional | mesh shaders / RT / OIT / física | mesh shaders **escritos e medidos** (negativo, opt-in); o resto depois do editor |
 
 ### Fase 0 — Contrato — [x] feito
 
@@ -657,7 +657,15 @@ Barra: occupancy **no lighting neste PR** ou o volume não nasce. SSGI de 8 taps
 
 ### Fase 9 — Opcional (depois do editor) — [ ]
 
-- [ ] Mesh shaders se a GPU tiver a extensão; fallback VS obrigatório.
+- [x] **Mesh shaders** — escritos fora de ordem, durante a fase 6, com fallback VS
+  obrigatório (`VK_EXT_mesh_shader` pedido só se existir), e **medidos na RX 6700:
+  1.099 ms contra 0.738** do caminho por omissão, com a imagem a bater (1 862 px de
+  921 600 em arestas finas, atlas idêntico). A passe que os usa fica igual (0.366 vs
+  0.351); o que custa é o resto do frame continuar por comando indirecto com 4 912
+  meshlets em vez de 103 primitivas. Terceiro negativo seguido (D57 → D58 → D60).
+  Ficam atrás de `-- --mesh`, **nunca por omissão**, e só voltam a interessar se
+  **todas** as passes passarem a mesh. Detalhe: `memory/DECISIONS.md` D60.
+- [ ] Ray query shadows/reflections; senão SSR/CSM continuam.
 - [ ] Ray query shadows/reflections; senão SSR/CSM continuam.
 - [ ] OIT linked-list no mesmo backend.
 - [ ] Physics + ECS + Lua/Rhai se o produto precisar — **não** bloqueiam o renderer.
