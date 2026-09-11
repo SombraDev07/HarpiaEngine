@@ -55,6 +55,13 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 código. Resumo: o BRDF aguenta; só temos uma luz; eles fazem culling de terreno em
 CPU e é aí que podemos passar à frente. A `DagorEngine/` está no `.gitignore`.
 
+`docs/Dagor-Fase6.md` — **base para a fase 6**: vegetação (rendInst), grama,
+colocação por GPU e mundo, lidos no código. O culling deles é CPU **também** na
+vegetação (zero `draw_indirect`/`dispatch` em `rendInst`, `landMesh` e `heightmap`),
+o que confirma a abertura do lado do nosso compute. O que nos falta e lá está:
+pirâmide min/max de alturas, LODs com impostores, grama gerada em compute e vento
+que escreve motion vectors.
+
 ## Isto é AAA?
 
 Não, e `docs/AAA-Gap-Analysis.md` diz porquê com números medidos, o que falta por
