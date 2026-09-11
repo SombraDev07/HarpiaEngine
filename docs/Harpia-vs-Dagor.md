@@ -269,8 +269,14 @@ totalmente GPU-driven não tem esse trabalho nenhum.
 
 ### 7.5 Arquitectura — a dívida que sustenta tudo o resto
 
-- [ ] **Render graph** com transientes, barreiras automáticas e reordenação. Sem
-      isto, cada feature nova é sequenciada à mão e as barreiras são adivinhadas.
+- [~] **Render graph** (D53): passes declaram acessos, o grafo valida e deriva as
+      barreiras. Portado o `gate-terrain` — imagem idêntica ao pixel, custo abaixo
+      da resolução do relógio. Motivou ligar a **synchronization validation**, que
+      encontrou uma corrida na swapchain presente **desde a fase 1** em todos os
+      18 binários. Falta: portar o resto dos samples, aliasing de transientes e
+      reordenação.
+- [ ] **Portar os restantes samples** ao grafo. Enquanto houver passes fora dele,
+      as barreiras desses continuam a ser raciocinadas à mão.
 - [ ] **Gravação de command buffers em paralelo** (a D0 escolheu single-thread e
       foi a escolha certa até aqui; deixa de ser).
 - [ ] GI: o `daGI2` deles é voxel + radiance cache. A nossa fase 7 já prevê

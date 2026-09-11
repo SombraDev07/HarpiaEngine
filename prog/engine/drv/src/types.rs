@@ -64,6 +64,56 @@ pub struct Texture {
 
 impl Texture {
     pub const NULL: Texture = Texture { id: 0 };
+
+    /// O índice cru. Para quem precisa de identidade sem tocar no recurso — o
+    /// render graph compara handles para saber se dois acessos são ao mesmo sítio.
+    pub fn raw(self) -> u32 {
+        self.id
+    }
+
+    /// Um handle feito à mão, **para testes**.
+    ///
+    /// O render graph tem de ser testável sem GPU: a derivação de barreiras é uma
+    /// função pura sobre handles e não precisa de recurso nenhum por trás. Fora de
+    /// um teste isto dá um handle que não aponta para nada.
+    #[doc(hidden)]
+    pub const fn from_raw(id: u32) -> Self {
+        Self { id }
+    }
+}
+
+impl Buffer {
+    pub fn raw(self) -> u32 {
+        self.id
+    }
+
+    /// Ver [`Texture::from_raw`].
+    #[doc(hidden)]
+    pub const fn from_raw(id: u32) -> Self {
+        Self { id }
+    }
+}
+
+/// Um recurso a que uma barreira se aplica.
+///
+/// Neutro de propósito: quem o constrói é o render graph, que por D0 não pode
+/// conhecer `vk::*`. A tradução para estágios, máscaras e layouts é do backend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Barrier {
+    Texture(Texture),
+    Buffer(Buffer),
+}
+
+/// Uma barreira derivada: de que acesso para que acesso.
+///
+/// `src` e `dst` são códigos que o backend traduz. Um `u32` e não um enum rico
+/// porque a seta das dependências vai do `harpia-render` para o `harpia-rhi`, e
+/// o vocabulário de acessos vive do lado de cima.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BarrierDesc {
+    pub resource: Barrier,
+    pub src: u32,
+    pub dst: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -206,4 +256,3 @@ pub struct GpuStats {
 /// chegam para listas de luzes, argumentos indirectos e o que a fase 6.5 pedir;
 /// se um dia não chegarem, o custo de subir é um número.
 pub const STORAGE_BUFFER_SLOTS: u32 = 16;
-

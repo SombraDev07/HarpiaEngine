@@ -1,7 +1,7 @@
 //! Platform WSI. The **only** module allowed to care about X11 / Wayland / Win32.
 //! Implementation is `ash-window`; we do not call Xlib/Wayland/Win32 ourselves.
 
-use ash::{vk, Entry, Instance};
+use ash::{Entry, Instance, vk};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::Result;

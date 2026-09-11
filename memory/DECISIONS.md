@@ -1242,3 +1242,81 @@ comentário era mais forte do que isso e não tinha teste. Agora tem.
 Dois deles chegaram a **pendurar** em vez de falhar, porque eu tinha escrito
 `while !plan.render.is_empty() {}`. Um teste que pendura bloqueia o CI e não diz
 nada; agora há um `fill_cache` com limite de 200 frames que falha a dizer porquê.
+
+## D53 — Render graph, e a corrida que estava lá desde a fase 1
+
+Cada sample sequenciava as suas passes à mão e as barreiras eram raciocinadas caso
+a caso. Funcionou até às 29 passes da árvore, e esta sessão deu três provas de que
+tinha deixado de funcionar:
+
+- o `storage_barrier_buffer` teve de ser **alargado à mão** quando um compute
+  passou a alimentar outro compute, e escrevi eu próprio que sem isso falharia «de
+  forma intermitente» (D48);
+- `depth_clear: None` queria dizer «limpa na mesma», e ninguém via isso de onde se
+  chamava (D52);
+- o atlas de sombras transita de profundidade para amostrado porque o RHI o faz
+  implicitamente ao ligar, e **nada verificava** que o fazia.
+
+### O que o grafo é, e o que não é
+
+Uma pass declara o que toca e com que tipo de acesso; o grafo valida, deriva as
+barreiras entre acessos consecutivos do mesmo recurso, e resolve os `loadOp`.
+
+**Não** faz aliasing de memória nem reordena passes. As duas são optimizações, e um
+grafo que reordena antes de se saber se deriva as barreiras certas é uma máquina de
+bugs que ninguém depura. Entram quando isto estiver provado em mais do que um
+sample.
+
+Por D0 o grafo não conhece `vk::*`: fala em `Access` e emite `BarrierDesc` neutros
+que o backend traduz. A vantagem prática é que **toda a derivação é testável sem
+GPU**, e é lá que estão os 13 testes.
+
+A regra é uma só: entre dois acessos consecutivos ao mesmo recurso há barreira se
+algum deles escreve **ou se o layout muda**. Duas leituras no mesmo layout não
+levam nada — sem essa metade, o grafo estaria sempre correcto e sempre lento, que é
+a maneira fácil de fingir que funciona.
+
+### O porte, e o que ele custou
+
+O `gate-terrain` foi o primeiro: `bounds` → `cull` → `terrain` → `blit`, com um
+compute a alimentar outro compute e um buffer de argumentos a alimentar um draw
+indirecto. As duas barreiras escritas à mão saíram.
+
+| | |
+|---|---|
+| imagem, à mão vs derivada | **0 pixels diferentes** |
+| custo de construir e compilar o grafo | **abaixo da resolução do relógio** |
+
+0.060 ms de CPU por frame com e sem grafo, medido com `--validation 0` para tirar a
+camada do meio. Quatro passes e cinco recursos não se sentem.
+
+### A parte que valeu a pena
+
+Um controlo negativo mostrou que o grafo **não apanha um acesso que alguém se
+esqueça de declarar** — e não pode: só sabe o que lhe dizem. Mas há quem saiba, e
+foi isso que motivou ligar a **synchronization validation** do Vulkan. É o outro
+lado do par: o grafo declara, a camada verifica.
+
+Ligou-se, e ela encontrou logo uma corrida **que estava lá desde a fase 1**:
+
+> `SYNC-HAZARD-WRITE-AFTER-READ` na imagem da swapchain.
+
+O submit espera pelo `image_available` em `COLOR_ATTACHMENT_OUTPUT`, mas a
+transição de layout era emitida em `TOP_OF_PIPE` — ou seja, podia correr **antes**
+de a espera fazer efeito, e escrever o layout de uma imagem que o motor de
+apresentação ainda estava a ler. Em todos os 18 binários, porque todos apresentam.
+
+A validation normal nunca deu sinal disto, e não tinha como: não é uso indevido da
+API, é uma corrida. A correcção é uma linha — emitir a transição em
+`COLOR_ATTACHMENT_OUTPUT` — e depois dela os 18 passam com a sync validation ligada.
+
+Custa 0.25 ms de CPU por frame, e por isso só entra com `--validation 1`, que é o
+modo dos gates e não o do jogo.
+
+### E um teste meu que prometia mais do que verificava
+
+Tinha um teste chamado «uma mudança de layout precisa de barreira **mesmo entre
+duas leituras**». A sequência lá dentro era `DepthWrite → Sampled`, que é
+escrita→leitura e sai pelo outro ramo. Tirei o teste de layout do código e nenhum
+teste falhou. Agora há um com duas leituras a sério — profundidade testada numa
+pass e amostrada na seguinte — e esse apanha.

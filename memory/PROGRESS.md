@@ -675,3 +675,33 @@ O escalonador tem 13 testes sem GPU. Quebrei-o de cinco maneiras: quatro foram
 apanhadas, e a quinta mostrou que eu tinha afirmado no comentário uma propriedade
 mais forte do que a que estava testada. Dois testes chegaram a **pendurar** em vez
 de falhar, porque tinham `while !plan.render.is_empty() {}` — agora têm limite.
+
+## Render graph, e uma corrida que estava cá desde a fase 1
+
+As passes passaram a **declarar** o que tocam, e as barreiras saem daí em vez de
+serem raciocinadas caso a caso. O grafo valida, deriva as barreiras entre acessos
+consecutivos do mesmo recurso, e resolve os `loadOp`. Não faz aliasing nem
+reordena — isso são optimizações, e um grafo que reordena antes de se saber se
+deriva as barreiras certas é indepurável.
+
+Por D0 não conhece Vulkan: emite descritores neutros que o backend traduz. Toda a
+derivação é testável sem GPU, e são 13 testes.
+
+O `gate-terrain` foi o primeiro porte: **0 pixels diferentes** das barreiras à mão,
+e o custo de construir o grafo fica **abaixo da resolução do relógio** (0.060 ms
+com e sem, medido com a validação desligada).
+
+**E depois o que interessa.** Um controlo mostrou que o grafo não apanha um acesso
+que alguém se esqueça de declarar — só sabe o que lhe dizem. Isso motivou ligar a
+*synchronization validation* do Vulkan, que é o outro lado do par: o grafo declara,
+a camada verifica. Ligou-se, e apareceu logo:
+
+> `SYNC-HAZARD-WRITE-AFTER-READ` na imagem da swapchain.
+
+A transição de layout era emitida em `TOP_OF_PIPE`, mas o submit só espera pelo
+semáforo do acquire em `COLOR_ATTACHMENT_OUTPUT` — a transição podia correr antes
+da espera e escrever o layout de uma imagem que o motor de apresentação ainda lia.
+**Em todos os 18 binários, desde a fase 1**, sempre com `validation_errors=0`,
+porque a validation normal não vê corridas.
+
+Uma linha a corrigir. Depois dela os 18 passam com a sync validation ligada.

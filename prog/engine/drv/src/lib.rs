@@ -15,7 +15,8 @@ pub use device::{
 };
 pub use error::RhiError;
 pub use types::{
-    Backend, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GpuStats,
+    Backend, Barrier, BarrierDesc, Buffer, ComputePipeline, Extent2D, Format, FrameConstants,
+    FrameInfo, GpuStats,
     GraphicsPipeline,
     PipelineTargets, PrimitiveTopology, Texture, TextureData, TextureDesc, TextureDim,
     FRAME_CBV_CHUNKS, FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE, STORAGE_BUFFER_SLOTS,

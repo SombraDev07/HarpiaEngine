@@ -1,5 +1,6 @@
 //! Deferred PBR helpers. No `vk::*`.
 
+mod graph;
 mod shadow_atlas;
 mod atmosphere;
 #[cfg(test)]
@@ -47,6 +48,10 @@ pub use fog::{
     FROXEL_H, FROXEL_W, INJECT_GROUP, INTEGRATE_GROUP,
 };
 pub use gltf_scene::{load_path as load_gltf, CpuImage, CpuPrimitive, CpuScene, GltfError};
+pub use graph::{
+    Access, GraphError, Handle, Layout, Load, Pass, PassId, PassPlan, RenderGraph, Resource,
+    ResourceId,
+};
 pub use shadow_atlas::{
     priority as shadow_priority, wanted_size as shadow_wanted_size, AtlasPlan, ShadowAtlas,
     ShadowRequest, ShadowSlot, TILE_SIZES,

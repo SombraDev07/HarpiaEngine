@@ -54,7 +54,10 @@ fn candidate_json_files() -> Vec<PathBuf> {
         push_dir(&mut out, sdk.join("etc/vulkan/explicit_layer.d"));
     }
 
-    push_dir(&mut out, PathBuf::from("/usr/share/vulkan/explicit_layer.d"));
+    push_dir(
+        &mut out,
+        PathBuf::from("/usr/share/vulkan/explicit_layer.d"),
+    );
     push_dir(
         &mut out,
         PathBuf::from("/usr/local/share/vulkan/explicit_layer.d"),

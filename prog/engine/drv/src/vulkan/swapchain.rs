@@ -1,9 +1,9 @@
+use ash::Device;
 use ash::khr;
 use ash::vk;
-use ash::Device;
 
 use crate::types::{Extent2D, Format};
-use crate::{RhiError, Result};
+use crate::{Result, RhiError};
 
 pub struct Swapchain {
     pub raw: vk::SwapchainKHR,
@@ -48,9 +48,11 @@ pub fn select_surface_format(formats: &[vk::SurfaceFormatKHR]) -> Result<vk::Sur
         vk::Format::R8G8B8A8_SRGB,
     ];
     for fmt in PREFER {
-        if let Some(s) = formats.iter().copied().find(|s| {
-            s.format == fmt && s.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
-        }) {
+        if let Some(s) = formats
+            .iter()
+            .copied()
+            .find(|s| s.format == fmt && s.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
+        {
             return Ok(s);
         }
     }
@@ -100,7 +102,11 @@ pub fn image_count(caps: &vk::SurfaceCapabilitiesKHR) -> u32 {
     n.max(caps.min_image_count)
 }
 
-pub unsafe fn destroy(device: &Device, swapchain_fn: &khr::swapchain::Device, swapchain: &mut Swapchain) {
+pub unsafe fn destroy(
+    device: &Device,
+    swapchain_fn: &khr::swapchain::Device,
+    swapchain: &mut Swapchain,
+) {
     for view in swapchain.views.drain(..) {
         unsafe { device.destroy_image_view(view, None) };
     }

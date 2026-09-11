@@ -16,10 +16,10 @@ use anyhow::{Context, Result};
 use harpia_app::{AppConfig, Sample, run};
 use harpia_math::{Mat4, Vec2, Vec3, Vec4};
 use harpia_render::{
-    CLIPMAP_LEVELS, CLIPMAP_N, CLIPMAP_PATCH, FlyCamera, GBUFFER_DEPTH_FORMAT, TerrainCb,
-    clipmap_patch_bounds, clipmap_patch_count, clipmap_patch_vertex_count,
-    clipmap_patches_per_level, clipmap_range, clipmap_vertex_count, color_desc, depth_desc,
-    terrain_height,
+    Access, CLIPMAP_LEVELS, CLIPMAP_N, CLIPMAP_PATCH, FlyCamera, GBUFFER_DEPTH_FORMAT, Load, Pass,
+    PassPlan, RenderGraph, TerrainCb, clipmap_patch_bounds, clipmap_patch_count,
+    clipmap_patch_vertex_count, clipmap_patches_per_level, clipmap_range, clipmap_vertex_count,
+    color_desc, depth_desc, terrain_height,
 };
 use harpia_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
@@ -141,6 +141,62 @@ impl Default for TerrainGate {
 }
 
 impl TerrainGate {
+    /// Declara o frame como um grafo, e devolve as barreiras já derivadas.
+    ///
+    /// Antes disto havia dois `storage_barrier_buffer` escritos à mão, e um deles
+    /// teve de ser **alargado** quando o `terrain_bounds.cs` passou a escrever o
+    /// que o `terrain_cull.cs` lê — um compute a alimentar outro compute. O modo
+    /// de falha sem essa barreira é intermitente, que é o pior de todos.
+    ///
+    /// Aqui as passes declaram o que tocam e as barreiras saem disso. Se amanhã
+    /// alguém puser outra pass pelo meio, elas mudam sozinhas.
+    ///
+    /// `bounds_stale` diz se o `terrain_bounds.cs` corre neste frame. Quando não
+    /// corre, a barreira bounds→cull também não faz falta — e é essa a diferença
+    /// entre um grafo e uma lista fixa de barreiras.
+    fn build_graph(&self, bounds_stale: bool) -> Result<(RenderGraph, Vec<PassPlan>)> {
+        let mut g = RenderGraph::new();
+        // As caixas sobrevivem entre frames: é a cache que faz o culling valer a
+        // pena. Marcá-las persistentes é o que diz ao grafo que podem ser lidas
+        // num frame em que ninguém as escreveu.
+        let bounds = g.persistent_buffer("bounds", self.bounds_buf.context("bounds")?);
+        let visible = g.buffer("visible", self.visible_buf.context("visible")?);
+        let args = g.buffer("args", self.args_buf.context("args")?);
+        let color = g.texture("color", self.color.context("color")?);
+        let depth = g.texture("depth", self.depth.context("depth")?);
+
+        if bounds_stale {
+            g.pass(Pass::new("bounds").uses(bounds, Access::StorageWrite));
+        }
+        g.pass(
+            Pass::new("cull")
+                .uses(bounds, Access::StorageRead)
+                .uses(visible, Access::StorageWrite)
+                .uses(args, Access::StorageWrite),
+        );
+        g.pass(
+            Pass::new("terrain")
+                .uses(args, Access::Indirect)
+                .uses(visible, Access::StorageRead)
+                .uses(color, Access::ColorWrite)
+                .uses(depth, Access::DepthWrite)
+                .load(color, Load::Clear([0.62, 0.72, 0.86, 1.0]))
+                .load(depth, Load::Clear([1.0, 0.0, 0.0, 0.0])),
+        );
+        g.pass(Pass::new("blit").uses(color, Access::Sampled));
+
+        if let Err(errors) = g.validate() {
+            let msg = errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            anyhow::bail!("render graph inválido: {msg}");
+        }
+        let plans = g.compile();
+        Ok((g, plans))
+    }
+
     fn recreate(&mut self, gpu: &mut Gpu, extent: Extent2D) -> Result<()> {
         let w = extent.width.max(1);
         let h = extent.height.max(1);
@@ -306,6 +362,12 @@ impl Sample for TerrainGate {
         self.levels_rebuilt += stale.len() as u64;
         self.frames_counted += 1;
 
+        // O frame declarado como grafo. As barreiras que se seguem vêm daqui, e
+        // não de raciocínio caso a caso.
+        let (_graph, plans) = self.build_graph(!stale.is_empty())?;
+        let mut plan = plans.into_iter();
+        let mut next_barriers = move || plan.next().map(|p| p.barriers).unwrap_or_default();
+
         if !stale.is_empty() {
             let bounds_pso = self.bounds_pso.as_ref().context("bounds pso")?;
             let mut levels = [Vec4::ZERO; 2];
@@ -331,8 +393,8 @@ impl Sample for TerrainGate {
             gpu.write_frame_bytes(one(&upd))?;
             gpu.set_compute_pipeline(bounds_pso)?;
             gpu.bind_compute_bindless()?;
+            gpu.barriers(&next_barriers())?;
             gpu.dispatch(stale.len() as u32 * clipmap_patches_per_level(), 1, 1)?;
-            gpu.storage_barrier_buffer(self.bounds_buf.context("bounds")?)?;
         }
         gpu.mark("bounds");
 
@@ -345,17 +407,18 @@ impl Sample for TerrainGate {
             )?;
         } else {
             gpu.write_frame_bytes(one(&cull))?;
+            gpu.barriers(&next_barriers())?;
             gpu.set_compute_pipeline(cull_pso)?;
             gpu.bind_compute_bindless()?;
             // Um workgroup por patch: as 81 amostras de altura repartem-se pelas lanes.
             gpu.dispatch(clipmap_patch_count(), 1, 1)?;
-            gpu.storage_barrier_buffer(args)?;
         }
         gpu.mark("cull");
 
         gpu.write_frame_bytes(cb.as_bytes())?;
 
         // O clear é radiância do céu, não uma cor: o alvo é linear.
+        gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(&[color], Some(depth), &[[0.62, 0.72, 0.86, 1.0]], Some(1.0))?;
         gpu.set_pipeline(pso)?;
         gpu.bind_graphics_bindless()?;
@@ -365,6 +428,7 @@ impl Sample for TerrainGate {
         gpu.end_color_pass()?;
         gpu.mark("terrain");
 
+        gpu.barriers(&next_barriers())?;
         cb.scene = gpu.bindless_index(color)?;
         gpu.write_frame_bytes(cb.as_bytes())?;
         gpu.begin_swapchain_pass([0.0, 0.0, 0.0, 1.0])?;

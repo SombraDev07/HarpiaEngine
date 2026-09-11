@@ -2,6 +2,7 @@ use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::null::NullGpu;
 use crate::types::{
+    BarrierDesc,
     Backend, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo,
     GpuStats, GraphicsPipeline, PipelineTargets, Texture, TextureData, TextureDesc,
 };
@@ -146,6 +147,8 @@ pub trait Device {
     /// Reescreve-o. O tamanho não pode crescer.
     fn write_storage_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Result<()>;
     /// Desenha com argumentos vindos de um buffer. Cinco `u32` por draw.
+    /// Emite as barreiras que o render graph derivou.
+    fn barriers(&mut self, list: &[BarrierDesc]) -> Result<()>;
     fn clear_depth_rect(&mut self, x: u32, y: u32, w: u32, h: u32, value: f32) -> Result<()>;
     fn draw_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()>;
     fn draw_indexed_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()>;
@@ -285,6 +288,10 @@ impl Device for Gpu {
 
     fn write_storage_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Result<()> {
         gpu!(self, write_storage_buffer, buffer, bytes)
+    }
+
+    fn barriers(&mut self, list: &[BarrierDesc]) -> Result<()> {
+        gpu!(self, barriers, list)
     }
 
     fn clear_depth_rect(&mut self, x: u32, y: u32, w: u32, h: u32, value: f32) -> Result<()> {

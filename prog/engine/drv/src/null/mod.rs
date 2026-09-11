@@ -151,6 +151,10 @@ impl NullGpu {
         Ok(())
     }
 
+    pub fn barriers(&mut self, _list: &[crate::types::BarrierDesc]) -> crate::Result<()> {
+        Ok(())
+    }
+
     pub fn clear_depth_rect(&mut self, _x: u32, _y: u32, _w: u32, _h: u32, _v: f32) -> crate::Result<()> {
         Ok(())
     }

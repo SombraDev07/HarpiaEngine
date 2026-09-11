@@ -9,8 +9,8 @@ mod window;
 
 use std::ffi::{CStr, CString};
 use std::io::Cursor;
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 use ash::ext::debug_utils;
 use ash::khr;
@@ -20,14 +20,15 @@ use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 
 use crate::device::{ComputePipelineDesc, DeviceDesc, GraphicsPipelineDesc};
 use crate::types::{
-    Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo, GraphicsPipeline,
-    GpuStats, Texture, TextureData, TextureDesc, TextureDim, MAX_TIMESTAMPS,
-    PUSH_CONSTANTS_SIZE, STORAGE_BUFFER_SLOTS,
+    Barrier, BarrierDesc, Buffer, ComputePipeline, Extent2D, Format, FrameConstants, FrameInfo,
+    GpuStats, GraphicsPipeline, MAX_TIMESTAMPS, PUSH_CONSTANTS_SIZE, STORAGE_BUFFER_SLOTS, Texture,
+    TextureData, TextureDesc, TextureDim,
 };
-use crate::{RhiError, Result, FRAMES_IN_FLIGHT};
+use crate::{FRAMES_IN_FLIGHT, Result, RhiError};
 
 const FRAME_TIMEOUT_NS: u64 = 2_000_000_000;
-const VALIDATION_LAYER: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") };
+const VALIDATION_LAYER: &CStr =
+    unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") };
 
 struct FrameSlot {
     cmd: vk::CommandBuffer,
@@ -123,7 +124,8 @@ impl VulkanGpu {
         }
 
         let app_name = CString::new(desc.app_name).map_err(|_| RhiError::BadCString)?;
-        let engine_name = CString::new(harpia_core::ENGINE_NAME).map_err(|_| RhiError::BadCString)?;
+        let engine_name =
+            CString::new(harpia_core::ENGINE_NAME).map_err(|_| RhiError::BadCString)?;
         let app_info = vk::ApplicationInfo::default()
             .application_name(app_name.as_c_str())
             .application_version(harpia_core::engine_vk_version())
@@ -163,12 +165,28 @@ impl VulkanGpu {
             .pfn_user_callback(Some(debug::debug_callback))
             .user_data(user_data);
 
+        // **Synchronization validation.**
+        //
+        // O render graph deriva as barreiras do que as passes declaram, e por isso
+        // não pode saber de um acesso que alguém se **esqueceu** de declarar — o
+        // resultado é uma barreira em falta, em silêncio, e a validation normal não
+        // dá por ela: não é uso indevido da API, é uma corrida.
+        //
+        // Esta feature dá. É o outro lado do par: o grafo declara, a camada
+        // verifica. Custa tempo de execução e por isso só entra com `--validation 1`,
+        // que é o modo dos gates.
+        let sync_features = [vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION];
+        let mut validation_features =
+            vk::ValidationFeaturesEXT::default().enabled_validation_features(&sync_features);
+
         let mut instance_ci = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
             .enabled_extension_names(&ext_ptrs)
             .enabled_layer_names(&layer_ptrs);
         if desc.validation {
-            instance_ci = instance_ci.push_next(&mut debug_ci);
+            instance_ci = instance_ci
+                .push_next(&mut debug_ci)
+                .push_next(&mut validation_features);
         }
 
         let instance = unsafe { entry.create_instance(&instance_ci, None)? };
@@ -187,9 +205,8 @@ impl VulkanGpu {
         };
 
         let surface_fn = khr::surface::Instance::new(&entry, &instance);
-        let surface = unsafe {
-            window::create_surface(&entry, &instance, handles.display, handles.window)?
-        };
+        let surface =
+            unsafe { window::create_surface(&entry, &instance, handles.display, handles.window)? };
 
         let (phys, graphics_family) = pick_device(&instance, &surface_fn, surface)?;
         let props = unsafe { instance.get_physical_device_properties(phys) };
@@ -208,7 +225,10 @@ impl VulkanGpu {
             return Err(RhiError::msg("GPU lacks dynamic rendering (Vulkan 1.3)"));
         }
         require_true(avail12.descriptor_indexing, "descriptorIndexing")?;
-        require_true(avail12.descriptor_binding_partially_bound, "descriptorBindingPartiallyBound")?;
+        require_true(
+            avail12.descriptor_binding_partially_bound,
+            "descriptorBindingPartiallyBound",
+        )?;
         require_true(
             avail12.descriptor_binding_sampled_image_update_after_bind,
             "descriptorBindingSampledImageUpdateAfterBind",
@@ -591,7 +611,10 @@ impl VulkanGpu {
         let slot = (self.frame_index as usize) % self.frames.len();
         let fence = self.frames[slot].fence;
         unsafe {
-            match self.device.wait_for_fences(&[fence], true, FRAME_TIMEOUT_NS) {
+            match self
+                .device
+                .wait_for_fences(&[fence], true, FRAME_TIMEOUT_NS)
+            {
                 Ok(()) => {}
                 Err(vk::Result::TIMEOUT) => return Err(RhiError::FrameTimeout),
                 Err(e) => return Err(RhiError::from_vk(e)),
@@ -691,7 +714,18 @@ impl VulkanGpu {
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::AccessFlags::empty(),
                 vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
+                // `COLOR_ATTACHMENT_OUTPUT` e **não** `TOP_OF_PIPE`.
+                //
+                // O submit espera pelo `image_available` em
+                // `COLOR_ATTACHMENT_OUTPUT`. Uma transição emitida em
+                // `TOP_OF_PIPE` pode correr **antes** dessa espera fazer efeito, e
+                // então escreve-se o layout de uma imagem que o motor de
+                // apresentação ainda está a ler: WRITE_AFTER_READ.
+                //
+                // Esteve assim desde a fase 1 e nunca deu sinal: a validation
+                // normal não vê corridas, só uso indevido da API. Apareceu no
+                // minuto em que se ligou a *synchronization validation* (D53).
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             );
 
@@ -838,7 +872,10 @@ impl VulkanGpu {
             .swapchains(std::slice::from_ref(&self.swapchain.raw))
             .image_indices(std::slice::from_ref(&self.image_index));
 
-        match unsafe { self.swapchain_fn.queue_present(self.graphics_queue, &present) } {
+        match unsafe {
+            self.swapchain_fn
+                .queue_present(self.graphics_queue, &present)
+        } {
             Ok(_) => {}
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
                 self.pending_recreate = true;
@@ -877,12 +914,17 @@ impl VulkanGpu {
         self.swapchain.extent2d()
     }
 
-    pub fn create_graphics_pipeline(&mut self, desc: &GraphicsPipelineDesc<'_>) -> Result<GraphicsPipeline> {
+    pub fn create_graphics_pipeline(
+        &mut self,
+        desc: &GraphicsPipelineDesc<'_>,
+    ) -> Result<GraphicsPipeline> {
         if desc.vs_spirv.is_empty() {
             return Err(RhiError::msg("vertex SPIR-V is empty"));
         }
         if desc.targets.depth_only && !desc.targets.color_formats.is_empty() {
-            return Err(RhiError::msg("depth_only PSO must have empty color_formats"));
+            return Err(RhiError::msg(
+                "depth_only PSO must have empty color_formats",
+            ));
         }
         if !desc.targets.depth_only && desc.fs_spirv.is_empty() {
             return Err(RhiError::msg("fragment SPIR-V is empty"));
@@ -908,10 +950,12 @@ impl VulkanGpu {
 
         let vs_entry = CString::new(desc.vs_entry).map_err(|_| RhiError::BadCString)?;
         let fs_entry = CString::new(desc.fs_entry).map_err(|_| RhiError::BadCString)?;
-        let mut stages = vec![vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::VERTEX)
-            .module(vs_mod)
-            .name(vs_entry.as_c_str())];
+        let mut stages = vec![
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vs_mod)
+                .name(vs_entry.as_c_str()),
+        ];
         if let Some(fs) = fs_mod {
             stages.push(
                 vk::PipelineShaderStageCreateInfo::default()
@@ -1012,7 +1056,8 @@ impl VulkanGpu {
                 .collect::<Result<Vec<_>>>()?
         };
         let blend_attachments = vec![blend_attachment; color_vk.len()];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
@@ -1334,8 +1379,7 @@ impl VulkanGpu {
         };
         let bpp = resources::bytes_per_pixel(format)?;
         let aspect = resources::aspect_for(format);
-        let size =
-            resources::row_pitch_bytes(width, bpp) as u64 * height as u64 * slices as u64;
+        let size = resources::row_pitch_bytes(width, bpp) as u64 * height as u64 * slices as u64;
 
         unsafe {
             self.device.device_wait_idle()?;
@@ -1559,16 +1603,17 @@ impl VulkanGpu {
         Ok(())
     }
 
-    pub fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> Result<ComputePipeline> {
+    pub fn create_compute_pipeline(
+        &mut self,
+        desc: &ComputePipelineDesc<'_>,
+    ) -> Result<ComputePipeline> {
         if desc.cs_spirv.is_empty() {
             return Err(RhiError::msg("SPIR-V module is empty"));
         }
         let words = ash::util::read_spv(&mut Cursor::new(desc.cs_spirv))?;
         let module = unsafe {
-            self.device.create_shader_module(
-                &vk::ShaderModuleCreateInfo::default().code(&words),
-                None,
-            )?
+            self.device
+                .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&words), None)?
         };
         let entry = CString::new(desc.cs_entry).map_err(|_| RhiError::BadCString)?;
         let layout = self
@@ -1641,6 +1686,105 @@ impl VulkanGpu {
         unsafe {
             self.device
                 .cmd_dispatch(self.frames[self.slot].cmd, x, y, z);
+        }
+        Ok(())
+    }
+
+    /// Emite as barreiras que o render graph derivou.
+    ///
+    /// Os códigos `src`/`dst` vêm do `harpia-render`, que por D0 não conhece
+    /// `vk::*`. A tabela que os traduz está aqui e é a única no motor — antes
+    /// disto, cada sample escolhia estágios e máscaras à mão, e cada escolha era
+    /// um sítio onde se podia errar em silêncio.
+    pub fn barriers(&mut self, list: &[BarrierDesc]) -> Result<()> {
+        if !self.in_frame {
+            return Err(RhiError::NotInFrame);
+        }
+        if self.in_pass {
+            return Err(RhiError::PassMismatch);
+        }
+        for b in list {
+            match b.resource {
+                Barrier::Texture(tex) => self.barrier_texture(tex, b.src, b.dst)?,
+                Barrier::Buffer(buf) => self.barrier_buffer(buf, b.src, b.dst)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn barrier_texture(&mut self, tex: Texture, src: u32, dst: u32) -> Result<()> {
+        let img = self
+            .images
+            .get(tex.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid texture"))?;
+        let image = img.image;
+        let format = img.format;
+        // O layout de onde se vem é o que o RHI tem registado, não o que o código
+        // do acesso anterior sugere: um recurso pode ter sido posto noutro layout
+        // por um caminho que o grafo não vê (um upload, por exemplo).
+        let old_layout = img.layout;
+        let (src_stage, src_access, _) = access_bits(src);
+        let (dst_stage, dst_access, dst_layout) = access_bits(dst);
+        let new_layout = if dst_layout == vk::ImageLayout::UNDEFINED {
+            old_layout
+        } else {
+            dst_layout
+        };
+        // `format` aqui já é `vk::Format`: o aspecto sai dele, não do enum neutro.
+        let aspect = if matches!(
+            format,
+            vk::Format::D32_SFLOAT | vk::Format::D24_UNORM_S8_UINT | vk::Format::D32_SFLOAT_S8_UINT
+        ) {
+            vk::ImageAspectFlags::DEPTH
+        } else {
+            vk::ImageAspectFlags::COLOR
+        };
+        unsafe {
+            resources::image_barrier_aspect(
+                &self.device,
+                self.frames[self.slot].cmd,
+                image,
+                old_layout,
+                new_layout,
+                src_access,
+                dst_access,
+                src_stage,
+                dst_stage,
+                aspect,
+            );
+        }
+        if let Some(img) = self.images.get_mut(tex.id as usize) {
+            img.layout = new_layout;
+        }
+        Ok(())
+    }
+
+    fn barrier_buffer(&mut self, buf: Buffer, src: u32, dst: u32) -> Result<()> {
+        let raw = self
+            .buffers
+            .get(buf.id as usize)
+            .ok_or_else(|| RhiError::msg("invalid buffer"))?
+            .buffer;
+        let (src_stage, src_access, _) = access_bits(src);
+        let (dst_stage, dst_access, _) = access_bits(dst);
+        let barrier = vk::BufferMemoryBarrier::default()
+            .src_access_mask(src_access)
+            .dst_access_mask(dst_access)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(raw)
+            .offset(0)
+            .size(vk::WHOLE_SIZE);
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                self.frames[self.slot].cmd,
+                src_stage,
+                dst_stage,
+                vk::DependencyFlags::empty(),
+                &[],
+                std::slice::from_ref(&barrier),
+                &[],
+            );
         }
         Ok(())
     }
@@ -2375,7 +2519,9 @@ impl Drop for VulkanGpu {
             self.device.destroy_device(None);
             self.surface_fn.destroy_surface(self.surface, None);
             if let Some(debug) = self.debug.take() {
-                debug.loader.destroy_debug_utils_messenger(debug.messenger, None);
+                debug
+                    .loader
+                    .destroy_debug_utils_messenger(debug.messenger, None);
                 debug::release_error_counter(debug.user_data);
             }
             self.instance.destroy_instance(None);
@@ -2457,3 +2603,69 @@ fn find_graphics_present(
     Ok(None)
 }
 
+/// A única tabela que traduz um acesso do render graph para Vulkan.
+///
+/// A ordem dos códigos é a do `Access` em `harpia_render::graph`. São um `u32` e
+/// não um enum partilhado porque a seta das dependências vai do render para o
+/// RHI, e o vocabulário de acessos vive do lado de cima.
+fn access_bits(code: u32) -> (vk::PipelineStageFlags, vk::AccessFlags, vk::ImageLayout) {
+    match code {
+        // ColorWrite
+        0 => (
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::COLOR_ATTACHMENT_READ,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        ),
+        // DepthWrite
+        1 => (
+            vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+            vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
+                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
+            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        ),
+        // DepthRead
+        2 => (
+            vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+            vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
+            vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        ),
+        // Sampled
+        3 => (
+            resources::shader_read_stages(),
+            vk::AccessFlags::SHADER_READ,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        ),
+        // StorageRead
+        4 => (
+            resources::shader_read_stages(),
+            vk::AccessFlags::SHADER_READ,
+            vk::ImageLayout::GENERAL,
+        ),
+        // StorageWrite
+        5 => (
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::AccessFlags::SHADER_WRITE,
+            vk::ImageLayout::GENERAL,
+        ),
+        // Indirect
+        6 => (
+            vk::PipelineStageFlags::DRAW_INDIRECT,
+            vk::AccessFlags::INDIRECT_COMMAND_READ,
+            vk::ImageLayout::UNDEFINED,
+        ),
+        // VertexInput
+        7 => (
+            vk::PipelineStageFlags::VERTEX_INPUT,
+            vk::AccessFlags::VERTEX_ATTRIBUTE_READ | vk::AccessFlags::INDEX_READ,
+            vk::ImageLayout::UNDEFINED,
+        ),
+        // HostWrite, e o caso «primeiro toque»: o conteúdo vem de fora do grafo.
+        _ => (
+            vk::PipelineStageFlags::TOP_OF_PIPE | vk::PipelineStageFlags::HOST,
+            vk::AccessFlags::HOST_WRITE,
+            vk::ImageLayout::UNDEFINED,
+        ),
+    }
+}

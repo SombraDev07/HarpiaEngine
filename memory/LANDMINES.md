@@ -330,3 +330,13 @@ output.**
   culpar a cena: desenha o valor intermédio em vez da cor. As sombras mudavam 1.7%
   dos pixels e pareciam partidas; a visualização do factor de sombra mostrou o poço
   do projector com as sombras certas lá dentro (D52).
+- **A validation normal não vê corridas.** `SYNC-HAZARD-WRITE-AFTER-READ` na
+  swapchain esteve na árvore desde a fase 1, em todos os binários, com
+  `validation_errors=0` o tempo todo. Só aparece com
+  `VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION` ligada (D53).
+- Uma transição de layout da imagem da swapchain tem de ser emitida no **mesmo
+  estágio em que o submit espera pelo semáforo do acquire**. Em `TOP_OF_PIPE` ela
+  pode correr antes da espera fazer efeito (D53).
+- Um render graph só sabe o que lhe declaram: um acesso esquecido é uma barreira em
+  falta, em silêncio. O grafo e a sync validation são um par — um declara, a outra
+  verifica — e nenhum dos dois chega sozinho (D53).

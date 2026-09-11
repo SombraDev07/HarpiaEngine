@@ -1,12 +1,12 @@
 //! Images, staging buffers, copies. `vk::*` stays in `drv`.
 
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
-use gpu_allocator::MemoryLocation;
-use ash::vk;
 use ash::Device;
+use ash::vk;
+use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
 
 use crate::types::{Format, TextureDesc, TextureDim};
-use crate::{RhiError, Result};
+use crate::{Result, RhiError};
 
 /// `copy_buffer_to_texture` row pitch. Landmine 9.
 pub const ROW_PITCH_ALIGN: u32 = 256;

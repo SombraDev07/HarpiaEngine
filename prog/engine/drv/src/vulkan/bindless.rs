@@ -1,18 +1,18 @@
 //! Bindless heap 8192, slot 0 = dummy. Spec: `docs/Bindless-Descriptor-Layout.md`.
 
-use ash::vk;
 use ash::Device;
-use gpu_allocator::vulkan::Allocator;
+use ash::vk;
 use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::Allocator;
 use harpia_core::{BINDLESS_HEAP_SIZE, BINDLESS_NULL_SLOT};
 
 use super::resources::{self, GpuBuffer, GpuImage};
 use crate::types::{
-    Format, FrameConstants, TextureDesc, TextureDim, FRAME_CBV_CHUNKS, FRAME_CBV_RING_SIZE,
-    FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE, STORAGE_BUFFER_SLOTS, VOLUME_SRV_SLOTS,
+    FRAME_CBV_CHUNKS, FRAME_CBV_RING_SIZE, FRAME_UBO_SIZE, Format, FrameConstants,
+    PUSH_CONSTANTS_SIZE, STORAGE_BUFFER_SLOTS, TextureDesc, TextureDim, VOLUME_SRV_SLOTS,
     VOLUME_UAV_SLOTS,
 };
-use crate::{RhiError, Result, FRAMES_IN_FLIGHT};
+use crate::{FRAMES_IN_FLIGHT, Result, RhiError};
 
 /// `range` of set 0 binding 0. The buffer behind it is a ring of these.
 const UBO_SIZE: u64 = FRAME_UBO_SIZE;
@@ -43,11 +43,7 @@ pub struct Bindless {
 }
 
 impl Bindless {
-    pub fn create(
-        device: &Device,
-        allocator: &mut Allocator,
-        min_ubo_align: u64,
-    ) -> Result<Self> {
+    pub fn create(device: &Device, allocator: &mut Allocator, min_ubo_align: u64) -> Result<Self> {
         if min_ubo_align == 0 || UBO_SIZE % min_ubo_align != 0 {
             return Err(RhiError::msg(format!(
                 "FRAME_UBO_SIZE {UBO_SIZE} is not a multiple of minUniformBufferOffsetAlignment {min_ubo_align}"
@@ -536,7 +532,14 @@ impl Bindless {
     }
 
     pub fn bind_graphics(&self, device: &Device, cmd: vk::CommandBuffer, slot: usize, cbv: u32) {
-        let sets = [self.set0[slot], self.set1, self.set2, self.set3, self.set4, self.set5];
+        let sets = [
+            self.set0[slot],
+            self.set1,
+            self.set2,
+            self.set3,
+            self.set4,
+            self.set5,
+        ];
         unsafe {
             device.cmd_bind_descriptor_sets(
                 cmd,
@@ -550,7 +553,13 @@ impl Bindless {
     }
 
     /// Re-point set 0 at another chunk. Sets 1–4 stay bound.
-    pub fn bind_graphics_cbv(&self, device: &Device, cmd: vk::CommandBuffer, slot: usize, cbv: u32) {
+    pub fn bind_graphics_cbv(
+        &self,
+        device: &Device,
+        cmd: vk::CommandBuffer,
+        slot: usize,
+        cbv: u32,
+    ) {
         unsafe {
             device.cmd_bind_descriptor_sets(
                 cmd,
@@ -564,7 +573,14 @@ impl Bindless {
     }
 
     pub fn bind_compute(&self, device: &Device, cmd: vk::CommandBuffer, slot: usize, cbv: u32) {
-        let sets = [self.set0[slot], self.set1, self.set2, self.set3, self.set4, self.set5];
+        let sets = [
+            self.set0[slot],
+            self.set1,
+            self.set2,
+            self.set3,
+            self.set4,
+            self.set5,
+        ];
         unsafe {
             device.cmd_bind_descriptor_sets(
                 cmd,

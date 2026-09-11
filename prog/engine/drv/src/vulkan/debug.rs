@@ -1,7 +1,7 @@
 use std::ffi::CStr;
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use ash::vk;
 
