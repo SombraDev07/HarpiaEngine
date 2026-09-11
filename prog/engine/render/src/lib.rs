@@ -10,6 +10,7 @@ mod csm;
 mod fly_camera;
 mod fog;
 mod gltf_scene;
+mod heightmap;
 mod ibl;
 mod lighting;
 mod lights;
@@ -41,6 +42,9 @@ pub use lights::{
 pub use terrain::{CLIPMAP_PATCH, clipmap_patch_grid, clipmap_patches_per_level, clipmap_patch_count, clipmap_patch_vertex_count, clipmap_patch_bounds, 
     clipmap_range, clipmap_vertex_count, terrain_height, terrain_normal, TerrainCb, CLIPMAP_CELL,
     CLIPMAP_LEVELS, CLIPMAP_N, TERRAIN_OCTAVES,
+};
+pub use heightmap::{
+    tile_of, HeightTile, HeightmapField, PatchBounds, TILE_MIPS, TILE_N, TILE_SIZE, TILE_SPACING,
 };
 pub use csm::{compute as compute_csm, Camera, Csm, CASCADE_COUNT, DEFAULT_ATLAS_SIZE};
 pub use fog::{
