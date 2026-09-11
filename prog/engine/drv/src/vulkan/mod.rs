@@ -272,7 +272,13 @@ impl VulkanGpu {
             )));
         }
 
-        let mut vk13 = vk::PhysicalDeviceVulkan13Features::default().dynamic_rendering(true);
+        // `maintenance4` porque o glslang, com `--target-env vulkan1.3` (SPIR-V 1.6),
+        // escreve o `local_size` do mesh shader como `LocalSizeId`, e isso exige a
+        // feature (VUID-RuntimeSpirv-LocalSizeId-06434). É obrigatória em 1.3, que é
+        // o mínimo que o `pick_device` aceita.
+        let mut vk13 = vk::PhysicalDeviceVulkan13Features::default()
+            .dynamic_rendering(true)
+            .maintenance4(avail13.maintenance4 == vk::TRUE);
         let mut vk12 = vk::PhysicalDeviceVulkan12Features::default()
             .descriptor_indexing(true)
             .descriptor_binding_partially_bound(true)
@@ -1959,19 +1965,22 @@ impl VulkanGpu {
         if !self.in_pass {
             return Err(RhiError::PassMismatch);
         }
-        let layout = self
+        let (layout, stages) = self
             .bindless
             .as_ref()
-            .ok_or_else(|| RhiError::msg("bindless layout missing"))?
-            .pipeline_layout;
+            .map(|b| (b.pipeline_layout, b.push_stages))
+            .ok_or_else(|| RhiError::msg("bindless layout missing"))?;
         let mut tmp = [0u8; PUSH_CONSTANTS_SIZE as usize];
         let n = data.len().min(tmp.len());
         tmp[..n].copy_from_slice(&data[..n]);
         unsafe {
+            // As `stageFlags` da range inteira, não um subconjunto fixo: com mesh
+            // shaders a range ganhou MESH|TASK e aqui continuava VERTEX|FRAGMENT --
+            // erro de validation em todos os samples, e o mesh shader sem valores.
             self.device.cmd_push_constants(
                 self.frames[self.slot].cmd,
                 layout,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                stages,
                 0,
                 &tmp,
             );

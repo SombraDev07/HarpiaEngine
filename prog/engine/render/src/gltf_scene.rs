@@ -340,6 +340,13 @@ pub fn pack_meshlets(meshlets: &[Meshlet], indices: &[u32]) -> MeshletData {
         let tris = m.index_count as usize / 3;
         let mut local: Vec<u32> = Vec::with_capacity(MESHLET_VERTS);
         let mut tri_buf: Vec<u32> = Vec::with_capacity(MESHLET_PRIMS);
+        // Os índices saem **globais**, e é aqui que se rebaseiam. O index buffer
+        // partilhado guarda-os relativos à primitiva: no caminho clássico quem os
+        // rebaseia é o `vertexOffset` do comando de draw, e um dispatch de mesh
+        // tasks não tem `vertexOffset` nenhum. Sem isto cada meshlet lê os vértices
+        // da primeira primitiva -- a Sponza sai um emaranhado, sem um único erro de
+        // validation.
+        let base = m.vertex_offset as u32;
         let flush = |local: &mut Vec<u32>, tri_buf: &mut Vec<u32>, out: &mut MeshletData| {
             if tri_buf.is_empty() {
                 return;
@@ -350,7 +357,7 @@ pub fn pack_meshlets(meshlets: &[Meshlet], indices: &[u32]) -> MeshletData {
                 triangle_offset: out.triangles.len() as u32,
                 triangle_count: tri_buf.len() as u32,
             });
-            out.vertices.append(local);
+            out.vertices.extend(local.drain(..).map(|g| g + base));
             out.triangles.append(tri_buf);
         };
         for t in 0..tris {
@@ -753,6 +760,54 @@ mod meshlet_tests {
         a.sort_unstable();
         b.sort_unstable();
         assert_eq!(a, b, "os triângulos não são os mesmos");
+    }
+
+    /// Os índices do formato canónico são **globais**, não relativos à primitiva.
+    ///
+    /// No caminho clássico quem os rebaseia é o `vertexOffset` do comando de draw.
+    /// Um dispatch de mesh tasks não tem nenhum, e um índice por rebasear lê o
+    /// vértice de outra primitiva — sem um único erro de validation. Foi o que pôs
+    /// a Sponza a desenhar um emaranhado no primeiro frame que o caminho completou.
+    #[test]
+    fn packing_rebases_indices_to_the_shared_vertex_buffer() {
+        const BASE: u32 = 10_000;
+        let p = grid(12);
+        let (ml, idx) = build_meshlets(&p, 0, 64, MESHLET_VERTS);
+        let moved: Vec<Meshlet> = ml
+            .iter()
+            .map(|m| Meshlet {
+                vertex_offset: BASE as i32,
+                ..*m
+            })
+            .collect();
+
+        let at_zero = pack_meshlets(&ml, &idx);
+        let rebased = pack_meshlets(&moved, &idx);
+
+        assert_eq!(
+            at_zero.vertices.len(),
+            rebased.vertices.len(),
+            "o rebaseamento mudou o número de vértices"
+        );
+        for (i, (a, b)) in at_zero.vertices.iter().zip(&rebased.vertices).enumerate() {
+            assert_eq!(*b, *a + BASE, "vértice {i} não foi rebaseado");
+        }
+        // Os índices locais e os triângulos não mudam: o que muda é só para onde a
+        // lista de vértices aponta no buffer partilhado.
+        assert_eq!(at_zero.triangles, rebased.triangles);
+        for r in &rebased.meshlets {
+            for t in 0..r.triangle_count as usize {
+                let tri = rebased.triangles[r.triangle_offset as usize + t];
+                for k in 0..3 {
+                    let li = ((tri >> (k * 8)) & 0xff) as usize;
+                    let g = rebased.vertices[r.vertex_offset as usize + li];
+                    assert!(
+                        g >= BASE && (g - BASE) < p.vertices.len() as u32,
+                        "triângulo {t} aponta para o vértice global {g}, fora da primitiva"
+                    );
+                }
+            }
+        }
     }
 
     /// Os limites são do hardware, não uma preferência: exceder um deles é um

@@ -36,6 +36,10 @@ cargo run -p gate-water
 cargo run -p gate-rain
 cargo run -p sponza -- --frames 90
 # assets: python3 prog/tools/fetch_sponza.py  (glTF gitignored)
+# um caminho novo que possa pendurar a GPU corre-se primeiro em CPU (D60):
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json MESA_VK_ABORT_ON_DEVICE_LOSS=1 \
+  ./target/release/sponza --frames 16 --capture /tmp/lvp -- --mesh
+# confirma antes que só o llvmpipe aparece: vulkaninfo --summary | grep deviceName
 # pixels, não screenshots:
 cargo run -p sponza -- --frames 120 --capture /tmp/spz     # .scene.png + .shadow-atlas.png
 cargo run -p gate-csm -- --frames 40 --capture /tmp/csm
@@ -847,3 +851,39 @@ A imagem é idêntica ao pixel em todos os tamanhos.
 E um erro que a medição apanhou: a primeira versão ordenava por Morton **sempre**,
 mesmo com um meshlet só. Aí não agrupa nada e estraga a localidade que o ficheiro já
 tinha — 0.736 → 0.772 ms, 5% por nada.
+
+## Mesh shaders: desenham, e continuam por medir (2026-09-11)
+
+O caminho tinha sido escrito e nunca corrido — pendurou a GPU à primeira, o reset à
+mão deixou 31 objectos do git a zero bytes, e o commit voltou inteiro do `origin`.
+Retomado, tinha **cinco** erros: quatro que a validation dizia e um que não aparecia
+em lado nenhum. Estão todos em `DECISIONS.md` (D60) e em `LANDMINES.md`.
+
+O que os apanhou sem arriscar a máquina outra vez foi correr o caminho **em CPU**,
+no lavapipe: o mesmo comportamento indefinido que pendura a placa dá ali um segfault
+do processo. Passou a ser o primeiro passo de qualquer caminho novo de GPU.
+
+| | por omissão | `-- --mesh` |
+|---|---|---|
+| lavapipe, 16 frames | `validation_errors=0` | `validation_errors=0` |
+| meshlets | 103 | 4 912 (culling corta 974) |
+| `scene` vs omissão | — | **271 px de 921 600**, máx. 1/255 |
+| `composite` | — | 321 px, máx. 1/255 |
+| `shadow-atlas` | — | **0 px** |
+
+O ±1 é arredondamento entre o VS e o MS a fazer a mesma conta. `gate-pbr-grid`,
+`gate-csm` e `gate-bindless` também verdes no lavapipe — era o que a mudança das
+push constants precisava, porque afecta todos os samples. 94 testes de CPU.
+
+E uma regressão que veio com o D59: o empacotamento corria sempre, e a Sponza **por
+omissão** recusava arrancar em todos os backends, Null incluído. Agora só corre com
+`--mesh`.
+
+O app deixou de submeter um frame depois de um erro de validation — a conta é lida
+antes do `end_frame()` e inclui o `init`. Controlo negativo com o set 3 partido de
+propósito: `refusing to submit the frame` em vez do segfault de antes.
+
+**Falta:** nada disto correu na RX 6700 desde o hang, portanto **não há medição** —
+que é a única razão pela qual os mesh shaders existem aqui. Até haver, `-- --mesh`
+fica opt-in. E isto é trabalho **fora de fase**: a árvore está na 6 e os mesh
+shaders são da 9.

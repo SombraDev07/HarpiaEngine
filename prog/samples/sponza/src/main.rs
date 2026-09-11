@@ -725,43 +725,53 @@ impl Sample for Sponza {
                 slot as u32,
             ]);
         }
-        // O formato canónico, pela **mesma ordem** dos comandos: o mesh shader usa
-        // `gl_WorkGroupID` como índice, portanto as duas tabelas têm de estar
-        // alinhadas ou cada meshlet desenha a geometria de outro.
-        let ordered: Vec<harpia_render::Meshlet> = order.iter().map(|&i| meshlets[i]).collect();
-        let packed = harpia_render::pack_meshlets(&ordered, &all_idx);
-        anyhow::ensure!(
-            packed.meshlets.len() == ordered.len(),
-            "o empacotamento partiu {} meshlets em {}: as tabelas deixariam de estar \
-             alinhadas com os comandos",
-            ordered.len(),
-            packed.meshlets.len()
-        );
-        // E verificado **antes** de subir: um `SetMeshOutputsEXT` com valores acima
-        // do que o shader declarou pendura a GPU, e um GPU hang não diz qual foi a
-        // linha. Melhor falhar aqui com o número.
-        for (i, r) in packed.meshlets.iter().enumerate() {
+        // Só o mesh shader lê o formato canónico, e só com ele se constrói. Sem
+        // `--mesh` há um meshlet por primitiva e nenhum tecto de vértices: o
+        // empacotamento partia-as para caberem nos 64 vértices de saída, o `ensure!`
+        // abaixo recusava arrancar, e a Sponza por omissão ficou partida em todos os
+        // backends desde que o mesh shader entrou.
+        if self.mesh_path {
+            // O formato canónico, pela **mesma ordem** dos comandos: o mesh shader
+            // usa `gl_WorkGroupID` como índice, portanto as duas tabelas têm de
+            // estar alinhadas ou cada meshlet desenha a geometria de outro.
+            let ordered: Vec<harpia_render::Meshlet> = order.iter().map(|&i| meshlets[i]).collect();
+            let packed = harpia_render::pack_meshlets(&ordered, &all_idx);
             anyhow::ensure!(
-                r.vertex_count as usize <= harpia_render::MESHLET_VERTS
-                    && r.triangle_count as usize <= harpia_render::MESHLET_PRIMS,
-                "meshlet {i} com {} vértices e {} triângulos: acima do que o mesh \
-                 shader declara ({} e {})",
-                r.vertex_count,
-                r.triangle_count,
-                harpia_render::MESHLET_VERTS,
-                harpia_render::MESHLET_PRIMS
+                packed.meshlets.len() == ordered.len(),
+                "o empacotamento partiu {} meshlets em {}: as tabelas deixariam de estar \
+                 alinhadas com os comandos",
+                ordered.len(),
+                packed.meshlets.len()
             );
-            anyhow::ensure!(
-                r.vertex_offset as usize + r.vertex_count as usize <= packed.vertices.len()
-                    && r.triangle_offset as usize + r.triangle_count as usize
-                        <= packed.triangles.len(),
-                "meshlet {i} aponta para fora dos buffers"
-            );
-        }
+            // E verificado **antes** de subir: um `SetMeshOutputsEXT` com valores
+            // acima do que o shader declarou pendura a GPU, e um GPU hang não diz
+            // qual foi a linha. Melhor falhar aqui com o número.
+            for (i, r) in packed.meshlets.iter().enumerate() {
+                anyhow::ensure!(
+                    r.vertex_count as usize <= harpia_render::MESHLET_VERTS
+                        && r.triangle_count as usize <= harpia_render::MESHLET_PRIMS,
+                    "meshlet {i} com {} vértices e {} triângulos: acima do que o mesh \
+                     shader declara ({} e {})",
+                    r.vertex_count,
+                    r.triangle_count,
+                    harpia_render::MESHLET_VERTS,
+                    harpia_render::MESHLET_PRIMS
+                );
+                anyhow::ensure!(
+                    r.vertex_offset as usize + r.vertex_count as usize <= packed.vertices.len()
+                        && r.triangle_offset as usize + r.triangle_count as usize
+                            <= packed.triangles.len(),
+                    "meshlet {i} aponta para fora dos buffers"
+                );
+            }
 
-        self.mvert_buf = Some(gpu.create_storage_buffer(SLOT_MVERTS, as_bytes(&packed.vertices))?);
-        self.mtri_buf = Some(gpu.create_storage_buffer(SLOT_MTRIS, as_bytes(&packed.triangles))?);
-        self.range_buf = Some(gpu.create_storage_buffer(SLOT_RANGES, as_bytes(&packed.meshlets))?);
+            self.mvert_buf =
+                Some(gpu.create_storage_buffer(SLOT_MVERTS, as_bytes(&packed.vertices))?);
+            self.mtri_buf =
+                Some(gpu.create_storage_buffer(SLOT_MTRIS, as_bytes(&packed.triangles))?);
+            self.range_buf =
+                Some(gpu.create_storage_buffer(SLOT_RANGES, as_bytes(&packed.meshlets))?);
+        }
 
         self.prim_buf = Some(gpu.create_storage_buffer(SLOT_PRIMS, as_bytes(&prims))?);
         self.args_buf = Some(gpu.create_storage_buffer(SLOT_ARGS, as_bytes(&args))?);

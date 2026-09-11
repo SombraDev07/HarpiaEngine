@@ -47,12 +47,18 @@ layout(set = 3, binding = 0, std430) readonly buffer Ranges { uvec4 v[]; } range
 layout(push_constant) uniform Push { mat4 view_proj; mat4 extra; } pc;
 
 // A mesma interface que o `color.vs` dá ao `color.ps`: o pixel shader não muda.
+//
+// **A mesma** inclui ser por vértice. O albedo e o corte são constantes no meshlet
+// e `perprimitiveEXT` pouparia interpoladores, mas o `color.ps` declara as
+// locations 4 e 5 por vértice (`Flat`, sem `PerPrimitiveEXT`). Com a decoração só
+// de um lado as interfaces não casam, e o pixel shader lia um índice bindless
+// indefinido. A validation 1.3.275 deste host não o apanha.
 layout(location = 0) out vec3 v_world[];
 layout(location = 1) out vec3 v_nrm[];
 layout(location = 2) out vec2 v_uv[];
 layout(location = 3) out float v_z[];
-layout(location = 4) perprimitiveEXT flat out uint v_albedo[];
-layout(location = 5) perprimitiveEXT flat out float v_cutoff[];
+layout(location = 4) flat out uint v_albedo[];
+layout(location = 5) flat out float v_cutoff[];
 
 const uint SLOT_PRIMS = 0u;
 const uint SLOT_ARGS = 1u;
@@ -106,6 +112,8 @@ void main() {
         v_uv[i] = uv;
         // `clip.w` é a profundidade de vista positiva com `perspective_vk`.
         v_z[i] = clip.w;
+        v_albedo[i] = albedo;
+        v_cutoff[i] = cutoff;
     }
 
     // E os triângulos, desempacotando os três índices locais de 8 bits.
@@ -113,9 +121,5 @@ void main() {
         uint packed = mtri_buf[SLOT_MTRIS].v[r.z + t];
         gl_PrimitiveTriangleIndicesEXT[t] =
             uvec3(packed & 0xffu, (packed >> 8u) & 0xffu, (packed >> 16u) & 0xffu);
-        // Por primitiva e não por vértice: o albedo é constante no meshlet inteiro,
-        // e escrevê-lo por vértice gastaria interpoladores para nada.
-        v_albedo[t] = albedo;
-        v_cutoff[t] = cutoff;
     }
 }

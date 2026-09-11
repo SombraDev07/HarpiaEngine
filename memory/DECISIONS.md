@@ -1688,6 +1688,12 @@ layouts dos descritores não declaravam o estágio de mesh. Usar um pipeline que
 validation rejeitou é comportamento indefinido, e em RADV o que aconteceu foi
 pendurar. Corrigido.
 
+**Corrigido só em parte (D60).** O set 3 — o dos storage buffers, de onde este mesh
+shader lê os seis que usa — ficou de fora, e a range de push constants passou a
+declarar `MESH|TASK` sem que o `vkCmdPushConstants` os passasse. Os dois erros
+continuavam lá no primeiro frame que o caminho tentou, e o segundo estragava
+**todos** os samples numa placa com mesh shaders.
+
 Ficaram duas guardas que não existiam:
 
 * o shader **limita** o que passa a `SetMeshOutputsEXT` ao que declarou em
@@ -1702,3 +1708,106 @@ Ficaram duas guardas que não existiam:
 Não mudou de comportamento, e isso também não pôde ser verificado na GPU — por isso
 ficou preso por dois testes de CPU novos, com controlos negativos que os partem.
 `-- --mesh` é opt-in.
+
+**Falso, e medido (D60): mudou, e partiu.** O empacotamento corria sempre, e sem
+`--mesh` há um meshlet por primitiva e nenhum tecto de vértices: o empacotamento
+partia-os para caberem nos 64, e o `ensure!` recusava arrancar. A Sponza por omissão
+saía com erro em **todos** os backends, o Null incluído. Os dois testes de CPU não o
+apanharam porque nenhum deles arranca o sample.
+
+## D60 — Os mesh shaders desenham, e quem o provou foi um driver de CPU
+
+O D59 ficou com um caminho escrito e nunca corrido: a primeira tentativa pendurou a
+GPU, o amdgpu fez MODE1 reset, a sessão gráfica não voltou e o reset à mão levou 31
+objectos soltos do git a zero bytes. O commit tinha sido empurrado para o `origin`
+segundos antes, e foi de lá que voltou inteiro — a lição de git está no fim.
+
+Retomado, o caminho tinha **cinco** erros. Quatro apareciam na validation; o quinto
+não aparecia em lado nenhum.
+
+### Porquê num driver de CPU, e não na placa
+
+Correr o caminho na RX 6700 era arriscar outra vez a máquina. O lavapipe corre o
+mesmo Vulkan em CPU:
+
+```bash
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json \
+MESA_VK_ABORT_ON_DEVICE_LOSS=1 ./target/release/sponza --frames 16 --capture /tmp/x -- --mesh
+```
+
+O mesmo comportamento indefinido que pendura a GPU dá ali um **segfault do
+processo** — o mesmo sinal, sem levar o display. Confirma sempre com
+`vulkaninfo --summary` que só o llvmpipe aparece: o `pick_device` dá 1000 à discreta
+e 10 à CPU, portanto basta a RADV estar visível para o teste correr onde não devia.
+Os 16 frames da Sponza custam 15 s em CPU, o que não é preço nenhum.
+
+### Os cinco
+
+| # | Erro | Como se via |
+|---|---|---|
+| 1 | Set 3 (storage buffers) sem `MESH_EXT` no layout | 6 × `VUID-...-07988` por pipeline, um por buffer que o shader lê |
+| 2 | `vkCmdPushConstants` com `VERTEX\|FRAGMENT` numa range que já tinha `MESH\|TASK` | `VUID-vkCmdPushConstants-offset-01796`, em **todos** os samples |
+| 3 | `LocalSizeId` sem a feature `maintenance4` | `VUID-RuntimeSpirv-LocalSizeId-06434` |
+| 4 | `perprimitiveEXT` só do lado do mesh shader | **nada** — a validation 1.3.275 deste host não o apanha |
+| 5 | Índices do meshlet por rebasear | **nada** — a imagem saía um emaranhado |
+
+O 2 é o que mais assusta: a range ganhou `MESH|TASK` quando o device os suporta, e
+o `vkCmdPushConstants` continuou a declarar dois estágios. Além do erro em toda a
+árvore, **um estágio fora das `stageFlags` não recebe os valores** — o mesh shader
+lia o meshlet base de lixo, que é exactamente a receita da leitura escalar em
+endereços espalhados que o kernel registou no hang.
+
+O 5 é o que só se vê em pixels: `pack_meshlets` guardava os índices como estão no
+index buffer partilhado, **relativos à primitiva**, porque no caminho clássico quem
+os rebaseia é o `vertexOffset` de cada comando de draw. Um dispatch de mesh tasks
+não tem `vertexOffset`: cada meshlet lia os vértices da primeira primitiva. Zero
+erros de validation, 16 frames completos, e uma cena irreconhecível. Fixo em
+`packing_rebases_indices_to_the_shared_vertex_buffer`, que falha se o rebaseamento
+sair.
+
+### A guarda que faltava
+
+O app contava os erros de validation e só falhava **no fim da corrida** — depois de
+o frame já ter ido para a GPU. Agora não submete: `validation_error_count()` é lido
+antes do `end_frame()` e um erro aborta o frame. A conta inclui o `init`, que é onde
+os pipelines nascem, portanto nada que a validation recusou chega à placa.
+
+Controlo negativo, com o set 3 partido de propósito: 12 × `07988` e
+`refusing to submit the frame`, `exit=1`. Antes da guarda, o mesmo binário dava
+segfault no lavapipe — e na RX 6700 tinha pendurado a máquina.
+
+### O que está verificado
+
+| | resultado |
+|---|---|
+| `--backend null --frames 8`, por omissão | ok (era aqui que a regressão saía) |
+| lavapipe, por omissão, 16 frames | `validation_errors=0` |
+| lavapipe, `-- --mesh`, 16 frames | `validation_errors=0`, culling corta 974 de 4912 meshlets |
+| `scene` mesh vs omissão | **271 pixels de 921 600** (0.03%), diferença máxima **1/255** |
+| `composite` | 321 pixels, máxima 1/255 |
+| `shadow-atlas` | **0 pixels** (as sombras não passam pelo mesh shader) |
+| `cargo test -p harpia-render` | 94 |
+
+O ±1 é arredondamento entre o VS e o MS a fazer a mesma conta — não é geometria
+diferente. Não se diz "idêntica ao pixel", diz-se 271 pixels a 1/255.
+
+### O que **não** está verificado
+
+Nada disto correu na RX 6700 desde o hang, e **não há uma única medição de
+performance** — que é a única razão pela qual os mesh shaders existem aqui (D58: o
+custo por comando indirecto). Até haver um número na placa, `-- --mesh` continua
+opt-in e não se diz que paga.
+
+E fica registado que isto é **fora de fase**: a INDEX põe a árvore na fase 6 e o D58
+põe os mesh shaders na 9.
+
+### O que o hard reset custou, e o que ficou
+
+O git não faz `fsync` dos objectos soltos por omissão: um corte de energia depois do
+commit deixa-os com 0 bytes e o `main` a apontar para um deles. O repositório ficou
+com `fatal: bad object HEAD`. Como o push tinha passado, um `git fetch origin main`
+trouxe tudo de volta, commit e notas incluídas.
+
+Agora o repo tem `core.fsync = committed`. E antes de um reset à mão: **Alt+SysRq
+S, U, B** (o `kernel.sysrq` deste host é 176, que permite exactamente sync, remount
+e reboot) — grava o cache no disco antes de reiniciar.

@@ -387,3 +387,33 @@ output.**
 - `SetMeshOutputsEXT` com valores acima do `max_vertices`/`max_primitives` que o
   shader declarou é UB e em RADV pendura. Limita sempre, e verifica a tabela no
   host antes de a subir: um `ensure!` dá um número, um hang dá um reset (D59).
+- **Antes de correr na placa um caminho que a pode pendurar, corre-o no lavapipe.**
+  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json` põe o mesmo Vulkan em CPU,
+  onde o mesmo UB dá segfault do processo em vez de levar o display. Confirma com
+  `vulkaninfo --summary` que **só** o llvmpipe aparece: o `pick_device` dá 1000 à
+  discreta e 10 à CPU. 16 frames da Sponza custam 15 s (D60).
+- **O `MESH_EXT` no layout tem de estar em _todos_ os sets que o mesh shader lê.**
+  Faltava no set 3 (storage buffers) e davam 6 × `VUID-...-07988` por pipeline — um
+  por buffer declarado. Contar os erros diz logo qual é o set (D60).
+- **`vkCmdPushConstants` passa as `stageFlags` da range inteira**, nunca um
+  subconjunto fixo (`VUID-vkCmdPushConstants-offset-01796`) — e o que importa mais:
+  **um estágio que fique de fora não recebe os valores**. O mesh shader lia o
+  meshlet base de lixo, que é a leitura escalar em endereços espalhados que o kernel
+  regista no hang. Assim que a range ganhou `MESH|TASK`, o erro passou a sair em
+  **todos** os samples desta placa (D60).
+- `--target-env vulkan1.3` no glslang (SPIR-V 1.6) escreve o `local_size` como
+  `LocalSizeId`, que exige a feature `maintenance4` ligada no device
+  (`VUID-RuntimeSpirv-LocalSizeId-06434`). É obrigatória em Vulkan 1.3 (D60).
+- **`perprimitiveEXT` tem de estar nas duas pontas.** O `color.ps` é partilhado com
+  o caminho clássico e declara as locations 4 e 5 por vértice (`Flat`); com a
+  decoração só no mesh shader as interfaces não casam e o PS lê um índice bindless
+  indefinido. A validation 1.3.275 deste host **não** o apanha (D60).
+- **Os índices de um meshlet são globais, ou não são nada.** O index buffer
+  partilhado guarda-os relativos à primitiva e é o `vertexOffset` do comando que os
+  rebaseia; um dispatch de mesh tasks não tem `vertexOffset`, portanto o
+  rebaseamento faz-se no empacotamento. Sem isso cada meshlet lê os vértices da
+  primeira primitiva: 16 frames, zero erros, cena irreconhecível (D60).
+- **O app já não submete um frame depois de um erro de validation.** A conta é lida
+  antes do `end_frame()` e inclui o `init`, onde os pipelines nascem — nada que a
+  validation recusou chega à GPU. Um caminho novo que dê erro agora falha com
+  `refusing to submit the frame` em vez de pendurar a máquina (D60).

@@ -367,6 +367,16 @@ impl<S: Sample> WinitApp<S> {
         if !info.skipped {
             self.sample.frame(gpu, info)?;
         }
+        // Nothing the validation refused is ever submitted. A command buffer
+        // recorded after a validation error is undefined behaviour, and on RADV
+        // that can be a GPU hang that takes the display down with it: on 2026-09-11
+        // a mesh pipeline rejected at creation froze the machine. The count
+        // includes init, where the pipelines are made. The run fails as it would
+        // have at the end -- only before the GPU sees the frame.
+        let errors = gpu.validation_error_count();
+        if errors > 0 {
+            anyhow::bail!("validation errors: {errors}; refusing to submit the frame");
+        }
         gpu.end_frame()?;
         let stats = gpu.take_stats();
         if stats.frame_ms > 0.0 {

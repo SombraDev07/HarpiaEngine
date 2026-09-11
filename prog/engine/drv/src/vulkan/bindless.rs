@@ -23,6 +23,10 @@ const STAGING_SIZE: u64 = 64 * 1024 * 1024;
 pub struct Bindless {
     pub set_layouts: [vk::DescriptorSetLayout; SET_COUNT],
     pub pipeline_layout: vk::PipelineLayout,
+    /// `stageFlags` of the one push constant range. `vkCmdPushConstants` must pass
+    /// all of them (VUID-vkCmdPushConstants-offset-01796), and a stage left out
+    /// does not get the values.
+    pub push_stages: vk::ShaderStageFlags,
     pub pool: vk::DescriptorPool,
     pub set0: Vec<vk::DescriptorSet>,
     pub set1: vk::DescriptorSet,
@@ -103,6 +107,12 @@ impl Bindless {
         // `MESH_EXT` a mais quando o device o tem: um mesh shader lê os mesmos
         // heaps que um vertex shader, e um layout que não o declare faz a criação
         // do pipeline falhar com VUID-...-07988.
+        //
+        // Em **todos** os sets que um mesh shader pode ler, e na push constant range.
+        // A primeira versão disto deixou o set 3 de fora -- o dos storage buffers,
+        // de onde o mesh shader da Sponza lê os seis que usa. Um pipeline que a
+        // validation recusou é comportamento indefinido: no lavapipe deu segfault,
+        // no RADV pendurou a GPU.
         let mesh_bit = if mesh {
             vk::ShaderStageFlags::MESH_EXT | vk::ShaderStageFlags::TASK_EXT
         } else {
@@ -182,7 +192,8 @@ impl Bindless {
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(STORAGE_BUFFER_SLOTS)
             .stage_flags(
-                vk::ShaderStageFlags::COMPUTE
+                mesh_bit
+                    | vk::ShaderStageFlags::COMPUTE
                     | vk::ShaderStageFlags::FRAGMENT
                     | vk::ShaderStageFlags::VERTEX,
             )];
@@ -414,6 +425,7 @@ impl Bindless {
         Ok(Self {
             set_layouts,
             pipeline_layout,
+            push_stages: pc_range.stage_flags,
             pool,
             set0,
             set1,
