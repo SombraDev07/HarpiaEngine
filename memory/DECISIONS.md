@@ -1541,3 +1541,51 @@ O ECS continua a marcar `Visible` com a mesma caixa e os mesmos planos. Já não
 escolhe o que se desenha — passou a ser a **referência**: o `finish` lê os comandos
 de volta, conta os que têm `instanceCount == 1`, e exige que dê o mesmo que a CPU.
 **78 de 103, nos dois.**
+
+## D57 — Hi-Z na Sponza: escrito, verificado, e **desligado por omissão**
+
+O caminho está feito e funciona: duas fases, pirâmide do mesmo frame, imagem
+idêntica ao pixel. E **custa mais do que poupa**, por uma razão que se mede.
+
+### Como funciona
+
+É o esquema clássico de duas fases, que existe porque os oclusores da cena **são**
+a cena — não há um prepass separado como no `veg`:
+
+1. **Fase 1** desenha o que se via no frame anterior (um buffer `seen` persistente).
+   É isso que enche o depth buffer.
+2. A **pirâmide** sai desse depth.
+3. **Fase 2** testa todas as primitivas contra a pirâmide e desenha as que passam e
+   ainda não foram desenhadas. O resultado é a união das duas.
+4. O que passou o teste fica marcado como visto, para a fase 1 do frame seguinte.
+
+É conservador de propósito: uma primitiva que se via antes e está tapada agora é
+desenhada na fase 1 à mesma, e corrige-se no frame seguinte.
+
+### Os números, que são o ponto
+
+| | soma das passes | frame |
+|---|---|---|
+| com oclusão | **0.399 ms** | 0.780 ms |
+| sem oclusão | 0.353 ms | 0.736 ms |
+
+Poupa **3 primitivas de 78** e a pirâmide custa 0.033 ms. Frame 6% **mais lento**.
+
+A razão não é o método — é a granularidade. A Sponza tem 103 primitivas com uma
+média de 15 000 triângulos cada; o chão inteiro é uma. Uma primitiva desse tamanho
+quase nunca está **inteiramente** tapada, e o teste é conservador por construção.
+Para comparar, no `gate-veg` a mesma máquina corta 86.2% — lá as unidades são
+plantas pequenas.
+
+**O que falta para pagar: meshlets.** Dividir cada primitiva em grupos de ~64–128
+triângulos com a sua própria caixa. Aí a unidade de teste passa a ser da ordem das
+plantas do `veg` e o culling tem o que cortar. É o passo seguinte e está no roadmap.
+
+### O que fica
+
+O código fica, **desligado por omissão**, atrás de `-- --occlusion`. Fica porque é
+a fundação do culling por meshlet e porque está verificado: com oclusão ligada a
+imagem é **idêntica ao pixel** nos três alvos (cena, composite, atlas de sombras).
+
+O que não fica é a pretensão: ligá-lo por omissão seria vender como optimização uma
+coisa que medi a tornar o frame 6% mais lento.

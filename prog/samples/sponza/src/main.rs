@@ -78,6 +78,19 @@ struct Sponza {
     prim_buf: Option<Buffer>,
     args_buf: Option<Buffer>,
     args_all_buf: Option<Buffer>,
+    args_p2_buf: Option<Buffer>,
+    seen_buf: Option<Buffer>,
+    hiz_pso: Option<ComputePipeline>,
+    hiz: Option<Texture>,
+    hiz_mips: u32,
+    /// `-- --occlusion` **liga** a segunda fase.
+    ///
+    /// Desligada por omissão, e medida: nesta cena custa mais do que poupa.
+    /// 103 primitivas com ~15 000 triângulos cada é a granularidade errada para
+    /// culling por oclusão — corta 3 de 78 e a pirâmide custa 0.033 ms, o que dá
+    /// um frame 6% mais lento. O caminho está escrito e verificado; o que falta é
+    /// dividir as primitivas em meshlets (D57).
+    occlusion: bool,
     cull_pso: Option<ComputePipeline>,
     /// Quantas primitivas, e onde acabam as de uma face só.
     prim_count: u32,
@@ -93,6 +106,12 @@ impl Default for Sponza {
             prim_buf: None,
             args_buf: None,
             args_all_buf: None,
+            args_p2_buf: None,
+            seen_buf: None,
+            hiz_pso: None,
+            hiz: None,
+            hiz_mips: 0,
+            occlusion: false,
             cull_pso: None,
             prim_count: 0,
             one_sided_count: 0,
@@ -158,9 +177,14 @@ impl Sponza {
 
         let prims = g.persistent_buffer("prims", self.prim_buf.context("prims")?);
         let args = g.persistent_buffer("args", self.args_buf.context("args")?);
+        let hiz_r = g.texture("hi-z", self.hiz.context("hiz")?);
+        let args_p2 = g.persistent_buffer("args-p2", self.args_p2_buf.context("args p2")?);
+        // Persistente: é o que o frame anterior deixou, e é isso que a fase 1 usa.
+        let seen = g.persistent_buffer("seen", self.seen_buf.context("seen")?);
         g.pass(
             Pass::new("cull")
                 .uses(prims, Access::StorageRead)
+                .uses(seen, Access::StorageRead)
                 .uses(args, Access::StorageWrite),
         );
         g.pass(
@@ -184,6 +208,34 @@ impl Sponza {
                 .load(view_depth, Load::Clear([0.0; 4]))
                 .load(depth, Load::Clear([1.0, 0.0, 0.0, 0.0])),
         );
+        if self.occlusion {
+            for level in 0..self.hiz_mips {
+                let mut p = Pass::new("hi-z").uses(hiz_r, Access::StorageWrite);
+                p = if level == 0 {
+                    p.uses(depth, Access::Sampled)
+                } else {
+                    p.uses(hiz_r, Access::StorageRead)
+                };
+                g.pass(p);
+            }
+            g.pass(
+                Pass::new("cull 2")
+                    .uses(prims, Access::StorageRead)
+                    .uses(hiz_r, Access::Sampled)
+                    .uses(seen, Access::StorageWrite)
+                    .uses(args_p2, Access::StorageWrite),
+            );
+            g.pass(
+                Pass::new("scene 2")
+                    .uses(args_p2, Access::Indirect)
+                    .uses(color, Access::ColorWrite)
+                    .uses(view_depth, Access::ColorWrite)
+                    .uses(depth, Access::DepthWrite)
+                    .load(color, Load::Keep)
+                    .load(view_depth, Load::Keep)
+                    .load(depth, Load::Keep),
+            );
+        }
         g.pass(
             Pass::new("rain")
                 .uses(color, Access::Sampled)
@@ -231,10 +283,29 @@ impl Sponza {
         self.scene = Some(SceneRt {
             color: gpu.create_texture(&color_desc(w, h, SCENE_FORMAT))?,
             view_depth: gpu.create_texture(&color_desc(w, h, VIEW_DEPTH))?,
-            depth: gpu.create_texture(&depth_desc(w, h))?,
+            // `sampled: true` porque a pirâmide lê o depth buffer; o
+            // `depth_desc` normal não o permite.
+            depth: gpu.create_texture(&harpia_rhi::TextureDesc {
+                sampled: true,
+                ..depth_desc(w, h)
+            })?,
             rained: gpu.create_texture(&color_desc(w, h, SCENE_FORMAT))?,
             composite: gpu.create_texture(&color_desc(w, h, COMPOSITE))?,
         });
+        let mips = 32 - w.max(h).leading_zeros();
+        self.hiz = Some(gpu.create_texture(&harpia_rhi::TextureDesc {
+            width: w,
+            height: h,
+            depth_slices: 1,
+            dim: harpia_rhi::TextureDim::D2,
+            mip_levels: mips,
+            format: Format::R32Float,
+            sampled: true,
+            storage: true,
+            color_attachment: false,
+            depth: false,
+        })?);
+        self.hiz_mips = mips;
         self.scene_extent = Extent2D {
             width: w,
             height: h,
@@ -338,31 +409,59 @@ impl Sponza {
             return Ok(());
         }
         self.checked = true;
-        let args = self.args_buf.context("args")?;
-        let bytes = gpu.read_buffer(args, self.prim_count as usize * 20)?;
-        let mut gpu_visible = 0u32;
-        for i in 0..self.prim_count as usize {
-            let o = i * 20 + 4;
-            let n = u32::from_ne_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
-            anyhow::ensure!(
-                n <= 1,
-                "instanceCount {n} no comando {i}: o culling escreveu lixo"
-            );
-            gpu_visible += n;
-        }
+        // Duas listas: a fase 1 (o que se via no frame anterior) e a fase 2 (o que
+        // a oclusão deixou passar e ainda não tinha sido desenhado). Desenha-se a
+        // **união** das duas.
+        let prim_count = self.prim_count;
+        let count = |gpu: &mut Gpu, buf: Buffer| -> Result<u32> {
+            let bytes = gpu.read_buffer(buf, prim_count as usize * 20)?;
+            let mut n = 0;
+            for i in 0..prim_count as usize {
+                let o = i * 20 + 4;
+                let v = u32::from_ne_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+                anyhow::ensure!(
+                    v <= 1,
+                    "instanceCount {v} no comando {i}: o culling escreveu lixo"
+                );
+                n += v;
+            }
+            Ok(n)
+        };
+        let p1 = count(gpu, self.args_buf.context("args")?)?;
+        let p2 = if self.occlusion {
+            count(gpu, self.args_p2_buf.context("args p2")?)?
+        } else {
+            0
+        };
+        let gpu_visible = p1 + p2;
         tracing::info!(
             primitivas = self.prim_count,
-            de_uma_face = self.one_sided_count,
-            visiveis_gpu = gpu_visible,
-            visiveis_cpu = self.last_cpu_visible,
+            oclusao = self.occlusion,
+            fase1 = p1,
+            fase2 = p2,
+            desenhadas = gpu_visible,
+            so_frustum_cpu = self.last_cpu_visible,
+            poupadas = self.last_cpu_visible.saturating_sub(gpu_visible),
             "culling de primitivas"
         );
-        anyhow::ensure!(
-            gpu_visible == self.last_cpu_visible,
-            "o culling em compute deixou passar {gpu_visible} primitivas e o mesmo \
-             teste em CPU {}: um dos dois tem a caixa errada",
-            self.last_cpu_visible
-        );
+        if self.occlusion {
+            // O frustum é um majorante: a oclusão só pode tirar. Não é igualdade
+            // porque a fase 1 desenha o que se via no frame anterior mesmo que
+            // esteja tapado agora — é conservador de propósito e corrige-se no
+            // frame seguinte.
+            anyhow::ensure!(
+                gpu_visible <= self.last_cpu_visible,
+                "desenharam-se {gpu_visible} primitivas e o frustum só deixa passar {}",
+                self.last_cpu_visible
+            );
+        } else {
+            anyhow::ensure!(
+                gpu_visible == self.last_cpu_visible,
+                "sem oclusão o culling em compute devia dar o mesmo que a CPU: \
+                 {gpu_visible} contra {}",
+                self.last_cpu_visible
+            );
+        }
         anyhow::ensure!(
             gpu_visible > 0 && gpu_visible < self.prim_count,
             "o culling não cortou nada ou cortou tudo: {gpu_visible} de {}",
@@ -388,6 +487,8 @@ fn color_targets(cull_back: bool) -> PipelineTargets<'static> {
 const SLOT_PRIMS: u32 = 0;
 const SLOT_ARGS: u32 = 1;
 const SLOT_ARGS_ALL: u32 = 2;
+const SLOT_ARGS_P2: u32 = 3;
+const SLOT_SEEN: u32 = 4;
 
 /// Uma primitiva, como a GPU a vê.
 #[repr(C)]
@@ -551,6 +652,18 @@ impl Sample for Sponza {
         // de chuva **não** respeitam o culling da câmara, porque um caster fora do
         // ecrã continua a projectar sombra dentro dele.
         self.args_all_buf = Some(gpu.create_storage_buffer(SLOT_ARGS_ALL, as_bytes(&args))?);
+        self.args_p2_buf = Some(gpu.create_storage_buffer(SLOT_ARGS_P2, as_bytes(&args))?);
+        // Todos vistos no arranque: o primeiro frame desenha tudo na fase 1, e a
+        // pirâmide dele já serve o frame seguinte.
+        self.seen_buf =
+            Some(gpu.create_storage_buffer(SLOT_SEEN, as_bytes(&vec![1u32; order.len()]))?);
+        self.hiz_pso = Some(
+            gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/hiz.cs.spv")),
+                cs_entry: "CSMain",
+            })
+            .context("hiz CS")?,
+        );
         self.cull_pso = Some(
             gpu.create_compute_pipeline(&ComputePipelineDesc {
                 cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/cull.cs.spv")),
@@ -794,18 +907,36 @@ impl Sample for Sponza {
         #[derive(Clone, Copy)]
         struct CullCb {
             planes: [Vec4; 6],
+            /// x = nº de primitivas, y = fase, z = slot dos comandos, w = slot do `seen`
             params: Vec4,
+            view_proj: Mat4,
+            hiz: Vec4,
         }
-        let cull = CullCb {
+        let hiz = self.hiz.context("hiz")?;
+        let hiz_index = gpu.bindless_index(hiz)? as f32;
+        let (hw, hh, mips) = (
+            self.scene_extent.width,
+            self.scene_extent.height,
+            self.hiz_mips,
+        );
+        let cull_base = CullCb {
             planes: Frustum::from_view_proj(view_proj).planes(),
-            params: Vec4::new(total as f32, 0.0, 0.0, 0.0),
+            params: Vec4::new(total as f32, 1.0, SLOT_ARGS as f32, SLOT_SEEN as f32),
+            view_proj,
+            hiz: Vec4::new(hiz_index, hw as f32, hh as f32, mips as f32),
         };
-        gpu.write_frame_bytes(unsafe {
-            std::slice::from_raw_parts(
-                (&cull as *const CullCb).cast::<u8>(),
-                std::mem::size_of::<CullCb>(),
-            )
-        })?;
+        let write_cull = |gpu: &mut Gpu, c: &CullCb| -> Result<()> {
+            gpu.write_frame_bytes(unsafe {
+                std::slice::from_raw_parts(
+                    (c as *const CullCb).cast::<u8>(),
+                    std::mem::size_of::<CullCb>(),
+                )
+            })?;
+            Ok(())
+        };
+
+        // Fase 1 do culling: frustum, e só o que se via no frame anterior.
+        write_cull(gpu, &cull_base)?;
         gpu.barriers(&next_barriers())?;
         gpu.set_compute_pipeline(self.cull_pso.as_ref().context("cull pso")?)?;
         gpu.bind_compute_bindless()?;
@@ -889,6 +1020,8 @@ impl Sample for Sponza {
             &[[0.62, 0.86, 1.20, 1.0], [FOG_FAR, 0.0, 0.0, 0.0]],
             Some(1.0),
         )?;
+        // Fase 1: o que se via no frame anterior. É isto que enche o depth buffer
+        // de que a pirâmide sai.
         draw_indirect_set(
             gpu,
             color_pso,
@@ -913,6 +1046,88 @@ impl Sample for Sponza {
         )?;
         gpu.end_color_pass()?;
         gpu.mark("scene");
+
+        if self.occlusion {
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct HizCb {
+                params: Vec4,
+                src_size: Vec4,
+            }
+            let depth_index = gpu.bindless_index(scene.depth)? as f32;
+            for level in 0..mips {
+                let dw = (hw >> level).max(1);
+                let dh = (hh >> level).max(1);
+                let (sw, sh) = if level == 0 {
+                    (hw, hh)
+                } else {
+                    ((hw >> (level - 1)).max(1), (hh >> (level - 1)).max(1))
+                };
+                let c = HizCb {
+                    params: Vec4::new(
+                        if level == 0 { depth_index } else { hiz_index },
+                        dw as f32,
+                        dh as f32,
+                        if level == 0 { 1.0 } else { 0.0 },
+                    ),
+                    src_size: Vec4::new(
+                        sw as f32,
+                        sh as f32,
+                        level as f32,
+                        level.saturating_sub(1) as f32,
+                    ),
+                };
+                gpu.write_frame_bytes(unsafe {
+                    std::slice::from_raw_parts(
+                        (&c as *const HizCb).cast::<u8>(),
+                        std::mem::size_of::<HizCb>(),
+                    )
+                })?;
+                gpu.barriers(&next_barriers())?;
+                gpu.bind_storage_image(hiz, level, level)?;
+                gpu.set_compute_pipeline(self.hiz_pso.as_ref().context("hiz pso")?)?;
+                gpu.bind_compute_bindless()?;
+                gpu.dispatch(dw.div_ceil(8), dh.div_ceil(8), 1)?;
+            }
+            gpu.mark("hi-z");
+
+            let mut c2 = cull_base;
+            c2.params.y = 2.0;
+            c2.params.z = SLOT_ARGS_P2 as f32;
+            write_cull(gpu, &c2)?;
+            gpu.barriers(&next_barriers())?;
+            gpu.set_compute_pipeline(self.cull_pso.as_ref().context("cull pso")?)?;
+            gpu.bind_compute_bindless()?;
+            gpu.dispatch(total.div_ceil(64), 1, 1)?;
+            gpu.mark("cull 2");
+
+            let args_p2 = self.args_p2_buf.context("args p2")?;
+            gpu.write_frame_bytes(cb.as_bytes())?;
+            gpu.barriers(&next_barriers())?;
+            // Sem valores de limpeza: a fase 2 **acrescenta** ao que a 1 desenhou.
+            gpu.begin_color_pass(
+                &[scene.color, scene.view_depth],
+                Some(scene.depth),
+                &[],
+                None,
+            )?;
+            draw_indirect_set(
+                gpu, color_pso, false, view_proj, vb, ib, args_p2, one_sided, total,
+            )?;
+            draw_indirect_set(
+                gpu,
+                two_sided_pso,
+                true,
+                view_proj,
+                vb,
+                ib,
+                args_p2,
+                one_sided,
+                total,
+            )?;
+            gpu.end_color_pass()?;
+            gpu.mark("scene 2");
+        }
 
         // Rain, default-on: streaks over the scene, masked by the rain map so
         // they fall in the nave and not through the arcade roof. Linear in and
@@ -1005,5 +1220,12 @@ impl Sample for Sponza {
 fn main() -> Result<std::process::ExitCode> {
     let mut config = AppConfig::parse(std::env::args())?;
     config.title = "Harpia — sponza".into();
-    run(config, Sponza::default())
+    let occlusion = config.extra.iter().any(|a| a == "--occlusion");
+    run(
+        config,
+        Sponza {
+            occlusion,
+            ..Default::default()
+        },
+    )
 }

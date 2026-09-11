@@ -369,3 +369,7 @@ output.**
   escreve por pass. Tirei a escrita por primitiva e a pass da cena passou a ler o
   que ficou da anterior: a Sponza ficou com um banho vermelho e as texturas certas
   por baixo (D56).
+- **Culling por oclusão precisa de unidades pequenas.** A mesma máquina que corta
+  86.2% da vegetação (plantas de 6 vértices) corta 3 de 78 na Sponza (primitivas de
+  15 000 triângulos), e aí o custo da pirâmide torna o frame 6% mais lento. Antes de
+  aplicar oclusão a uma cena, olha para o tamanho da unidade de teste (D57).

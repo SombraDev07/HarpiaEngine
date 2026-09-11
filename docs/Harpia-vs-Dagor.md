@@ -236,9 +236,14 @@ alcançáveis e por medirem algo.
       tabela por primitiva, e o culling em compute a escrever o `instanceCount` de
       uma lista fixa de comandos. **596 draws para 15**, CPU do frame de 0.360 para
       **0.120 ms**, imagem idêntica. Era o que faltava para o Hi-Z poder lá entrar.
-- [ ] **Hi-Z na Sponza**, agora que o caminho é indirecto. Precisa de duas fases
-      (desenhar o que se via no frame anterior, construir a pirâmide, testar o
-      resto) porque os oclusores da cena são a própria cena.
+- [~] **Hi-Z na Sponza: escrito, verificado, e desligado por omissão** (D57). Duas
+      fases, imagem idêntica ao pixel — e **6% mais lento**, porque poupa 3
+      primitivas de 78. A granularidade é que está errada: 103 primitivas com
+      ~15 000 triângulos cada não têm nada para cortar. A mesma máquina corta 86.2%
+      no `gate-veg`, onde as unidades são pequenas.
+- [ ] **Meshlets**: dividir cada primitiva em grupos de ~64–128 triângulos com a
+      sua própria caixa. É o que falta para o culling por oclusão pagar numa cena
+      de malhas, e é também o que abre a porta aos mesh shaders.
 - [~] **Hi-Z no terreno: medido e arrumado.** A pass do terreno custa 0.042 ms e a
       pirâmide custa 0.032 — mesmo cortando tudo não pagava. Não é esquecimento.
 - [ ] Impostores à distância, que é o que eles têm e nós não.

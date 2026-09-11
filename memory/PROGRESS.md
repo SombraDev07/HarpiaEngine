@@ -791,3 +791,24 @@ e a Sponza ficou com um banho vermelho por cima das texturas certas.
 O ECS continua a marcar `Visible`, mas já não escolhe o que se desenha — passou a
 ser a **referência**: o `finish` lê os comandos de volta e exige que o número bata
 com o da CPU. 78 de 103, nos dois.
+
+## Hi-Z na Sponza: feito, verificado, e desligado
+
+O caminho está escrito — duas fases, pirâmide do mesmo frame, imagem **idêntica ao
+pixel** nos três alvos — e custa mais do que poupa.
+
+| | soma das passes | frame |
+|---|---|---|
+| com oclusão | **0.399 ms** | 0.780 ms |
+| sem oclusão | 0.353 ms | 0.736 ms |
+
+Poupa 3 primitivas de 78 e a pirâmide custa 0.033 ms: o frame fica 6% mais lento.
+
+A razão não é o método, é a granularidade. A Sponza tem 103 primitivas com ~15 000
+triângulos cada — o chão inteiro é uma — e uma primitiva dessas quase nunca está
+**inteiramente** tapada. A mesma máquina corta 86.2% no `gate-veg`, onde as unidades
+são plantas de seis vértices.
+
+Fica desligado por omissão, atrás de `-- --occlusion`. Fica porque é a fundação do
+culling por meshlet, que é o que falta para isto pagar. Ligá-lo por omissão seria
+vender como optimização uma coisa que medi a tornar o frame mais lento.
