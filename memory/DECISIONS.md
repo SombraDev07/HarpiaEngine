@@ -1320,3 +1320,65 @@ duas leituras**». A sequência lá dentro era `DepthWrite → Sampled`, que é
 escrita→leitura e sai pelo outro ramo. Tirei o teste de layout do código e nenhum
 teste falhou. Agora há um com duas leituras a sério — profundidade testada numa
 pass e amostrada na seguinte — e esse apanha.
+
+## D54 — Porte ao render graph: todas as barreiras explícitas da árvore saíram
+
+Oito samples declaram o frame como grafo: `sponza`, `terrain`, `lights`,
+`instances`, `fog`, `heightquery`, `furnace`, `bindless`. **Não resta uma única
+chamada a `storage_barrier*` num sample** — todas as barreiras explícitas da árvore
+vêm agora de uma declaração.
+
+Cada porte foi verificado da mesma maneira: capturar com as barreiras à mão,
+capturar com as derivadas, comparar.
+
+| sample | alvos comparados | pixels diferentes |
+|---|---|---|
+| `terrain` | 1 | **0** |
+| `instances` | 1 | **0** |
+| `lights` | 3, incl. o atlas de 4 M texels | **0** |
+| `sponza` | 3 | **0** |
+| `fog` | 5, incl. os dois volumes | **0** |
+
+O `furnace` é o mais fácil de auditar porque publica números e não pixels: depois do
+porte dá os mesmos 0.3724 / 0.1707 / 0.0005 / 0.0436 / 0.0161.
+
+### O que cada porte ensinou
+
+**`lights`** é o caso para que isto foi feito: o atlas é `persistent_texture` e a
+pass pede `Load::Keep`. Declarar o atlas como transiente faz o grafo **recusar o
+frame** — «pede `Load::Keep` em `shadow-atlas`, que não tem conteúdo nenhum para
+guardar». É exactamente a classe do bug que o `depth_clear: None` escondia (D52).
+
+Obrigou também a arrumar a ordem: **planear, declarar, desenhar**. O grafo precisa
+de saber se há tiles a redesenhar, e isso só se sabe depois de a fila decidir.
+Declarar uma pass de sombras que não vai acontecer emitiria uma barreira a mais em
+todos os frames em que a cache já está boa — que são a maioria.
+
+**`sponza`** apanhou um erro meu durante o próprio porte. Pus as chamadas onde
+estavam os `storage_barrier` antigos, que era **depois** dos dispatches — e a
+barreira que protege o `scatter` saía depois de ele já ter sido lido. As barreiras
+vão antes da pass que protegem, e a lista sequencial do grafo torna isso óbvio de
+uma maneira que a versão à mão não tornava.
+
+**`heightquery` e `furnace`** obrigaram a acrescentar `Access::TransferRead`: um
+`read_texture` não é uma amostragem, é uma cópia, com outro estágio e outro layout.
+Uma variante nova de vocabulário, não um remendo.
+
+### Uma coisa que ainda não é verdade, e convém dizer
+
+As barreiras do grafo para **ligações de saída** somam-se às transições implícitas
+que o RHI faz ao abrir uma pass — não as substituem. O `begin_color_pass` transita
+o layout incondicionalmente, e torná-lo condicional não é seguro sem o grafo (duas
+passes seguidas a escrever o mesmo alvo precisam da dependência mesmo com o layout
+igual).
+
+Medido na Sponza, que é a cena com mais passes: **0.734 ms contra 0.730 ms** de
+GPU, e o CPU igual. 0.5%, dentro do ruído. Fica como dívida e não como urgência: o
+passo é o RHI passar a confiar no grafo quando ele existe.
+
+### E os que não foram portados
+
+`sky`, `clouds`, `water`, `taa`, `rain`, `csm`, `pbr-grid`, `hello-triangle` não
+tinham barreira explícita nenhuma: dependem das transições implícitas. Portá-los
+acrescentaria declarações sem tirar código. Ficam de fora **por agora**, e a
+synchronization validation cobre-os — passam todos com ela ligada.

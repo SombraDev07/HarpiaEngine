@@ -998,6 +998,7 @@ dependencies = [
  "anyhow",
  "harpia-app",
  "harpia-memory",
+ "harpia-render",
  "harpia-rhi",
  "harpia-shader-build",
 ]
@@ -1061,6 +1062,7 @@ dependencies = [
  "harpia-app",
  "harpia-math",
  "harpia-memory",
+ "harpia-render",
  "harpia-rhi",
  "harpia-shader-build",
  "tracing",

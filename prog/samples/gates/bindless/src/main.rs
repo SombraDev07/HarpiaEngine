@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use harpia_app::{run, AppConfig, Sample};
+use harpia_app::{AppConfig, Sample, run};
+use harpia_render::{Access, Pass, RenderGraph};
 use harpia_rhi::{
     ComputePipeline, ComputePipelineDesc, Device, Format, FrameConstants, FrameInfo, Gpu,
     GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture, TextureDesc, TextureDim,
@@ -88,8 +89,29 @@ impl Sample for BindlessGate {
         })?;
         gpu.bind_compute_bindless()?;
         gpu.set_compute_pipeline(cs)?;
+        // O frame declarado como grafo: um compute escreve, e depois lê-se.
+        // A barreira que estava aqui escrita à mão sai daqui agora.
+        let mut plans = {
+            let mut g = RenderGraph::new();
+            let r = g.texture("uav", uav);
+            g.pass(Pass::new("bindless").uses(r, Access::StorageWrite));
+            g.pass(Pass::new("read").uses(r, Access::Sampled));
+            if let Err(errors) = g.validate() {
+                anyhow::bail!(
+                    "render graph inválido: {}",
+                    errors
+                        .iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                );
+            }
+            g.compile().into_iter()
+        };
+        let mut next_barriers = move || plans.next().map(|p| p.barriers).unwrap_or_default();
+        gpu.barriers(&next_barriers())?;
         gpu.dispatch(8, 8, 1)?;
-        gpu.storage_barrier(uav)?;
+        gpu.barriers(&next_barriers())?;
 
         gpu.begin_swapchain_pass([0.08, 0.10, 0.18, 1.0])?;
         gpu.set_pipeline(gfx)?;
@@ -143,7 +165,8 @@ fn checker_mip2() -> [u8; 4] {
 fn main() -> Result<std::process::ExitCode> {
     let mut config = AppConfig::parse(std::env::args())?;
     config.title = "Harpia — bindless".into();
-    let user_set_frames = std::env::args().any(|a| a == "--frames" || a == "--interactive" || a == "-i");
+    let user_set_frames =
+        std::env::args().any(|a| a == "--frames" || a == "--interactive" || a == "-i");
     if !user_set_frames {
         config.max_frames = std::num::NonZeroU32::new(16);
         config.resize_at = vec![(6, 800, 600), (12, 1280, 720)];

@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
-use harpia_app::{run, AppConfig, Sample};
+use harpia_app::{AppConfig, Sample, run};
 use harpia_math::{Vec2, Vec3, Vec4};
 use harpia_render::{
-    color_desc, depth_desc, froxel_desc, halton2, inject_dispatch, integrate_dispatch, Camera,
-    compute_csm, shadow_atlas_desc, FogCb, MaterialGpu, PushConstants, SphereInstance,
-    SphereMesh, DEFAULT_ATLAS_SIZE, GBUFFER_DEPTH_FORMAT, INSTANCE_STRIDE, VERTEX_STRIDE,
+    Access, Camera, DEFAULT_ATLAS_SIZE, FogCb, GBUFFER_DEPTH_FORMAT, INSTANCE_STRIDE, Load,
+    MaterialGpu, Pass, PassPlan, PushConstants, RenderGraph, SphereInstance, SphereMesh,
+    VERTEX_STRIDE, color_desc, compute_csm, depth_desc, froxel_desc, halton2, inject_dispatch,
+    integrate_dispatch, shadow_atlas_desc,
 };
 use harpia_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
@@ -93,6 +94,71 @@ impl Default for FogGate {
 }
 
 impl FogGate {
+    /// O frame declarado como grafo.
+    ///
+    /// O interessante aqui são os dois volumes do fog: o `inject` escreve o
+    /// `scatter`, o `integrate` lê-o e escreve o `integrated`, e o `apply`
+    /// amostra esse. Três acessos encadeados a recursos de storage, que era o
+    /// sítio com mais barreiras escritas à mão fora da Sponza.
+    fn build_graph(&self) -> Result<Vec<PassPlan>> {
+        let mut g = RenderGraph::new();
+        let rt = self.rt.as_ref().context("rt")?;
+        let atlas = g.texture("csm-atlas", self.atlas.context("atlas")?);
+        let color = g.texture("color", rt.color);
+        let view_depth = g.texture("view-depth", rt.view_depth);
+        let depth = g.texture("depth", rt.depth);
+        let composite = g.texture("composite", rt.composite);
+        let scatter = g.texture("fog-scatter", self.scatter.context("scatter")?);
+        let integrated = g.texture("fog-integrated", self.integrated.context("integrated")?);
+
+        g.pass(
+            Pass::new("cascades")
+                .uses(atlas, Access::DepthWrite)
+                .load(atlas, Load::Clear([1.0, 0.0, 0.0, 0.0])),
+        );
+        g.pass(
+            Pass::new("scene")
+                .uses(atlas, Access::Sampled)
+                .uses(color, Access::ColorWrite)
+                .uses(view_depth, Access::ColorWrite)
+                .uses(depth, Access::DepthWrite)
+                .load(color, Load::Clear([0.40, 0.52, 0.66, 1.0]))
+                .load(view_depth, Load::Clear([FOG_FAR, 0.0, 0.0, 0.0]))
+                .load(depth, Load::Clear([1.0, 0.0, 0.0, 0.0])),
+        );
+        g.pass(
+            Pass::new("fog inject")
+                .uses(atlas, Access::Sampled)
+                .uses(scatter, Access::StorageWrite),
+        );
+        g.pass(
+            Pass::new("fog integrate")
+                .uses(scatter, Access::StorageRead)
+                .uses(integrated, Access::StorageWrite),
+        );
+        g.pass(
+            Pass::new("fog apply")
+                .uses(color, Access::Sampled)
+                .uses(view_depth, Access::Sampled)
+                .uses(integrated, Access::Sampled)
+                .uses(composite, Access::ColorWrite)
+                .load(composite, Load::Clear([0.0, 0.0, 0.0, 1.0])),
+        );
+        g.pass(Pass::new("present").uses(composite, Access::Sampled));
+
+        if let Err(errors) = g.validate() {
+            anyhow::bail!(
+                "render graph inválido: {}",
+                errors
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+        Ok(g.compile())
+    }
+
     fn recreate(&mut self, gpu: &mut Gpu, extent: Extent2D) -> Result<()> {
         let w = extent.width.max(1);
         let h = extent.height.max(1);
@@ -102,7 +168,10 @@ impl FogGate {
             depth: gpu.create_texture(&depth_desc(w, h))?,
             composite: gpu.create_texture(&color_desc(w, h, COMPOSITE))?,
         });
-        self.extent = Extent2D { width: w, height: h };
+        self.extent = Extent2D {
+            width: w,
+            height: h,
+        };
         Ok(())
     }
 
@@ -224,7 +293,11 @@ impl Sample for FogGate {
         self.plane_ib = Some(gpu.create_index_buffer(plane.index_bytes())?);
         let mut ground = MaterialGpu::default();
         ground.base_color = [0.58, 0.56, 0.52];
-        let plane_i = [SphereInstance::from_material([0.0, 0.0, 0.0], 40.0, &ground)];
+        let plane_i = [SphereInstance::from_material(
+            [0.0, 0.0, 0.0],
+            40.0,
+            &ground,
+        )];
         self.plane_inst = Some(gpu.create_vertex_buffer(instance_bytes(&plane_i))?);
 
         let sph = SphereMesh::uv(20, 14);
@@ -277,8 +350,10 @@ impl Sample for FogGate {
         let inject = self.inject_pso.as_ref().context("inject pso")?;
         let integrate = self.integrate_pso.as_ref().context("integrate pso")?;
         let atlas = self.atlas.context("atlas")?;
-        let scatter = self.scatter.context("scatter")?;
-        let integrated = self.integrated.context("integrated")?;
+        // Os volumes do fog são declarados no `build_graph`; aqui só se confirma
+        // que existem.
+        self.scatter.context("scatter")?;
+        self.integrated.context("integrated")?;
 
         let w = info.extent.width.max(1) as f32;
         let h = info.extent.height.max(1) as f32;
@@ -334,6 +409,10 @@ impl Sample for FogGate {
 
         // 0. cascades. The froxel inject samples this, which is what makes the
         //    fog show shafts instead of a uniform haze.
+        let mut plans = self.build_graph()?.into_iter();
+        let mut next_barriers = move || plans.next().map(|p| p.barriers).unwrap_or_default();
+
+        gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(&[], Some(atlas), &[], Some(1.0))?;
         for i in 0..4 {
             let (x, y, tw, th) = csm.tile_viewport(i);
@@ -344,6 +423,7 @@ impl Sample for FogGate {
 
         // 1. scene into HDR + view depth. Depth clears to the fog far plane so
         //    the background gets a full froxel march instead of zero fog.
+        gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(
             &[rt.color, rt.view_depth],
             Some(rt.depth),
@@ -354,19 +434,20 @@ impl Sample for FogGate {
         gpu.end_color_pass()?;
 
         // 2. froxels: inject, then march Z. Both dispatches run outside a pass.
+        gpu.barriers(&next_barriers())?;
         let (ix, iy, iz) = inject_dispatch();
         gpu.set_compute_pipeline(inject)?;
         gpu.bind_compute_bindless()?;
         gpu.dispatch(ix, iy, iz)?;
-        gpu.storage_barrier(scatter)?;
+        gpu.barriers(&next_barriers())?;
 
         let (gx, gy, gz) = integrate_dispatch();
         gpu.set_compute_pipeline(integrate)?;
         gpu.bind_compute_bindless()?;
         gpu.dispatch(gx, gy, gz)?;
-        gpu.storage_barrier(integrated)?;
 
         // 3. composite scene * transmittance + in-scattering, then tonemap.
+        gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(&[rt.composite], None, &[[0.0, 0.0, 0.0, 1.0]], None)?;
         gpu.set_pipeline(apply)?;
         gpu.bind_graphics_bindless()?;
@@ -377,6 +458,7 @@ impl Sample for FogGate {
         let mut blit_cb = cb;
         blit_cb.scene_color = gpu.bindless_index(rt.composite)?;
         gpu.write_frame_bytes(blit_cb.as_bytes())?;
+        gpu.barriers(&next_barriers())?;
         gpu.begin_swapchain_pass([0.02, 0.03, 0.05, 1.0])?;
         gpu.set_pipeline(blit)?;
         gpu.bind_graphics_bindless()?;

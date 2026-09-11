@@ -340,3 +340,12 @@ output.**
 - Um render graph só sabe o que lhe declaram: um acesso esquecido é uma barreira em
   falta, em silêncio. O grafo e a sync validation são um par — um declara, a outra
   verifica — e nenhum dos dois chega sozinho (D53).
+- **Uma barreira vai antes da pass que protege, não onde estava a antiga.** No
+  porte da Sponza pus as chamadas nas posições dos `storage_barrier` removidos —
+  que eram a seguir aos dispatches — e a que protege o volume de scatter passou a
+  sair depois de ele já ter sido lido (D54).
+- As barreiras do grafo para ligações de saída **somam-se** às transições
+  implícitas do `begin_color_pass`, não as substituem. Custa 0.004 ms na Sponza e
+  está registado como dívida — mas não se pode tornar a implícita condicional sem
+  o grafo, porque duas passes seguidas a escrever o mesmo alvo precisam da
+  dependência mesmo com o layout já certo (D54).

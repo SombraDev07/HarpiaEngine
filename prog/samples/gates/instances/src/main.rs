@@ -16,7 +16,9 @@
 use anyhow::{Context, Result};
 use harpia_app::{AppConfig, Sample, run};
 use harpia_math::{Mat4, Vec3, Vec4, perspective_vk};
-use harpia_render::{GBUFFER_DEPTH_FORMAT, color_desc, depth_desc};
+use harpia_render::{
+    Access, GBUFFER_DEPTH_FORMAT, Load, Pass, PassPlan, RenderGraph, color_desc, depth_desc,
+};
 use harpia_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
     GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture,
@@ -123,6 +125,58 @@ struct Instances {
 }
 
 impl Instances {
+    /// O frame declarado como grafo.
+    ///
+    /// Em modo `--cpu-cull` a pass de culling não existe: a CPU escreve a lista e
+    /// os argumentos, e o draw é normal. As barreiras seguem a declaração — que é
+    /// o ponto de haver um grafo em vez de uma lista fixa.
+    fn build_graph(&self, compute_cull: bool) -> Result<Vec<PassPlan>> {
+        let mut g = RenderGraph::new();
+        let inst = g.persistent_buffer("instances", self.inst_buf.context("inst")?);
+        let visible = g.buffer("visible", self.visible_buf.context("visible")?);
+        let args = g.buffer("args", self.args_buf.context("args")?);
+        let rt = self.rt.as_ref().context("rt")?;
+        let color = g.texture("color", rt.color);
+        let depth = g.texture("depth", rt.depth);
+
+        if compute_cull {
+            g.pass(
+                Pass::new("cull")
+                    .uses(inst, Access::StorageRead)
+                    .uses(visible, Access::StorageWrite)
+                    .uses(args, Access::StorageWrite),
+            );
+        } else {
+            // A CPU escreveu os dois por staging; para o grafo isso é uma escrita.
+            g.pass(
+                Pass::new("upload")
+                    .uses(visible, Access::HostWrite)
+                    .uses(args, Access::HostWrite),
+            );
+        }
+        g.pass(
+            Pass::new("cubes")
+                .uses(inst, Access::StorageRead)
+                .uses(visible, Access::StorageRead)
+                .uses(args, Access::Indirect)
+                .uses(color, Access::ColorWrite)
+                .uses(depth, Access::DepthWrite)
+                .load(color, Load::Clear([0.02, 0.025, 0.04, 1.0]))
+                .load(depth, Load::Clear([1.0, 0.0, 0.0, 0.0])),
+        );
+        if let Err(errors) = g.validate() {
+            anyhow::bail!(
+                "render graph inválido: {}",
+                errors
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+        Ok(g.compile())
+    }
+
     fn recreate(&mut self, gpu: &mut Gpu, extent: Extent2D) -> Result<()> {
         let w = extent.width.max(1);
         let h = extent.height.max(1);
@@ -209,6 +263,9 @@ impl Sample for Instances {
         // incrementa. Sem isto crescia para sempre e o draw lia lixo.
         gpu.write_storage_buffer(args, as_bytes(&[CUBE_VERTICES, 0u32, 0, 0]))?;
 
+        let mut plans = self.build_graph(!self.cpu_cull)?.into_iter();
+        let mut next_barriers = move || plans.next().map(|p| p.barriers).unwrap_or_default();
+
         let frustum = Frustum::from_view_proj(view_proj);
         // O lado da comparação que a Dagor faz: a CPU percorre as instâncias,
         // testa cada uma, monta a lista e só então submete. É o trabalho por
@@ -242,10 +299,13 @@ impl Sample for Instances {
             gpu.write_frame_bytes(one(&cull))?;
             gpu.set_compute_pipeline(cull_pso)?;
             gpu.bind_compute_bindless()?;
+            gpu.barriers(&next_barriers())?;
             gpu.dispatch(self.count.div_ceil(64), 1, 1)?;
-            gpu.storage_barrier_buffer(args)?;
             0
         };
+        if self.cpu_cull {
+            gpu.barriers(&next_barriers())?;
+        }
         gpu.mark("cull");
 
         let draw = DrawCb {
@@ -253,6 +313,7 @@ impl Sample for Instances {
             sun_dir: Vec4::new(sun.x, sun.y, sun.z, 0.0),
         };
         gpu.write_frame_bytes(one(&draw))?;
+        gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(
             &[rt.color],
             Some(rt.depth),

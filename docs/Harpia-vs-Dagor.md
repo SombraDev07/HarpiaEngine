@@ -275,8 +275,15 @@ totalmente GPU-driven não tem esse trabalho nenhum.
       encontrou uma corrida na swapchain presente **desde a fase 1** em todos os
       18 binários. Falta: portar o resto dos samples, aliasing de transientes e
       reordenação.
-- [ ] **Portar os restantes samples** ao grafo. Enquanto houver passes fora dele,
-      as barreiras desses continuam a ser raciocinadas à mão.
+- [x] **Portados os oito samples com barreiras explícitas** (D54): `sponza`,
+      `terrain`, `lights`, `instances`, `fog`, `heightquery`, `furnace`,
+      `bindless`. Não resta uma chamada a `storage_barrier*` num sample, e cada
+      porte foi verificado com imagem idêntica ao pixel.
+- [ ] **O RHI passar a confiar no grafo**: hoje as barreiras de attachment
+      somam-se às transições implícitas do `begin_color_pass` em vez de as
+      substituírem. Custa 0.004 ms na Sponza — dívida registada, não urgência.
+- [ ] **Aliasing de transientes e reordenação**, que é o que falta para o grafo
+      dar alguma coisa além de correcção.
 - [ ] **Gravação de command buffers em paralelo** (a D0 escolheu single-thread e
       foi a escolha certa até aqui; deixa de ser).
 - [ ] GI: o `daGI2` deles é voxel + radiance cache. A nossa fase 7 já prevê

@@ -705,3 +705,26 @@ da espera e escrever o layout de uma imagem que o motor de apresentação ainda 
 porque a validation normal não vê corridas.
 
 Uma linha a corrigir. Depois dela os 18 passam com a sync validation ligada.
+
+## O porte: nenhum sample escreve barreiras à mão
+
+Oito samples declaram o frame como grafo — `sponza`, `terrain`, `lights`,
+`instances`, `fog`, `heightquery`, `furnace`, `bindless` — e **não resta uma única
+chamada a `storage_barrier*`** na árvore.
+
+Cada um verificado da mesma maneira: capturar com as barreiras à mão, capturar com
+as derivadas, comparar. Cinco samples, treze alvos, **0 pixels diferentes** em
+todos — incluindo o atlas de sombras de 4 M texels e os dois volumes do fog. O
+`furnace` publica números em vez de pixels e dá exactamente os mesmos.
+
+O `lights` é o caso para que isto foi feito: declarar o atlas como transiente em vez
+de persistente faz o grafo **recusar o frame**, que é a classe do bug que o
+`depth_clear: None` escondia.
+
+A Sponza apanhou um erro meu durante o próprio porte: pus as chamadas onde estavam
+os `storage_barrier` antigos — **depois** dos dispatches — e a barreira que protege
+o volume de scatter saía depois de ele já ter sido lido.
+
+E uma coisa que ainda não é verdade: as barreiras de attachment **somam-se** às
+transições implícitas do RHI em vez de as substituírem. Medido na Sponza, 0.734
+contra 0.730 ms de GPU — 0.5%, dentro do ruído. Dívida registada.

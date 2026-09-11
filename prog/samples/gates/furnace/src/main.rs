@@ -16,6 +16,7 @@
 use anyhow::{Context, Result};
 use harpia_app::{AppConfig, Sample, run};
 use harpia_math::Vec4;
+use harpia_render::{Access, Pass, RenderGraph};
 use harpia_rhi::{
     ComputePipeline, ComputePipelineDesc, Device, Format, FrameInfo, Gpu, Texture, TextureDesc,
     TextureDim,
@@ -119,8 +120,29 @@ impl Sample for Furnace {
         )?;
         gpu.set_compute_pipeline(cs)?;
         gpu.bind_compute_bindless()?;
+        // O frame declarado como grafo: um compute escreve, e depois lê-se.
+        // A barreira que estava aqui escrita à mão sai daqui agora.
+        let mut plans = {
+            let mut g = RenderGraph::new();
+            let r = g.texture("result", result);
+            g.pass(Pass::new("furnace").uses(r, Access::StorageWrite));
+            g.pass(Pass::new("read").uses(r, Access::TransferRead));
+            if let Err(errors) = g.validate() {
+                anyhow::bail!(
+                    "render graph inválido: {}",
+                    errors
+                        .iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                );
+            }
+            g.compile().into_iter()
+        };
+        let mut next_barriers = move || plans.next().map(|p| p.barriers).unwrap_or_default();
+        gpu.barriers(&next_barriers())?;
         gpu.dispatch(N * 3 / 8, N / 8, 1)?;
-        gpu.storage_barrier(result)?;
+        gpu.barriers(&next_barriers())?;
         gpu.mark("furnace");
         gpu.begin_swapchain_pass([0.02, 0.02, 0.03, 1.0])?;
         gpu.end_swapchain_pass()?;

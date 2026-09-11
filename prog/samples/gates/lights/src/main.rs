@@ -17,10 +17,10 @@ use anyhow::{Context, Result};
 use harpia_app::{AppConfig, Sample, run};
 use harpia_math::{Mat4, Vec3, Vec4, perspective_vk};
 use harpia_render::{
-    CLUSTER_X, CLUSTER_Y, CLUSTER_Z, ConeStats, GBUFFER_DEPTH_FORMAT, INSTANCE_STRIDE, MaterialGpu,
-    PointLight, PushConstants, ShadowAtlas, ShadowRequest, SphereInstance, SphereMesh,
-    VERTEX_STRIDE, assign_lights_counted, color_desc, depth_desc, shadow_atlas_desc,
-    shadow_priority, shadow_wanted_size,
+    Access, CLUSTER_X, CLUSTER_Y, CLUSTER_Z, ConeStats, GBUFFER_DEPTH_FORMAT, INSTANCE_STRIDE,
+    Load, MaterialGpu, Pass, PassPlan, PointLight, PushConstants, RenderGraph, ShadowAtlas,
+    ShadowRequest, SphereInstance, SphereMesh, VERTEX_STRIDE, assign_lights_counted, color_desc,
+    depth_desc, shadow_atlas_desc, shadow_priority, shadow_wanted_size,
 };
 use harpia_rhi::{
     Buffer, Device, Extent2D, Format, FrameInfo, Gpu, GraphicsPipeline, GraphicsPipelineDesc,
@@ -281,6 +281,69 @@ impl LightsGate {
 }
 
 impl LightsGate {
+    /// O frame declarado como grafo.
+    ///
+    /// É o caso para que isto foi feito. O atlas de sombras é **persistente** e a
+    /// pass pede `Load::Keep`: sem as duas coisas declaradas, o grafo recusa o
+    /// frame em vez de deixar limpar por cima da cache — que era exactamente o bug
+    /// que o `depth_clear: None` escondia (D52, D53).
+    ///
+    /// `draws_shadows` diz se há tiles a redesenhar neste frame. Quando não há, a
+    /// pass de sombras não existe, e a barreira atlas→amostragem também não.
+    fn build_graph(&self, draws_shadows: bool) -> Result<Vec<PassPlan>> {
+        let mut g = RenderGraph::new();
+        let rt = self.rt.as_ref().context("rt")?;
+        let atlas = g.persistent_texture("shadow-atlas", self.shadow_atlas.context("atlas")?);
+        let shadows = g.buffer("shadow-table", self.shadow_buf.context("shadow buf")?);
+        let lights = g.buffer("lights", self.light_buf.context("lights")?);
+        let ranges = g.buffer("ranges", self.range_buf.context("ranges")?);
+        let indices = g.buffer("indices", self.index_buf.context("indices")?);
+        let clustered = g.texture("clustered", rt.clustered);
+        let brute = g.texture("brute", rt.brute);
+        let depth = g.texture("depth", rt.depth);
+
+        g.pass(
+            Pass::new("upload")
+                .uses(shadows, Access::HostWrite)
+                .uses(lights, Access::HostWrite)
+                .uses(ranges, Access::HostWrite)
+                .uses(indices, Access::HostWrite),
+        );
+        if draws_shadows {
+            g.pass(
+                Pass::new("shadows")
+                    .uses(atlas, Access::DepthWrite)
+                    // A cache: o que os outros tiles têm desenhado sobrevive.
+                    .load(atlas, Load::Keep),
+            );
+        }
+        for (name, target) in [("clustered", clustered), ("brute", brute)] {
+            g.pass(
+                Pass::new(name)
+                    .uses(atlas, Access::Sampled)
+                    .uses(shadows, Access::StorageRead)
+                    .uses(lights, Access::StorageRead)
+                    .uses(ranges, Access::StorageRead)
+                    .uses(indices, Access::StorageRead)
+                    .uses(target, Access::ColorWrite)
+                    .uses(depth, Access::DepthWrite)
+                    .load(target, Load::Clear([0.01, 0.012, 0.02, 1.0]))
+                    .load(depth, Load::Clear([1.0, 0.0, 0.0, 0.0])),
+            );
+        }
+        if let Err(errors) = g.validate() {
+            anyhow::bail!(
+                "render graph inválido: {}",
+                errors
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+        Ok(g.compile())
+    }
+
     /// Escolhe as sombras deste frame, desenha as escolhidas, e diz ao shader
     /// onde cada uma ficou.
     ///
@@ -288,7 +351,13 @@ impl LightsGate {
     /// anterior — e só os tiles do plano é que levam limpeza. É essa a diferença
     /// entre «metade das sombras tem um frame de atraso» e «metade das luzes não
     /// tem sombra».
-    fn shadows(&mut self, gpu: &mut Gpu, view: Mat4) -> Result<()> {
+    /// Planeia, declara o grafo, desenha, e devolve os planos que sobram.
+    ///
+    /// Por esta ordem e não outra: o grafo precisa de saber se há tiles a
+    /// redesenhar, e isso só se sabe depois de a fila decidir. Declarar uma pass
+    /// de sombras que não vai acontecer emitiria uma barreira a mais todos os
+    /// frames em que a cache já está boa — que é a maioria.
+    fn shadows(&mut self, gpu: &mut Gpu, view: Mat4) -> Result<Vec<PassPlan>> {
         let atlas_tex = self.shadow_atlas.context("atlas")?;
         let shadow_buf = self.shadow_buf.context("shadow buf")?;
 
@@ -299,7 +368,11 @@ impl LightsGate {
         }
         if !self.shadows {
             gpu.write_storage_buffer(shadow_buf, shadow_entry_bytes(&self.entries))?;
-            return Ok(());
+            let mut plans = self.build_graph(false)?;
+            // Sem sombras não há pass de sombras; o resto do grafo é o mesmo.
+            plans.remove(0);
+            gpu.mark("shadows");
+            return Ok(plans);
         }
 
         // Só os projectores pedem. Uma omni precisaria de seis faces, e isso é
@@ -332,8 +405,14 @@ impl LightsGate {
         self.frames += 1;
 
         // Desenhar os tiles escolhidos.
-        if !plan.render.is_empty() {
+        let drew = !plan.render.is_empty();
+        let mut plans = self.build_graph(drew)?;
+        // A pass de upload é a primeira e não tem barreiras: os `write_storage_buffer`
+        // já foram feitos por quem chamou.
+        plans.remove(0);
+        if drew {
             let pso = self.shadow_pso.as_ref().context("shadow pso")?.clone();
+            gpu.barriers(&plans.remove(0).barriers)?;
             gpu.begin_color_pass(&[], Some(atlas_tex), &[], None)?;
             gpu.set_pipeline(&pso)?;
             gpu.bind_graphics_bindless()?;
@@ -377,7 +456,7 @@ impl LightsGate {
             };
         }
         gpu.write_storage_buffer(shadow_buf, shadow_entry_bytes(&self.entries))?;
-        Ok(())
+        Ok(plans)
     }
 }
 
@@ -612,7 +691,7 @@ impl Sample for LightsGate {
             as_bytes(&assignment.indices),
         )?;
 
-        self.shadows(gpu, view)?;
+        let mut lit_plans = self.shadows(gpu, view)?.into_iter();
 
         let base = LitCb {
             inv_view_proj: view_proj.inverse(),
@@ -638,6 +717,7 @@ impl Sample for LightsGate {
             let mut cb = base;
             cb.params.w = brute;
             gpu.write_frame_bytes(cb.as_bytes())?;
+            gpu.barriers(&lit_plans.next().map(|p| p.barriers).unwrap_or_default())?;
             gpu.begin_color_pass(
                 &[target],
                 Some(rt.depth),

@@ -61,6 +61,12 @@ pub enum Access {
     VertexInput,
     /// Escrito pela CPU antes da pass (upload por staging).
     HostWrite,
+    /// Lido por uma cópia para a CPU (`read_texture`, `read_buffer`).
+    ///
+    /// É um acesso distinto do `Sampled` e não um caso dele: o estágio é o de
+    /// transferência e o layout é outro. Os gates que medem — `furnace`,
+    /// `heightquery` — acabam todos aqui.
+    TransferRead,
 }
 
 impl Access {
@@ -88,6 +94,7 @@ impl Access {
             Access::DepthRead => Layout::DepthReadOnly,
             Access::Sampled => Layout::ShaderRead,
             Access::StorageRead | Access::StorageWrite => Layout::General,
+            Access::TransferRead => Layout::TransferSrc,
             Access::Indirect | Access::VertexInput | Access::HostWrite => Layout::Undefined,
         }
     }
@@ -102,6 +109,7 @@ pub enum Layout {
     DepthReadOnly,
     ShaderRead,
     General,
+    TransferSrc,
 }
 
 /// Um recurso do grafo.
@@ -468,6 +476,7 @@ fn access_code(a: Access) -> u32 {
         Access::Indirect => 6,
         Access::VertexInput => 7,
         Access::HostWrite => 8,
+        Access::TransferRead => 9,
     }
 }
 

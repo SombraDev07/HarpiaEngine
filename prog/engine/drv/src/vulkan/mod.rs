@@ -2661,6 +2661,12 @@ fn access_bits(code: u32) -> (vk::PipelineStageFlags, vk::AccessFlags, vk::Image
             vk::AccessFlags::VERTEX_ATTRIBUTE_READ | vk::AccessFlags::INDEX_READ,
             vk::ImageLayout::UNDEFINED,
         ),
+        // TransferRead
+        9 => (
+            vk::PipelineStageFlags::TRANSFER,
+            vk::AccessFlags::TRANSFER_READ,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        ),
         // HostWrite, e o caso «primeiro toque»: o conteúdo vem de fora do grafo.
         _ => (
             vk::PipelineStageFlags::TOP_OF_PIPE | vk::PipelineStageFlags::HOST,

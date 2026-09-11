@@ -1,19 +1,19 @@
 use anyhow::{Context, Result};
-use harpia_app::{run, AppConfig, Sample};
+use harpia_app::{AppConfig, Sample, run};
 use harpia_math::{Mat4, Vec2, Vec3, Vec4};
 use harpia_render::{
-    color_desc, compute_csm, depth_desc, froxel_desc, halton2, inject_dispatch,
-    integrate_dispatch, load_gltf, rain_map_view_proj, sampled_desc, shadow_atlas_desc, CpuScene,
-    FlyCamera, FogCb, LightingCb, PushConstants, RainCb, DEFAULT_ATLAS_SIZE,
-    GBUFFER_DEPTH_FORMAT, RAIN_MAP_SIZE, VERTEX_STRIDE_UV,
-};
-use harpia_scene::{
-    cull_to_frustum, ActiveFrustum, Bounds, CullStats, Frustum, Material, Mesh, TwoSided, Visible,
-    WorldTransform,
+    Access, CpuScene, DEFAULT_ATLAS_SIZE, FlyCamera, FogCb, GBUFFER_DEPTH_FORMAT, LightingCb, Load,
+    Pass, PassPlan, PushConstants, RAIN_MAP_SIZE, RainCb, RenderGraph, VERTEX_STRIDE_UV,
+    color_desc, compute_csm, depth_desc, froxel_desc, halton2, inject_dispatch, integrate_dispatch,
+    load_gltf, rain_map_view_proj, sampled_desc, shadow_atlas_desc,
 };
 use harpia_rhi::{
     ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
     GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture,
+};
+use harpia_scene::{
+    ActiveFrustum, Bounds, CullStats, Frustum, Material, Mesh, TwoSided, Visible, WorldTransform,
+    cull_to_frustum,
 };
 
 #[global_allocator]
@@ -111,6 +111,89 @@ impl Default for Sponza {
 }
 
 impl Sponza {
+    /// O frame da Sponza declarado como grafo: seis passes encadeadas.
+    ///
+    /// É a cena com mais passes da árvore, e a que tinha mais barreiras a serem
+    /// raciocinadas à mão — duas, mais as transições de layout implícitas entre
+    /// cada alvo e a pass que o lê a seguir. Aqui isso tudo sai da declaração.
+    ///
+    /// Repare-se no `scene.depth`: é escrito como profundidade na pass da cena e
+    /// **amostrado** na chuva e no fog. É exactamente o par leitura↔escrita com
+    /// mudança de layout que ninguém verificava.
+    fn build_graph(&self) -> Result<Vec<PassPlan>> {
+        let mut g = RenderGraph::new();
+        let rt = self.scene.as_ref().context("scene rt")?;
+        let atlas = g.texture("csm-atlas", self.atlas.context("atlas")?);
+        let rain_map = g.texture("rain-map", self.rain_map.context("rain map")?);
+        let color = g.texture("scene-color", rt.color);
+        let view_depth = g.texture("view-depth", rt.view_depth);
+        let depth = g.texture("depth", rt.depth);
+        let rained = g.texture("rained", rt.rained);
+        let composite = g.texture("composite", rt.composite);
+        let scatter = g.texture("fog-scatter", self.scatter.context("scatter")?);
+        let integrated = g.texture("fog-integrated", self.integrated.context("integrated")?);
+
+        g.pass(
+            Pass::new("cascades")
+                .uses(atlas, Access::DepthWrite)
+                .load(atlas, Load::Clear([1.0, 0.0, 0.0, 0.0])),
+        );
+        g.pass(
+            Pass::new("rain map")
+                .uses(rain_map, Access::DepthWrite)
+                .load(rain_map, Load::Clear([1.0, 0.0, 0.0, 0.0])),
+        );
+        g.pass(
+            Pass::new("scene")
+                .uses(atlas, Access::Sampled)
+                .uses(color, Access::ColorWrite)
+                .uses(view_depth, Access::ColorWrite)
+                .uses(depth, Access::DepthWrite)
+                .load(color, Load::Clear([0.0; 4]))
+                .load(view_depth, Load::Clear([0.0; 4]))
+                .load(depth, Load::Clear([1.0, 0.0, 0.0, 0.0])),
+        );
+        g.pass(
+            Pass::new("rain")
+                .uses(color, Access::Sampled)
+                .uses(view_depth, Access::Sampled)
+                .uses(rain_map, Access::Sampled)
+                .uses(rained, Access::ColorWrite)
+                .load(rained, Load::Clear([0.0, 0.0, 0.0, 1.0])),
+        );
+        g.pass(
+            Pass::new("fog inject")
+                .uses(atlas, Access::Sampled)
+                .uses(scatter, Access::StorageWrite),
+        );
+        g.pass(
+            Pass::new("fog integrate")
+                .uses(scatter, Access::StorageRead)
+                .uses(integrated, Access::StorageWrite),
+        );
+        g.pass(
+            Pass::new("fog apply")
+                .uses(rained, Access::Sampled)
+                .uses(view_depth, Access::Sampled)
+                .uses(integrated, Access::Sampled)
+                .uses(composite, Access::ColorWrite)
+                .load(composite, Load::Clear([0.0, 0.0, 0.0, 1.0])),
+        );
+        g.pass(Pass::new("present").uses(composite, Access::Sampled));
+
+        if let Err(errors) = g.validate() {
+            anyhow::bail!(
+                "render graph inválido: {}",
+                errors
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+        Ok(g.compile())
+    }
+
     fn recreate_scene(&mut self, gpu: &mut Gpu, extent: Extent2D) -> Result<()> {
         let w = extent.width.max(1);
         let h = extent.height.max(1);
@@ -121,10 +204,12 @@ impl Sponza {
             rained: gpu.create_texture(&color_desc(w, h, SCENE_FORMAT))?,
             composite: gpu.create_texture(&color_desc(w, h, COMPOSITE))?,
         });
-        self.scene_extent = Extent2D { width: w, height: h };
+        self.scene_extent = Extent2D {
+            width: w,
+            height: h,
+        };
         Ok(())
     }
-
 }
 
 fn sponza_gltf() -> std::path::PathBuf {
@@ -183,8 +268,13 @@ fn draw_set(
 ) -> Result<()> {
     gpu.set_pipeline(&pso)?;
     gpu.bind_graphics_bindless()?;
-    let mut q =
-        world.query::<(&Mesh, &Material, &WorldTransform, Option<&TwoSided>, Option<&Visible>)>();
+    let mut q = world.query::<(
+        &Mesh,
+        &Material,
+        &WorldTransform,
+        Option<&TwoSided>,
+        Option<&Visible>,
+    )>();
     let batch: Vec<(Mesh, Material, Mat4)> = q
         .iter(world)
         .filter(|(_, _, _, ts, vis)| ts.is_some() == two_sided && (!culled || vis.is_some()))
@@ -222,7 +312,6 @@ impl Sample for Sponza {
         let path = sponza_gltf();
         let cpu = load_gltf(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
         let textures = upload_images(gpu, &cpu)?;
-
 
         let mut two_sided = 0;
         for p in &cpu.prims {
@@ -435,8 +524,10 @@ impl Sample for Sponza {
         let apply_pso = self.apply_pso.as_ref().context("apply pso")?;
         let inject_pso = self.inject_pso.as_ref().context("inject pso")?;
         let integrate_pso = self.integrate_pso.as_ref().context("integrate pso")?;
-        let scatter = self.scatter.context("scatter")?;
-        let integrated = self.integrated.context("integrated")?;
+        // Os dois volumes do fog já não são nomeados aqui: quem os declara é o
+        // `build_graph`, e as barreiras deles vêm de lá.
+        self.scatter.context("scatter")?;
+        self.integrated.context("integrated")?;
 
         let w = info.extent.width.max(1) as f32;
         let h = info.extent.height.max(1) as f32;
@@ -470,13 +561,35 @@ impl Sample for Sponza {
         cb.apply_csm(&csm, gpu.bindless_index(atlas)?);
         gpu.write_frame_bytes(cb.as_bytes())?;
 
+        let mut plans = self.build_graph()?.into_iter();
+        let mut next_barriers = move || plans.next().map(|p| p.barriers).unwrap_or_default();
+
+        gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(&[], Some(atlas), &[], Some(1.0))?;
         for i in 0..4 {
             let (x, y, tw, th) = csm.tile_viewport(i);
             gpu.set_viewport(x, y, tw, th)?;
-            draw_set(&mut self.world, gpu, *shadow_pso, false, false, csm.view_proj[i], false, &mut cb)?;
+            draw_set(
+                &mut self.world,
+                gpu,
+                *shadow_pso,
+                false,
+                false,
+                csm.view_proj[i],
+                false,
+                &mut cb,
+            )?;
             // Cutout casters need the albedo alpha, so they carry material.
-            draw_set(&mut self.world, gpu, *shadow_cutout_pso, true, false, csm.view_proj[i], true, &mut cb)?;
+            draw_set(
+                &mut self.world,
+                gpu,
+                *shadow_cutout_pso,
+                true,
+                false,
+                csm.view_proj[i],
+                true,
+                &mut cb,
+            )?;
         }
         gpu.end_color_pass()?;
         gpu.mark("cascades");
@@ -489,23 +602,61 @@ impl Sample for Sponza {
             RAIN_HALF,
             RAIN_HEIGHT,
         );
+        gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(&[], Some(rain_map), &[], Some(1.0))?;
-        draw_set(&mut self.world, gpu, *shadow_pso, false, false, rain_vp, false, &mut cb)?;
-        draw_set(&mut self.world, gpu, *shadow_cutout_pso, true, false, rain_vp, true, &mut cb)?;
+        draw_set(
+            &mut self.world,
+            gpu,
+            *shadow_pso,
+            false,
+            false,
+            rain_vp,
+            false,
+            &mut cb,
+        )?;
+        draw_set(
+            &mut self.world,
+            gpu,
+            *shadow_cutout_pso,
+            true,
+            false,
+            rain_vp,
+            true,
+            &mut cb,
+        )?;
         gpu.end_color_pass()?;
         gpu.mark("rain map");
 
         // The clear is sky radiance, not a colour: the scene target is linear HDR
         // now and the tonemap happens in the fog apply. Depth clears to the fog
         // far plane so the sky gets a full froxel march instead of zero fog.
+        gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(
             &[scene.color, scene.view_depth],
             Some(scene.depth),
             &[[0.62, 0.86, 1.20, 1.0], [FOG_FAR, 0.0, 0.0, 0.0]],
             Some(1.0),
         )?;
-        draw_set(&mut self.world, gpu, *color_pso, false, true, view_proj, true, &mut cb)?;
-        draw_set(&mut self.world, gpu, *two_sided_pso, true, true, view_proj, true, &mut cb)?;
+        draw_set(
+            &mut self.world,
+            gpu,
+            *color_pso,
+            false,
+            true,
+            view_proj,
+            true,
+            &mut cb,
+        )?;
+        draw_set(
+            &mut self.world,
+            gpu,
+            *two_sided_pso,
+            true,
+            true,
+            view_proj,
+            true,
+            &mut cb,
+        )?;
         gpu.end_color_pass()?;
         gpu.mark("scene");
 
@@ -527,6 +678,7 @@ impl Sample for Sponza {
             ..Default::default()
         };
         gpu.write_frame_bytes(rain_cb.as_bytes())?;
+        gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(&[scene.rained], None, &[[0.0, 0.0, 0.0, 1.0]], None)?;
         gpu.set_pipeline(rain_pso)?;
         gpu.bind_graphics_bindless()?;
@@ -543,7 +695,12 @@ impl Sample for Sponza {
             sun_color: Vec4::new(4.0, 3.6, 3.1, 1.0),
             fog: Vec4::new(0.020, 0.09, 0.60, 0.0),
             froxel: Vec4::new(FOG_NEAR, FOG_FAR, (camera.fov_y * 0.5).tan(), camera.aspect),
-            misc: Vec4::new(halton2(info.frame_index as u32), harpia_render::FROXEL_D as f32, 1.0, 0.0),
+            misc: Vec4::new(
+                halton2(info.frame_index as u32),
+                harpia_render::FROXEL_D as f32,
+                1.0,
+                0.0,
+            ),
             scene_color: gpu.bindless_index(scene.rained)?,
             scene_depth: gpu.bindless_index(scene.view_depth)?,
             inv_extent: Vec2::new(1.0 / w, 1.0 / h),
@@ -555,18 +712,22 @@ impl Sample for Sponza {
             cascades: csm.view_proj,
         };
         gpu.write_frame_bytes(fog_cb.as_bytes())?;
+        // As barreiras vêm **antes** da pass que protegem. Na primeira versão deste
+        // porte ficaram onde estavam os `storage_barrier` antigos — a seguir aos
+        // dispatches — e a que protege o `scatter` saía depois de já ter sido lido.
+        gpu.barriers(&next_barriers())?;
         let (ix, iy, iz) = inject_dispatch();
         gpu.set_compute_pipeline(inject_pso)?;
         gpu.bind_compute_bindless()?;
         gpu.dispatch(ix, iy, iz)?;
-        gpu.storage_barrier(scatter)?;
+        gpu.barriers(&next_barriers())?;
         let (gx, gy, gz) = integrate_dispatch();
         gpu.set_compute_pipeline(integrate_pso)?;
         gpu.bind_compute_bindless()?;
         gpu.dispatch(gx, gy, gz)?;
-        gpu.storage_barrier(integrated)?;
         gpu.mark("fog froxels");
 
+        gpu.barriers(&next_barriers())?;
         gpu.begin_color_pass(&[scene.composite], None, &[[0.0, 0.0, 0.0, 1.0]], None)?;
         gpu.set_pipeline(apply_pso)?;
         gpu.bind_graphics_bindless()?;
@@ -577,6 +738,7 @@ impl Sample for Sponza {
         cb.gbuf0 = gpu.bindless_index(scene.composite)?;
         cb.alpha_cutoff = 0.0;
         gpu.write_frame_bytes(cb.as_bytes())?;
+        gpu.barriers(&next_barriers())?;
         gpu.begin_swapchain_pass([0.02, 0.03, 0.05, 1.0])?;
         gpu.set_pipeline(blit_pso)?;
         gpu.bind_graphics_bindless()?;
