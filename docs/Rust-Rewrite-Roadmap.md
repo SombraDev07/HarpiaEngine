@@ -625,7 +625,10 @@ Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
 - [x] HeightQuery GPU vs CPU. `gate-heightquery`: 256² pontos comparados; o hash
       trigonométrico dava 77 m de erro e 99.84% fora da tolerância, o inteiro dá
       0.19 mm e 0% (D41).
-- [ ] Veg cull + indirect (buffers soltos, sem arrays HLSL).
+- [x] Veg cull + indirect. `gate-veg`: 60 000 plantas, frustum **e oclusão Hi-Z do
+      mesmo frame**. 86.2% cortados pela oclusão, a pass da vegetação passa de
+      0.070 para 0.015 ms, e a imagem é **bit-idêntica** à versão sem oclusão —
+      0 canais diferentes em 3 686 400 (D55).
 - [x] Instance cull 2500 cubos → 1 indirect. `gate-instances`: o compute escreve a
       lista e o `instanceCount`, a CPU submete **um** `drawIndirect` e não sabe
       quantos saíram. A CPU custa **0.17 ms de 2 500 a 1 000 000** de instâncias;

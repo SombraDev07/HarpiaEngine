@@ -20,6 +20,7 @@ pub use types::{
     GraphicsPipeline,
     PipelineTargets, PrimitiveTopology, Texture, TextureData, TextureDesc, TextureDim,
     FRAME_CBV_CHUNKS, FRAME_UBO_SIZE, PUSH_CONSTANTS_SIZE, STORAGE_BUFFER_SLOTS,
+    STORAGE_IMAGE_SLOTS,
     VOLUME_SRV_SLOTS, VOLUME_UAV_SLOTS,
 };
 

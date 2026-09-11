@@ -349,3 +349,15 @@ output.**
   está registado como dívida — mas não se pode tornar a implícita condicional sem
   o grafo, porque duas passes seguidas a escrever o mesmo alvo precisam da
   dependência mesmo com o layout já certo (D54).
+- **Ler o mip errado num `texelFetch` é legal e silencioso.** Uma pirâmide Hi-Z em
+  que cada nível lia o mip 0 em vez do anterior passava validation normal *e* de
+  sincronização, e o sintoma era 60 pixels de erva a desaparecer (D55).
+- Um array de clears vazio no `begin_color_pass` queria dizer «limpa a preto», não
+  «carrega». Uma segunda pass a desenhar por cima da primeira apagava-a. Agora as
+  duas pontas dizem o mesmo: sem valor de limpeza, carrega (D55).
+- O binding 0 do set 4 era **um** descritor: criar duas texturas de storage deixava
+  só a última ligada, em silêncio (D55).
+- Quando um teste conservador corta a mais, a causa pode não estar na geometria:
+  eu testei folga de profundidade, rectângulo alargado e cena sem chão — os três
+  deram o **mesmo** número de pixels errados, e foi isso que devia ter-me dito que
+  o erro estava na pirâmide e não na cena (D55).

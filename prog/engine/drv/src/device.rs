@@ -148,6 +148,8 @@ pub trait Device {
     fn write_storage_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Result<()>;
     /// Desenha com argumentos vindos de um buffer. Cinco `u32` por draw.
     /// Emite as barreiras que o render graph derivou.
+    /// Liga a imagem 2D de storage no mip pedido.
+    fn bind_storage_image(&mut self, tex: Texture, mip: u32, slot: u32) -> Result<()>;
     fn barriers(&mut self, list: &[BarrierDesc]) -> Result<()>;
     fn clear_depth_rect(&mut self, x: u32, y: u32, w: u32, h: u32, value: f32) -> Result<()>;
     fn draw_indirect(&mut self, args: Buffer, offset: u64, draws: u32) -> Result<()>;
@@ -288,6 +290,10 @@ impl Device for Gpu {
 
     fn write_storage_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Result<()> {
         gpu!(self, write_storage_buffer, buffer, bytes)
+    }
+
+    fn bind_storage_image(&mut self, tex: Texture, mip: u32, slot: u32) -> Result<()> {
+        gpu!(self, bind_storage_image, tex, mip, slot)
     }
 
     fn barriers(&mut self, list: &[BarrierDesc]) -> Result<()> {

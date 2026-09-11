@@ -151,6 +151,10 @@ impl NullGpu {
         Ok(())
     }
 
+    pub fn bind_storage_image(&mut self, _tex: crate::types::Texture, _mip: u32, _slot: u32) -> crate::Result<()> {
+        Ok(())
+    }
+
     pub fn barriers(&mut self, _list: &[crate::types::BarrierDesc]) -> crate::Result<()> {
         Ok(())
     }

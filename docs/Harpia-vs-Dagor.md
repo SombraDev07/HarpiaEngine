@@ -223,6 +223,19 @@ alcançáveis e por medirem algo.
       imagem é **bit-idêntica**, 0 ULP. Era exactamente o tipo de erro invisível a
       olho de que falava este ponto.
 
+### 7.6 Vegetação — feito, e por um caminho diferente do deles
+
+- [x] **Culling por oclusão em compute**, contra uma pirâmide Hi-Z do **mesmo
+      frame** (D55). A erva deles corta por feedback do pixel shader, com três
+      caminhos de código de intrínsecas de wave para aliviar os atómicos, e a
+      compactação está desligada fora do DX12 de desktop. Aqui é um atómico por
+      instância que sobrevive, sem intrínseca nenhuma, e sem o frame de atraso.
+      **86.2% cortados**, a pass de 0.070 para 0.015 ms, e **0 canais diferentes**
+      da versão sem oclusão.
+- [ ] Aplicar o mesmo Hi-Z ao terreno e às malhas da Sponza — hoje só a vegetação
+      o usa, e o custo da pirâmide já está pago.
+- [ ] Impostores à distância, que é o que eles têm e nós não.
+
 ### 7.3 Terreno — aqui podemos genuinamente passar à frente
 
 A abertura é esta: **a Dagor faz o culling de patches em CPU** e depois monta

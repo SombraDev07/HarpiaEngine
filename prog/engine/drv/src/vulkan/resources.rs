@@ -60,6 +60,8 @@ pub struct GpuImage {
     pub depth_slices: u32,
     pub sampled_view: vk::ImageView,
     pub storage_view: Option<vk::ImageView>,
+    /// Uma por mip. Vazio se a textura não é de storage.
+    pub storage_views: Vec<vk::ImageView>,
     pub allocation: Allocation,
     pub width: u32,
     pub height: u32,
@@ -216,26 +218,33 @@ pub fn create_image(
         )?
     };
 
-    let storage_view = if desc.storage {
-        Some(unsafe {
-            device.create_image_view(
-                &vk::ImageViewCreateInfo::default()
-                    .image(image)
-                    .view_type(view_type)
-                    .format(format)
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    }),
-                None,
-            )?
-        })
-    } else {
-        None
-    };
+    // Uma vista de storage **por mip**, não só a do mip 0.
+    //
+    // Uma pirâmide de profundidade escreve-se nível a nível, e cada escrita precisa
+    // de uma vista do seu próprio nível. Com uma só vista, o Hi-Z era impossível —
+    // e era essa a razão de o motor não ter culling por oclusão.
+    let mut storage_views: Vec<vk::ImageView> = Vec::new();
+    if desc.storage {
+        for mip in 0..desc.mip_levels.max(1) {
+            storage_views.push(unsafe {
+                device.create_image_view(
+                    &vk::ImageViewCreateInfo::default()
+                        .image(image)
+                        .view_type(view_type)
+                        .format(format)
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: mip,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        }),
+                    None,
+                )?
+            });
+        }
+    }
+    let storage_view = storage_views.first().copied();
 
     Ok(GpuImage {
         image,
@@ -243,6 +252,7 @@ pub fn create_image(
         depth_slices,
         sampled_view,
         storage_view,
+        storage_views,
         allocation,
         width: desc.width,
         height: desc.height,
@@ -263,8 +273,10 @@ pub fn create_image(
 
 pub fn destroy_image(device: &Device, allocator: &mut Allocator, img: GpuImage) {
     unsafe {
-        if let Some(v) = img.storage_view {
-            device.destroy_image_view(v, None);
+        // `storage_view` é um alias do primeiro de `storage_views`; destruir os
+        // dois seria destruir a mesma vista duas vezes.
+        for v in &img.storage_views {
+            device.destroy_image_view(*v, None);
         }
         device.destroy_image_view(img.sampled_view, None);
         device.destroy_image(img.image, None);

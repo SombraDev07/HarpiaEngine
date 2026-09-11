@@ -37,7 +37,9 @@
 
 #version 450
 
-layout(set = 4, binding = 0, rgba16f) uniform writeonly image2D result;
+// O binding 0 do set 4 é um **array** de slots, não um descritor só: uma
+// pirâmide escreve-se nível a nível e cada nível é um slot.
+layout(set = 4, binding = 0, rgba16f) uniform writeonly image2D result[];
 
 layout(set = 0, binding = 0, std140) uniform Furnace {
     layout(offset = 0) vec4 params;   // x = N da grelha, y = amostras, z = razão de anisotropia
@@ -158,7 +160,7 @@ void main() {
     float ay = max(alpha / ratio, 1e-3);
 
     if (panel == 1) {
-        imageStore(result, id, vec4(
+        imageStore(result[0], id, vec4(
             e_aniso(ndv, 0.0, alpha, alpha, samples),
             e_aniso(ndv, 0.0, ax, ay, samples),
             e_aniso(ndv, 0.5 * PI, ax, ay, samples),
@@ -167,7 +169,7 @@ void main() {
     }
     if (panel == 2) {
         // Os eixos trocados e a vista rodada 90 graus: o mesmo material.
-        imageStore(result, id, vec4(
+        imageStore(result[0], id, vec4(
             e_aniso(ndv, 0.5 * PI, ay, ax, samples),
             e_aniso(ndv, 0.0, ay, ax, samples),
             0.0,
@@ -199,5 +201,5 @@ void main() {
     // der, a compensação está mal ligada.
     float e_comp = e_corr > 0.0 ? e_corr * (1.0 + 1.0 * (1.0 / e_corr - 1.0)) : 0.0;
 
-    imageStore(result, id, vec4(e_schlick, e_corr, e_comp, 1.0));
+    imageStore(result[0], id, vec4(e_schlick, e_corr, e_comp, 1.0));
 }

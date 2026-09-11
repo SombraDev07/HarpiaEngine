@@ -1,0 +1,20 @@
+[package]
+name = "gate-veg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Fase 6: vegetacao com culling por frustum e por oclusao Hi-Z, num draw indirecto."
+
+[dependencies]
+anyhow.workspace = true
+harpia-app.workspace = true
+harpia-math.workspace = true
+harpia-memory.workspace = true
+harpia-render.workspace = true
+harpia-rhi.workspace = true
+harpia-scene.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+harpia-shader-build.workspace = true

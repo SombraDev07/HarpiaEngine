@@ -728,3 +728,33 @@ o volume de scatter saía depois de ele já ter sido lido.
 E uma coisa que ainda não é verdade: as barreiras de attachment **somam-se** às
 transições implícitas do RHI em vez de as substituírem. Medido na Sponza, 0.734
 contra 0.730 ms de GPU — 0.5%, dentro do ruído. Dívida registada.
+
+## Vegetação: culling por oclusão, e a pirâmide que estava a ser lixo
+
+O gate `veg` fecha a fase 6, e não com culling por frustum — o `instances` já o
+provou — mas com oclusão contra uma pirâmide Hi-Z construída **no mesmo frame**.
+
+A Dagor corta a erva por feedback do pixel shader: desenha tudo, o PS marca um
+bitvector, um compute compacta. O PS deles tem três caminhos de código com
+intrínsecas de wave só para aliviar os atómicos, e a compactação está desligada
+fora do DX12 de desktop. Aqui o teste é antes de rasterizar: um atómico por
+instância que sobrevive, nenhuma intrínseca, e sem frame de atraso.
+
+| | |
+|---|---|
+| plantas | 60 000 |
+| passam o frustum | 34 089 |
+| sobrevivem à oclusão | **4 701** (86.2% cortados) |
+| pass da vegetação | **0.015 ms** contra 0.070 |
+| custo da pirâmide + culling | 0.040 ms |
+
+E a prova: o gate desenha as **duas** versões no mesmo frame e compara os 3 686 400
+canais. **Zero diferentes.**
+
+**O bug que isto apanhou era meu.** A primeira versão cortava 27% e fazia
+desaparecer 60 pixels de erva. Testei três hipóteses erradas — folga de
+profundidade, rectângulo alargado, cena sem chão — e as três deram exactamente os
+mesmos 60 pixels, o que me devia ter dito logo que o problema não era a cena. A
+causa: cada nível da pirâmide lia `texelFetch(..., 0)`, sempre o mip 0 em vez do
+anterior. Corrigido: 27% → 86%, e 60 pixels → zero. Ler o mip errado é legal e
+nenhuma camada de validação diz nada.

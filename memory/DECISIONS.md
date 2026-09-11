@@ -1382,3 +1382,87 @@ passo é o RHI passar a confiar no grafo quando ele existe.
 tinham barreira explícita nenhuma: dependem das transições implícitas. Portá-los
 acrescentaria declarações sem tirar código. Ficam de fora **por agora**, e a
 synchronization validation cobre-os — passam todos com ela ligada.
+
+## D55 — Culling por oclusão: Hi-Z do mesmo frame, e a prova de que não corta a mais
+
+Fecha o gate `veg` da fase 6, e não com culling por frustum — que o `instances` já
+provou — mas com a parte que separa «desenhar o que está no ecrã» de «desenhar o
+que se vê».
+
+### O que a Dagor faz
+
+A erva deles (`prog/daNetGame/shaders/grass_generate.dshl`) corta por **feedback do
+pixel shader**: desenha-se tudo, o PS marca num bitvector qual a instância que
+passou o teste de profundidade, e um compute (`grass_compact_instance_indices_cs`)
+compacta esse bitvector numa lista densa. O PS tem **três caminhos de código** com
+intrínsecas de wave (`WaveActiveMin`, `WaveActiveBitOr`, `WavePrefixSum`) só para
+reduzir o tráfego de atómicos — e o shader de compactação abre com
+`if (!hardware.dx12 || hardware.xbox || hardware.scarlett) dont_render;`, ou seja,
+está **desligado fora do DX12 de desktop**.
+
+### O que fizemos, e porquê
+
+O teste é feito **antes** de rasterizar. Um prepass desenha os oclusores, constrói-
+se uma pirâmide de máximos a partir dessa profundidade, e o compute projecta a
+caixa de cada planta e compara. Três diferenças que importam:
+
+* **um atómico por instância que sobrevive**, em vez de um por fragmento;
+* **nenhuma intrínseca de wave**, portanto nada que se desligue por plataforma;
+* a pirâmide é do **mesmo frame**, portanto não há o frame de atraso de um Hi-Z
+  reaproveitado — nem o pop-in que vem com ele.
+
+### Os números
+
+60 000 plantas, 1280×720, 11 níveis de pirâmide:
+
+| | |
+|---|---|
+| passam o frustum | 34 089 |
+| sobrevivem à oclusão | **4 701** (86.2% cortados) |
+| pass da vegetação, com oclusão | **0.015 ms** |
+| pass da vegetação, sem oclusão | 0.070 ms |
+| custo: pirâmide + culling | 0.032 + 0.008 ms |
+| **soma** | **0.055 ms contra 0.070** |
+
+4.7× mais barata a desenhar, 21% mais barata no total. A construção da pirâmide é
+a maior parte do custo e **não cresce com o número de plantas** — só com a
+resolução — por isso a conta melhora quanto mais vegetação houver.
+
+### A prova, que é a parte que eles não publicam
+
+Um culling por oclusão que corta de mais não dá erro nenhum: dá geometria que
+desaparece, e num campo de erva ninguém dá por isso. Por isso o gate desenha **as
+duas versões no mesmo frame** — o mesmo depth, a mesma geometria, e a única
+diferença é o teste Hi-Z — e compara os 3 686 400 canais.
+
+**0 canais diferentes.** E o gate falha se forem mais de 32.
+
+O limiar é contado, não escolhido: cinco corridas do código certo deram 0, 0, 0, 0
+e 3 (a ordem dos sobreviventes muda e duas folhas à mesma profundidade trocam de
+vencedor). Do outro lado, os dois erros que introduzi de propósito dão 176 e 803.
+
+### E apanhou um bug meu antes de eu o ver
+
+A primeira versão cortava só 27% e tirava 60 pixels de erva que se via. Testei três
+hipóteses erradas antes da certa — folga na profundidade (não mudou nada), alargar
+o rectângulo projectado (60 → 59), tirar o chão (mesmos 60 pixels exactos, o que
+devia ter-me dito logo que a cena não era o problema).
+
+A causa: no `hiz.cs` cada nível lia `texelFetch(..., 0)` — **sempre o mip 0** — em
+vez do nível anterior. A pirâmide era lixo a partir do primeiro nível. Corrigido,
+o culling passou de 27% para 86% e o erro de 60 pixels para zero. Ler o mip errado
+é perfeitamente legal: nem a validation normal nem a de sincronização dizem nada.
+
+### O que foi preciso no RHI
+
+* **Vistas de storage por mip.** Havia uma só, do mip 0 — com ela, uma pirâmide era
+  impossível, e era essa a razão de o motor não ter culling por oclusão.
+* **O binding 0 do set 4 passou a array** de `STORAGE_IMAGE_SLOTS`. Era um
+  descritor único, escrito na criação de cada textura, o que queria dizer que só a
+  **última criada** estava ligada.
+* `descriptorBindingStorageImageUpdateAfterBind`, porque o alvo é recriado quando a
+  janela muda de tamanho — a meio de um frame.
+* **Um array de clears vazio passou a significar LOAD**, como o `depth_clear: None`
+  desde D52. Queria dizer «limpa a preto», e por isso a pass da vegetação apagava
+  os oclusores que a pass anterior tinha desenhado — sem erro nenhum, só um ecrã
+  preto com erva.

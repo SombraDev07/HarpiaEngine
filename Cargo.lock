@@ -1191,6 +1191,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate-veg"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-math",
+ "harpia-memory",
+ "harpia-render",
+ "harpia-rhi",
+ "harpia-scene",
+ "harpia-shader-build",
+ "tracing",
+]
+
+[[package]]
 name = "gate-water"
 version = "0.1.0"
 dependencies = [

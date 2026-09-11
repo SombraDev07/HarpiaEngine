@@ -25,6 +25,7 @@ members = [
     "prog/samples/gates/sky",
     "prog/samples/gates/taa",
     "prog/samples/gates/terrain",
+    "prog/samples/gates/veg",
     "prog/samples/gates/rain",
     "prog/samples/gates/water",
     "prog/samples/sponza",

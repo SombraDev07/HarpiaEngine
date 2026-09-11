@@ -8,7 +8,9 @@
 
 #version 450
 
-layout(set = 4, binding = 0, r32f) uniform writeonly image2D result;
+// O binding 0 do set 4 é um **array** de slots, não um descritor só: uma
+// pirâmide escreve-se nível a nível e cada nível é um slot.
+layout(set = 4, binding = 0, r32f) uniform writeonly image2D result[];
 
 layout(set = 0, binding = 0, std140) uniform Query {
     layout(offset = 0)  vec4 origin;   // xy = canto do mundo, z = passo, w = N
@@ -73,5 +75,5 @@ void main() {
     float step = cb.origin.z;
     float x = cb.origin.x + float(id.x) * step;
     float z = cb.origin.y + float(id.y) * step;
-    imageStore(result, id, vec4(terrain_height(x, z), 0.0, 0.0, 0.0));
+    imageStore(result[0], id, vec4(terrain_height(x, z), 0.0, 0.0, 0.0));
 }

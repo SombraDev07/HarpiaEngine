@@ -218,6 +218,12 @@ pub struct TextureData {
 }
 
 /// Volume UAV slots in set 4 (binding 1) — fog writes two.
+/// Slots de imagem 2D de storage (set 4, binding 0).
+///
+/// Era **um** descritor, escrito na criação de cada textura — o que queria dizer
+/// que só a última criada estava ligada. Uma pirâmide Hi-Z precisa de um slot por
+/// nível, e 16 chega para 65536×65536.
+pub const STORAGE_IMAGE_SLOTS: u32 = 16;
 pub const VOLUME_UAV_SLOTS: u32 = 4;
 /// Volume SRV slots in set 5 (binding 0).
 pub const VOLUME_SRV_SLOTS: u32 = 8;

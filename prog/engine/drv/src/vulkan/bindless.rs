@@ -183,7 +183,7 @@ impl Bindless {
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
+                .descriptor_count(crate::types::STORAGE_IMAGE_SLOTS)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
@@ -191,9 +191,23 @@ impl Bindless {
                 .descriptor_count(VOLUME_UAV_SLOTS)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
+        // UPDATE_AFTER_BIND nas duas: as texturas de storage são criadas e
+        // religadas a meio de um frame quando a janela muda de tamanho, e sem esta
+        // flag isso invalida o command buffer em gravação.
+        let storage_flags = [
+            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                | vk::DescriptorBindingFlags::PARTIALLY_BOUND,
+            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                | vk::DescriptorBindingFlags::PARTIALLY_BOUND,
+        ];
+        let mut storage_flags_ci =
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&storage_flags);
         let set4_layout = unsafe {
             device.create_descriptor_set_layout(
-                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&storage_binding),
+                &vk::DescriptorSetLayoutCreateInfo::default()
+                    .bindings(&storage_binding)
+                    .flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
+                    .push_next(&mut storage_flags_ci),
                 None,
             )?
         };
@@ -251,7 +265,11 @@ impl Bindless {
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: 8 + VOLUME_UAV_SLOTS,
+                // O `8` era folga por cima de um único descritor de 2D. Agora o
+                // binding 0 é um array de `STORAGE_IMAGE_SLOTS`, e o pool tem de o
+                // contar — senão a criação do heap dá `ERROR_OUT_OF_POOL_MEMORY`,
+                // que não diz qual dos tipos faltou.
+                descriptor_count: crate::types::STORAGE_IMAGE_SLOTS + VOLUME_UAV_SLOTS,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
@@ -483,13 +501,14 @@ impl Bindless {
         }
     }
 
-    pub fn write_storage(&self, device: &Device, view: vk::ImageView) {
+    pub fn write_storage(&self, device: &Device, slot: u32, view: vk::ImageView) {
         let info = vk::DescriptorImageInfo::default()
             .image_view(view)
             .image_layout(vk::ImageLayout::GENERAL);
         let write = vk::WriteDescriptorSet::default()
             .dst_set(self.set4)
             .dst_binding(0)
+            .dst_array_element(slot)
             .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
             .image_info(std::slice::from_ref(&info));
         unsafe {

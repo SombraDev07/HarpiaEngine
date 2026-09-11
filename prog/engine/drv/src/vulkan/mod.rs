@@ -237,6 +237,14 @@ impl VulkanGpu {
             avail12.descriptor_binding_variable_descriptor_count,
             "descriptorBindingVariableDescriptorCount",
         )?;
+        // Sem isto o heap de imagens de storage não pode ser actualizado com um
+        // command buffer a gravar — e uma pirâmide Hi-Z precisa disso, porque o
+        // alvo é recriado quando a janela muda de tamanho, que acontece a meio do
+        // frame (D55).
+        require_true(
+            avail12.descriptor_binding_storage_image_update_after_bind,
+            "descriptorBindingStorageImageUpdateAfterBind",
+        )?;
         require_true(avail12.runtime_descriptor_array, "runtimeDescriptorArray")?;
         require_true(
             avail12.shader_sampled_image_array_non_uniform_indexing,
@@ -260,6 +268,7 @@ impl VulkanGpu {
             .descriptor_indexing(true)
             .descriptor_binding_partially_bound(true)
             .descriptor_binding_sampled_image_update_after_bind(true)
+            .descriptor_binding_storage_image_update_after_bind(true)
             .descriptor_binding_variable_descriptor_count(true)
             .runtime_descriptor_array(true)
             .shader_sampled_image_array_non_uniform_indexing(true);
@@ -1231,7 +1240,7 @@ impl VulkanGpu {
                     .as_ref()
                     .ok_or_else(|| RhiError::msg("bindless missing"))?;
                 heap.write_sampled(&self.device, slot, view, vk::ImageLayout::GENERAL);
-                heap.write_storage(&self.device, storage);
+                heap.write_storage(&self.device, 0, storage);
             }
             img.ready = true;
             img.layout = vk::ImageLayout::GENERAL;
@@ -1479,6 +1488,37 @@ impl VulkanGpu {
             ));
         }
         Ok(img.bindless_slot)
+    }
+
+    /// Set 4 binding 0: a imagem 2D que um compute escreve, no mip pedido.
+    ///
+    /// O heap de storage 2D tem **um** descritor, e até aqui era escrito uma vez
+    /// na criação de cada textura — o que queria dizer que só a última criada
+    /// estava ligada. Chega para um gate com uma imagem; não chega para uma
+    /// pirâmide de profundidade, que escreve nível a nível e tem de rebindar entre
+    /// dispatches.
+    pub fn bind_storage_image(&mut self, tex: Texture, mip: u32, slot: u32) -> Result<()> {
+        if slot >= crate::types::STORAGE_IMAGE_SLOTS {
+            return Err(RhiError::msg("storage image slot out of range"));
+        }
+        let view = {
+            let img = self
+                .images
+                .get(tex.id as usize)
+                .ok_or_else(|| RhiError::msg("invalid texture"))?;
+            if img.dim != TextureDim::D2 {
+                return Err(RhiError::msg("bind_storage_image needs a 2D texture"));
+            }
+            *img
+                .storage_views
+                .get(mip as usize)
+                .ok_or_else(|| RhiError::msg("mip out of range, or not a storage texture"))?
+        };
+        self.bindless
+            .as_ref()
+            .ok_or_else(|| RhiError::msg("bindless missing"))?
+            .write_storage(&self.device, slot, view);
+        Ok(())
     }
 
     /// Set 4 binding 1, slot `slot`: the volume a compute shader writes.
@@ -1912,12 +1952,25 @@ impl VulkanGpu {
             if let Some(img) = self.images.get_mut(tex.id as usize) {
                 img.layout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL;
             }
-            let clear = clears.get(i).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+            // Sem entrada em `clears` para esta ligação: **carrega** o que lá está.
+            //
+            // Era «limpa a preto», e por isso uma segunda pass que desenhasse por
+            // cima do resultado da primeira apagava-o — sem erro nenhum, só um
+            // ecrã preto com o que a segunda pass desenhou. É a mesma armadilha do
+            // `depth_clear: None` (D52), do outro lado. Agora as duas dizem o
+            // mesmo: sem valor de limpeza, carrega.
+            let clear = clears.get(i).copied();
+            let load = if clear.is_some() {
+                vk::AttachmentLoadOp::CLEAR
+            } else {
+                vk::AttachmentLoadOp::LOAD
+            };
+            let clear = clear.unwrap_or([0.0, 0.0, 0.0, 1.0]);
             attachments.push(
                 vk::RenderingAttachmentInfo::default()
                     .image_view(view)
                     .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                    .load_op(load)
                     .store_op(vk::AttachmentStoreOp::STORE)
                     .clear_value(vk::ClearValue {
                         color: vk::ClearColorValue { float32: clear },
