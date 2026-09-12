@@ -958,3 +958,21 @@ verificação CPU-contra-GPU do próprio gate.
 **Corrigido:** a reposição passou a ser uma pass de uma invocação (`args_reset.cs`)
 antes do `cull`, ordenada pelo grafo. **0 abortos em 43 corridas**, imagem e tempos
 na mesma. O `--no-cull` usa a mesma pass, com o `instanceCount` inicial no CB.
+
+### Os quatro gates do exit, depois de tudo isto
+
+Passados com a instrumentação nova, todos a `validation_errors=0`:
+
+| gate | frames | exit |
+|---|---|---|
+| `terrain` | 16 | 0 |
+| `heightquery` | 4 | 0 |
+| `veg` | 24 | 0 |
+| `instances` | 16 | 0 |
+
+É o que o roadmap §15 escreve como exit da fase 6 — **e não é a fase inteira**. O
+`INDEX.md` e o `AAA-Gap-Analysis.md` metem nesta fase o céu de Hillaire, as nuvens
+e a sombra delas na cena aberta (num interior não se viam, D32) mais a perspectiva
+aérea, e nada disso está feito: o `gate-terrain` desenha um gradiente de céu, não a
+atmosfera. Marcar a fase como fechada só porque os quatro gates passam seria contar
+passes em vez de olhar para o pixel — e a barra proíbe isso.
