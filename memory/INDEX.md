@@ -55,6 +55,13 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 código. Resumo: o BRDF aguenta; só temos uma luz; eles fazem culling de terreno em
 CPU e é aí que podemos passar à frente. A `DagorEngine/` está no `.gitignore`.
 
+`docs/Dagor-Ceu-Fog.md` — **base para fechar a fase 6**: céu, nuvens, fog e a
+perspectiva aérea. O fog deles é iluminado pela pilha toda (CSM, static, FOM,
+clustered, GI) e **amostra a sombra das nuvens** com dois termos — um para o
+scattering, outro para o resto. A perspectiva aérea existe e chama-se
+`skies_frustum_scattering` (a dívida da nossa D19). E o céu não conhece o fog:
+pede-o por uma macro com stub «sem fog». Temos as três peças; falta a composição.
+
 `docs/Dagor-Fase6.md` — **base para a fase 6**: vegetação (rendInst), grama,
 colocação por GPU e mundo, lidos no código. O culling deles é CPU **também** na
 vegetação (zero `draw_indirect`/`dispatch` em `rendInst`, `landMesh` e `heightmap`),
