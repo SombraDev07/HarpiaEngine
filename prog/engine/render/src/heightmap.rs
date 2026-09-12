@@ -390,6 +390,146 @@ impl HeightmapField {
     }
 }
 
+/// Lado da janela **em tiles**, quando ela segue a câmara.
+///
+/// 17 e não 16, e a diferença não é folga a mais: a origem anda de tile em tile
+/// (128 u) e o clipmap está centrado na câmara, portanto uma janela do tamanho
+/// exacto do alcance deixa o nível de fora sair até meio tile. Foi isso que pôs
+/// 902 pixels errados na linha do horizonte (D61), e é o que o teste
+/// `the_window_covers_the_clipmap_wherever_the_camera_is` fixa — com 16 ele falha.
+pub const FIELD_TILES: u32 = 17;
+/// Lado da janela seguidora, em amostras.
+pub const FIELD_STREAM_SIDE: u32 = FIELD_TILES * TILE_N;
+
+/// Um tile que entrou na janela e tem de subir para a textura.
+pub struct TileUpload {
+    /// Onde vive dentro da textura, em tiles. É `tile mod FIELD_TILES`, e o
+    /// shader tem de fazer a mesma conta.
+    pub slot: (u32, u32),
+    /// O tile em coordenadas de mundo, em tiles.
+    pub tile: (i32, i32),
+    /// `TILE_N²` amostras em `R32Float`, linha a linha.
+    pub bytes: Vec<u8>,
+}
+
+/// A janela que segue a câmara, com endereçamento toroidal.
+///
+/// O slot de um tile é o resto da divisão pelas 17 posições: quando a câmara
+/// avança um tile, o que entra ocupa exactamente o lugar do que saiu, e por isso
+/// só se sobe uma tira em vez da janela toda. É o mesmo truque do atlas toroidal
+/// de sombras, e só funciona porque a janela tem **exactamente** `FIELD_TILES` de
+/// lado.
+#[derive(Default)]
+pub struct ToroidalField {
+    field: HeightmapField,
+    origin_tile: Option<(i32, i32)>,
+}
+
+impl ToroidalField {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// O slot de um tile. **A mesma fórmula está no GLSL**; se uma mudar sem a
+    /// outra, cada patch lê a geometria de outro sítio.
+    pub fn slot_of(tile: (i32, i32)) -> (u32, u32) {
+        (
+            tile.0.rem_euclid(FIELD_TILES as i32) as u32,
+            tile.1.rem_euclid(FIELD_TILES as i32) as u32,
+        )
+    }
+
+    /// Canto da janela, em amostras globais. É o que o shader precisa de saber
+    /// para converter mundo em texel.
+    pub fn origin_sample(&self) -> Option<(i64, i64)> {
+        self.origin_tile
+            .map(|(tx, tz)| (tx as i64 * TILE_N as i64, tz as i64 * TILE_N as i64))
+    }
+
+    pub fn origin_tile(&self) -> Option<(i32, i32)> {
+        self.origin_tile
+    }
+
+    pub fn height(&self, x: f32, z: f32) -> Option<f32> {
+        self.field.height(x, z)
+    }
+
+    /// Onde fica o canto da janela para uma câmara. Uma só definição.
+    fn origin_for(camera_x: f32, camera_z: f32) -> (i32, i32) {
+        let centre = tile_of(camera_x, camera_z);
+        let half = (FIELD_TILES / 2) as i32;
+        (centre.0 - half, centre.1 - half)
+    }
+
+    /// Que tiles entram se a câmara for para ali — **sem cozer nada**.
+    ///
+    /// Decidir é barato e cozer não é, por isso são duas funções. Os testes que
+    /// contam a tira não pagam 289 tiles, e quem chama pode ver o trabalho antes
+    /// de o mandar fazer — que é o que um orçamento de streaming precisa.
+    pub fn plan(&self, camera_x: f32, camera_z: f32) -> Vec<(i32, i32)> {
+        let origin = Self::origin_for(camera_x, camera_z);
+        if self.origin_tile == Some(origin) {
+            return Vec::new();
+        }
+        let old = self.origin_tile;
+        let inside = |o: (i32, i32), t: (i32, i32)| {
+            t.0 >= o.0
+                && t.0 < o.0 + FIELD_TILES as i32
+                && t.1 >= o.1
+                && t.1 < o.1 + FIELD_TILES as i32
+        };
+        let mut wanted = Vec::new();
+        for tz in origin.1..origin.1 + FIELD_TILES as i32 {
+            for tx in origin.0..origin.0 + FIELD_TILES as i32 {
+                // O que já lá estava fica: o slot é o mesmo e o conteúdo também.
+                if old.is_none_or(|o| !inside(o, (tx, tz))) {
+                    wanted.push((tx, tz));
+                }
+            }
+        }
+        wanted
+    }
+
+    /// Põe a janela à volta da câmara, coze o que entrou e devolve-o.
+    ///
+    /// Na primeira chamada entram os 289; a cada tile que a câmara atravessa
+    /// entram 17. A 40 u/s isso é uma tira por 3.2 s.
+    pub fn advance(&mut self, camera_x: f32, camera_z: f32) -> Vec<TileUpload> {
+        let wanted = self.plan(camera_x, camera_z);
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        self.origin_tile = Some(Self::origin_for(camera_x, camera_z));
+
+        // Em paralelo, pela mesma razão do `ensure_window`: 289 tiles em série
+        // são 1373 ms a olhar para uma janela preta (D61).
+        let baked: Vec<((i32, i32), HeightTile)> = wanted
+            .par_iter()
+            .filter(|c| !self.field.tiles.contains_key(c))
+            .map(|&(tx, tz)| ((tx, tz), HeightTile::bake(tx, tz)))
+            .collect();
+        self.field.tiles.extend(baked);
+
+        wanted
+            .into_iter()
+            .filter_map(|tile| {
+                let (gx, gz) = (tile.0 as i64 * TILE_N as i64, tile.1 as i64 * TILE_N as i64);
+                self.field
+                    .window_r32(gx, gz, TILE_N)
+                    .map(|bytes| TileUpload {
+                        slot: Self::slot_of(tile),
+                        tile,
+                        bytes,
+                    })
+            })
+            .collect()
+    }
+
+    pub fn tile_count(&self) -> usize {
+        self.field.tile_count()
+    }
+}
+
 /// Mundo de uma amostra. Uma só definição, para a CPU e (depois) o GLSL.
 fn sample_world(tx: i32, tz: i32, ix: u32, iz: u32) -> (f32, f32) {
     let gx = tx as i64 * TILE_N as i64 + ix as i64;
@@ -647,6 +787,107 @@ mod tests {
         // E a amostra 0 de um tile é o canto dele.
         let (x, z) = sample_world(2, -3, 0, 0);
         assert_eq!((x, z), (2.0 * TILE_SIZE, -3.0 * TILE_SIZE));
+    }
+
+    /// A janela tem de cobrir o clipmap **esteja a câmara onde estiver**.
+    ///
+    /// Este é o teste que faltava. Com 16 tiles ele falha — e falhava em silêncio
+    /// na imagem, como 902 pixels errados no horizonte (D61). O nível de fora faz
+    /// snap a 64 u e estende-se ±`clipmap_range()` à volta desse centro, portanto
+    /// é isso que a janela tem de conter, e não o alcance nu.
+    #[test]
+    fn the_window_covers_the_clipmap_wherever_the_camera_is() {
+        let covers = |tiles: u32, cam_x: f32, cam_z: f32| {
+            let half = (tiles / 2) as i32;
+            let centre = tile_of(cam_x, cam_z);
+            let origin = (centre.0 - half, centre.1 - half);
+            let w0 = (
+                origin.0 as f32 * TILE_SIZE,
+                origin.1 as f32 * TILE_SIZE,
+            );
+            let w1 = (
+                w0.0 + tiles as f32 * TILE_SIZE,
+                w0.1 + tiles as f32 * TILE_SIZE,
+            );
+            // O nível de fora: centro com snap de 64 u, meia largura = alcance.
+            let snap = crate::terrain::CLIPMAP_CELL * (1u32 << (CLIPMAP_LEVELS - 1)) as f32 * 2.0;
+            let c = (
+                (cam_x / snap).floor() * snap,
+                (cam_z / snap).floor() * snap,
+            );
+            let r = crate::terrain::clipmap_range();
+            c.0 - r >= w0.0 && c.0 + r <= w1.0 && c.1 - r >= w0.1 && c.1 + r <= w1.1
+        };
+
+        for &(x, z) in &[
+            (0.0f32, 0.0f32),
+            (14.4, -8.64),   // o frame 16 do gate, que foi onde isto se viu
+            (127.9, -127.9), // quase a atravessar um tile
+            (-1000.0, 555.0),
+        ] {
+            assert!(
+                covers(FIELD_TILES, x, z),
+                "a janela de {FIELD_TILES} tiles não cobre o clipmap em ({x}, {z})"
+            );
+        }
+        // O controlo: a janela do tamanho exacto do alcance **não** chega. Se um
+        // dia isto passar, alguém mudou a geometria e este teste deixou de medir.
+        assert!(
+            !covers(16, 14.4, -8.64),
+            "16 tiles deviam deixar o clipmap sair — era esse o bug"
+        );
+    }
+
+    /// Andar um tile sobe uma tira, não a janela toda.
+    ///
+    /// Sobre o `plan` e não o `advance`: a propriedade é de contagem, e cozer 323
+    /// tiles para a medir punha a suite inteira em 9 segundos. O que o `advance`
+    /// acrescenta — os bytes e o slot — está fixado em
+    /// `the_window_bytes_are_the_samples_in_order` e em
+    /// `slots_do_not_collide_inside_the_window`.
+    #[test]
+    fn advancing_one_tile_plans_one_strip() {
+        let mut win = ToroidalField::new();
+        assert_eq!(
+            win.plan(0.0, 0.0).len(),
+            (FIELD_TILES * FIELD_TILES) as usize,
+            "a primeira volta tem de cozer a janela inteira"
+        );
+        // Aceitar a primeira posição sem cozer, para poder continuar a contar.
+        win.origin_tile = Some(ToroidalField::origin_for(0.0, 0.0));
+
+        assert!(
+            win.plan(10.0, 10.0).is_empty(),
+            "sem mudar de tile não há trabalho"
+        );
+
+        let strip = win.plan(TILE_SIZE + 10.0, 10.0);
+        assert_eq!(strip.len(), FIELD_TILES as usize, "uma coluna, não mais");
+        // A coluna que entra é a da frente, e os slots dela são os que saíram.
+        let ahead = ToroidalField::origin_for(TILE_SIZE + 10.0, 10.0).0 + FIELD_TILES as i32 - 1;
+        assert!(
+            strip.iter().all(|t| t.0 == ahead),
+            "a tira tem de ser a coluna nova, não um remendo espalhado"
+        );
+
+        // Uma diagonal atravessa duas tiras e partilha um canto: 2N-1.
+        win.origin_tile = Some(ToroidalField::origin_for(TILE_SIZE + 10.0, 10.0));
+        let diag = win.plan(2.0 * TILE_SIZE + 10.0, TILE_SIZE + 10.0);
+        assert_eq!(diag.len(), (FIELD_TILES * 2 - 1) as usize);
+    }
+
+    /// O slot é uma bijecção dentro da janela: dois tiles vizinhos nunca se pisam.
+    #[test]
+    fn slots_do_not_collide_inside_the_window() {
+        for base in [-40i32, -1, 0, 7, 1000] {
+            let mut seen = vec![false; FIELD_TILES as usize];
+            for k in 0..FIELD_TILES as i32 {
+                let (sx, _) = ToroidalField::slot_of((base + k, 0));
+                assert!(!seen[sx as usize], "slot {sx} repetido a partir de {base}");
+                seen[sx as usize] = true;
+            }
+            assert!(seen.into_iter().all(|s| s), "a janela não usa todos os slots");
+        }
     }
 
     /// Cozer é idempotente e conta o trabalho: é o número que o streaming vai usar.

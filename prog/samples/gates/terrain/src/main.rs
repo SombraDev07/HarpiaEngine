@@ -16,21 +16,38 @@ use anyhow::{Context, Result};
 use harpia_app::{AppConfig, Sample, run};
 use harpia_math::{Mat4, Vec2, Vec3, Vec4};
 use harpia_render::{
-    Access, CLIPMAP_LEVELS, CLIPMAP_N, CLIPMAP_PATCH, FIELD_ORIGIN, FIELD_SIDE, FlyCamera,
-    GBUFFER_DEPTH_FORMAT, HeightmapField, Load, Pass, PassPlan, RenderGraph, TerrainCb,
-    clipmap_patch_bounds, clipmap_patch_count, clipmap_patch_vertex_count,
+    Access, CLIPMAP_LEVELS, CLIPMAP_N, CLIPMAP_PATCH, FIELD_STREAM_SIDE, FlyCamera,
+    GBUFFER_DEPTH_FORMAT, Load, Pass, PassPlan, RenderGraph, TILE_N, TerrainCb, TileUpload,
+    ToroidalField, clipmap_patch_bounds, clipmap_patch_count, clipmap_patch_vertex_count,
     clipmap_patches_per_level, clipmap_range, clipmap_vertex_count, color_desc, depth_desc,
-    sampled_desc, terrain_height,
+    terrain_height,
 };
 use harpia_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
-    GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture,
+    GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture, TextureDesc, TextureDim,
 };
 use harpia_scene::{Bounds, Frustum};
 
 const SLOT_VISIBLE: u32 = 0;
 const SLOT_ARGS: u32 = 1;
 const SLOT_BOUNDS: u32 = 2;
+/// Amostras dos tiles a caminho da textura, e para onde vai cada um.
+const SLOT_STAGED: u32 = 3;
+const SLOT_SLOTS: u32 = 4;
+/// Slot do campo no heap de storage images (set 4). Este gate não usa mais nenhum.
+const FIELD_UAV_SLOT: u32 = 0;
+/// Tiles por dispatch. 64 × 256 KiB = 16 MiB de staging, e a janela inteira (289)
+/// enche em 5 frames — durante os quais o VS continua no FBM, que é o que evita
+/// desenhar buracos enquanto o campo não está todo lá.
+const UPLOAD_TILES: usize = 64;
+
+/// O que o `field_upload.cs` lê.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UploadCb {
+    /// x = slot do UAV, y = tiles neste dispatch, z = lado do tile
+    params: Vec4,
+}
 
 /// O que o `terrain_bounds.cs` lê: que níveis refazer, e onde eles estão.
 #[repr(C)]
@@ -99,6 +116,15 @@ struct TerrainGate {
     /// `-- --no-cull`: desenha os 448 patches. O controlo que prova que o culling
     /// não muda a imagem — se mudasse, estaria a cortar chão que se vê.
     no_cull: bool,
+    /// `-- --static`: a câmara não se mexe.
+    ///
+    /// O gate faz a câmara voar de propósito — um clipmap parado não prova que o
+    /// snap funciona. Mas isso torna **cada frame um mundo diferente**, e medir a
+    /// mediana de uma mistura não responde a «ler uma textura custa mais que
+    /// avaliar FBM»: a dispersão dentro de uma corrida (0.03 a 0.61 ms) era muito
+    /// maior que a diferença entre os dois caminhos. Com a câmara quieta, os 112
+    /// frames desenham o mesmo, e o que sobra é ruído de medição.
+    still: bool,
     /// `-- --field`: a altura vem do campo cozido em vez do FBM avaliado no VS.
     ///
     /// Opt-in enquanto não estiver medido. O caminho analítico fica a ser o
@@ -106,6 +132,17 @@ struct TerrainGate {
     /// amostras do campo **são** `terrain_height` nos mesmos pontos.
     field: bool,
     field_tex: Option<Texture>,
+    /// A janela que segue a câmara. Decide o que entra; não desenha nada.
+    field_win: ToroidalField,
+    /// Tiles à espera de subir. A primeira volta são 289 e sobem 64 por frame.
+    field_pending: std::collections::VecDeque<TileUpload>,
+    staged_buf: Option<Buffer>,
+    slots_buf: Option<Buffer>,
+    upload_pso: Option<ComputePipeline>,
+    /// Só depois de a janela estar toda lá é que o VS lê o campo. Antes disso
+    /// lê o FBM: um campo meio subido daria buracos, não um erro.
+    field_ready: bool,
+    field_uploads: u64,
     /// Do último frame, para a CPU refazer o mesmo culling e comparar.
     last_view_proj: Mat4,
     last_camera_xz: Vec2,
@@ -126,8 +163,16 @@ impl Default for TerrainGate {
             frames_counted: 0,
             checked: false,
             no_cull: false,
+            still: false,
             field: false,
             field_tex: None,
+            field_win: ToroidalField::new(),
+            field_pending: std::collections::VecDeque::new(),
+            staged_buf: None,
+            slots_buf: None,
+            upload_pso: None,
+            field_ready: false,
+            field_uploads: 0,
             last_view_proj: Mat4::IDENTITY,
             last_camera_xz: Vec2::ZERO,
             color: None,
@@ -164,7 +209,11 @@ impl TerrainGate {
     /// `bounds_stale` diz se o `terrain_bounds.cs` corre neste frame. Quando não
     /// corre, a barreira bounds→cull também não faz falta — e é essa a diferença
     /// entre um grafo e uma lista fixa de barreiras.
-    fn build_graph(&self, bounds_stale: bool) -> Result<(RenderGraph, Vec<PassPlan>)> {
+    fn build_graph(
+        &self,
+        bounds_stale: bool,
+        field_upload: bool,
+    ) -> Result<(RenderGraph, Vec<PassPlan>)> {
         let mut g = RenderGraph::new();
         // As caixas sobrevivem entre frames: é a cache que faz o culling valer a
         // pena. Marcá-las persistentes é o que diz ao grafo que podem ser lidas
@@ -175,6 +224,15 @@ impl TerrainGate {
         let color = g.texture("color", self.color.context("color")?);
         let depth = g.texture("depth", self.depth.context("depth")?);
 
+        // O campo sobrevive entre frames e na maioria deles ninguém lhe toca:
+        // persistente, senão o grafo recusa-o lido sem escritor neste frame.
+        let field = self.field_tex.map(|t| g.persistent_texture("field", t));
+
+        if field_upload {
+            if let Some(f) = field {
+                g.pass(Pass::new("field").uses(f, Access::StorageWrite));
+            }
+        }
         if bounds_stale {
             g.pass(Pass::new("bounds").uses(bounds, Access::StorageWrite));
         }
@@ -184,15 +242,26 @@ impl TerrainGate {
                 .uses(visible, Access::StorageWrite)
                 .uses(args, Access::StorageWrite),
         );
-        g.pass(
-            Pass::new("terrain")
-                .uses(args, Access::Indirect)
-                .uses(visible, Access::StorageRead)
-                .uses(color, Access::ColorWrite)
-                .uses(depth, Access::DepthWrite)
-                .load(color, Load::Clear([0.62, 0.72, 0.86, 1.0]))
-                .load(depth, Load::Clear([1.0, 0.0, 0.0, 0.0])),
-        );
+        // O campo é lido **no vertex shader**; o `StorageRead` dá o layout GENERAL
+        // e uma barreira cujo destino inclui o estágio de vértices.
+        let mut terrain = Pass::new("terrain")
+            .uses(args, Access::Indirect)
+            .uses(visible, Access::StorageRead)
+            .uses(color, Access::ColorWrite)
+            .uses(depth, Access::DepthWrite)
+            .load(color, Load::Clear([0.62, 0.72, 0.86, 1.0]))
+            .load(depth, Load::Clear([1.0, 0.0, 0.0, 0.0]));
+        if let Some(f) = field {
+            // `Sampled` e não `StorageRead`: muda o layout de GENERAL para
+            // SHADER_READ_ONLY antes desta passe, e de volta antes do próximo
+            // upload. Entrou como sonda para explicar um custo que afinal era
+            // ruído de medição, e **fica** porque é a configuração com que os
+            // 0.127 ms foram medidos. A variante `StorageRead` nunca foi medida
+            // com a instrumentação nova — está por comparar, não por preferir
+            // (D62).
+            terrain = terrain.uses(f, Access::Sampled);
+        }
+        g.pass(terrain);
         g.pass(Pass::new("blit").uses(color, Access::Sampled));
 
         if let Err(errors) = g.validate() {
@@ -277,28 +346,52 @@ impl Sample for TerrainGate {
         self.args_buf = Some(gpu.create_storage_buffer(SLOT_ARGS, as_bytes(&[0u32; 4]))?);
 
         if self.field {
-            let t0 = std::time::Instant::now();
-            let mut heights = HeightmapField::new();
-            let tiles = heights.ensure_window(FIELD_ORIGIN, FIELD_ORIGIN, FIELD_SIDE);
-            let bytes = heights
-                .window_r32(FIELD_ORIGIN, FIELD_ORIGIN, FIELD_SIDE)
-                .context("a janela do campo ficou com tiles por cozer")?;
-            let bake_ms = t0.elapsed().as_secs_f32() * 1000.0;
-            // 4096² × 4 B são **exactamente** os 64 MiB do staging do heap, e o
-            // pitch de 16 384 já é múltiplo de 256, portanto não há padding a
-            // acrescentar. Não sobra um byte: mudar de formato aqui obriga a rever
-            // o staging antes de mudar o resto.
-            let tex =
-                gpu.create_texture(&sampled_desc(FIELD_SIDE, FIELD_SIDE, 1, Format::R32Float))?;
-            gpu.upload_texture_mip(tex, 0, &bytes)?;
+            // Storage **e** amostrada: o compute escreve por `imageStore` e o VS
+            // lê por `texelFetch`. Fica em GENERAL nos dois papéis (mina 4).
+            let tex = gpu.create_texture(&TextureDesc {
+                width: FIELD_STREAM_SIDE,
+                height: FIELD_STREAM_SIDE,
+                depth_slices: 1,
+                dim: TextureDim::D2,
+                mip_levels: 1,
+                format: Format::R32Float,
+                sampled: true,
+                storage: true,
+                color_attachment: false,
+                depth: false,
+            })?;
+            gpu.bind_storage_image(tex, 0, FIELD_UAV_SLOT)?;
             self.field_tex = Some(tex);
-            tracing::info!(
-                tiles,
-                amostras = FIELD_SIDE * FIELD_SIDE,
-                mib = bytes.len() / (1024 * 1024),
-                bake_ms = format!("{bake_ms:.0}"),
-                "campo de altura cozido"
+
+            let tile_floats = (TILE_N * TILE_N) as usize;
+            self.staged_buf = Some(gpu.create_storage_buffer(
+                SLOT_STAGED,
+                as_bytes(&vec![0f32; tile_floats * UPLOAD_TILES]),
+            )?);
+            self.slots_buf = Some(gpu.create_storage_buffer(
+                SLOT_SLOTS,
+                as_bytes(&vec![0u32; 4 * UPLOAD_TILES]),
+            )?);
+            self.upload_pso = Some(
+                gpu.create_compute_pipeline(&ComputePipelineDesc {
+                    cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/field_upload.cs.spv")),
+                    cs_entry: "CSMain",
+                })
+                .context("field upload CS")?,
             );
+
+            // A primeira volta: coze a janela toda à volta de onde a câmara começa.
+            let t0 = std::time::Instant::now();
+            let first = self.field_win.advance(self.cam.position.x, self.cam.position.z);
+            let bake_ms = t0.elapsed().as_secs_f32() * 1000.0;
+            tracing::info!(
+                tiles = first.len(),
+                lado = FIELD_STREAM_SIDE,
+                mib = FIELD_STREAM_SIDE as usize * FIELD_STREAM_SIDE as usize * 4 / (1024 * 1024),
+                bake_ms = format!("{bake_ms:.0}"),
+                "campo de altura cozido (janela toroidal)"
+            );
+            self.field_pending.extend(first);
         }
 
         self.recreate(gpu, gpu.extent())?;
@@ -337,7 +430,7 @@ impl Sample for TerrainGate {
         let h = info.extent.height.max(1) as f32;
         // Sem input (todo o modo gate) a câmara está parada, portanto anda-se de
         // propósito: um clipmap parado não prova que o snap funciona.
-        if info.frame_index > 0 {
+        if info.frame_index > 0 && !self.still {
             let t = info.frame_index as f32 * 0.9;
             self.cam.position.x = t;
             self.cam.position.z = -t * 0.6;
@@ -347,6 +440,25 @@ impl Sample for TerrainGate {
         let camera = self.cam.camera(w / h);
         let sun = Vec3::new(0.42, 0.70, -0.58).normalize();
 
+        // A janela segue a câmara. Decidir o que entra é barato; cozer é o que
+        // custa, e só acontece quando a câmara atravessa um tile. Tudo o que mexe
+        // em `self` fica aqui, antes dos empréstimos que o resto do frame faz.
+        let mut upload: Vec<TileUpload> = Vec::new();
+        if self.field {
+            let entered = self.field_win.advance(camera.eye.x, camera.eye.z);
+            self.field_pending.extend(entered);
+            let take = UPLOAD_TILES.min(self.field_pending.len());
+            for _ in 0..take {
+                if let Some(t) = self.field_pending.pop_front() {
+                    upload.push(t);
+                }
+            }
+            if !upload.is_empty() && self.field_pending.is_empty() {
+                self.field_ready = true;
+            }
+        }
+        self.field_uploads += upload.len() as u64;
+
         let mut cb = TerrainCb {
             view_proj: camera.view_proj(),
             camera_pos: Vec4::new(camera.eye.x, camera.eye.y, camera.eye.z, 1.0),
@@ -354,10 +466,11 @@ impl Sample for TerrainGate {
             inv_extent: Vec2::new(1.0 / w, 1.0 / h),
             sky_horizon: Vec4::new(0.62, 0.72, 0.86, clipmap_range() * 0.85),
             // 0 quando não há campo: o slot 0 é o dummy e o VS lê isso como
-            // «avalia o FBM».
-            field: match self.field_tex {
-                Some(t) => gpu.bindless_index(t)?,
-                None => 0,
+            // «avalia o FBM». E **só** depois de a janela estar toda residente:
+            // um campo meio subido daria buracos, que é pior que ser mais lento.
+            field: match (self.field_ready, self.field_tex) {
+                (true, Some(t)) => gpu.bindless_index(t)?,
+                _ => 0,
             },
             ..Default::default()
         };
@@ -405,9 +518,40 @@ impl Sample for TerrainGate {
 
         // O frame declarado como grafo. As barreiras que se seguem vêm daqui, e
         // não de raciocínio caso a caso.
-        let (_graph, plans) = self.build_graph(!stale.is_empty())?;
+        let (_graph, plans) = self.build_graph(!stale.is_empty(), !upload.is_empty())?;
         let mut plan = plans.into_iter();
         let mut next_barriers = move || plan.next().map(|p| p.barriers).unwrap_or_default();
+
+        // Os tiles que entraram vão para a textura por compute: um workgroup de
+        // 16×16 por bloco, uma camada do dispatch por tile.
+        if !upload.is_empty() {
+            let upload_pso = self.upload_pso.as_ref().context("upload pso")?;
+            let staged = self.staged_buf.context("staged")?;
+            let slots_buf = self.slots_buf.context("slots")?;
+            let mut floats: Vec<u8> =
+                Vec::with_capacity(upload.len() * (TILE_N * TILE_N) as usize * 4);
+            let mut slots: Vec<u32> = Vec::with_capacity(upload.len() * 4);
+            for t in &upload {
+                floats.extend_from_slice(&t.bytes);
+                slots.extend_from_slice(&[t.slot.0, t.slot.1, 0, 0]);
+            }
+            gpu.write_storage_buffer(staged, &floats)?;
+            gpu.write_storage_buffer(slots_buf, as_bytes(&slots))?;
+            let ucb = UploadCb {
+                params: Vec4::new(
+                    FIELD_UAV_SLOT as f32,
+                    upload.len() as f32,
+                    TILE_N as f32,
+                    0.0,
+                ),
+            };
+            gpu.write_frame_bytes(one(&ucb))?;
+            gpu.set_compute_pipeline(upload_pso)?;
+            gpu.bind_compute_bindless()?;
+            gpu.barriers(&next_barriers())?;
+            gpu.dispatch(TILE_N / 16, TILE_N / 16, upload.len() as u32)?;
+        }
+        gpu.mark("field");
 
         if !stale.is_empty() {
             let bounds_pso = self.bounds_pso.as_ref().context("bounds pso")?;
@@ -589,11 +733,13 @@ fn main() -> Result<std::process::ExitCode> {
     }
     let no_cull = config.extra.iter().any(|a| a == "--no-cull");
     let field = config.extra.iter().any(|a| a == "--field");
+    let still = config.extra.iter().any(|a| a == "--static");
     run(
         config,
         TerrainGate {
             no_cull,
             field,
+            still,
             ..TerrainGate::default()
         },
     )

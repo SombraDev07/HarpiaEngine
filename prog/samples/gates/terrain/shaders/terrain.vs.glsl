@@ -94,27 +94,48 @@ float terrain_height(float x, float z) {
 }
 
 // A janela do campo, espelhada de `harpia_render::heightmap`. Se um lado mudar
-// sem o outro, a geometria muda de sítio -- por isso os três números estão aqui
-// com o nome que têm lá.
-const float FIELD_SPACING = 0.5;      // = CLIPMAP_CELL
-const int   FIELD_SIDE = 4096;
-const int   FIELD_ORIGIN_TEXEL = -2048;
+// sem o outro, a geometria muda de sítio -- por isso os números estão aqui com o
+// nome que têm lá.
+const float FIELD_SPACING = 0.5;   // = CLIPMAP_CELL
+const int   FIELD_SIDE = 4352;     // = FIELD_TILES (17) * TILE_N (256)
+// Um múltiplo da largura, para o resto nunca ver um operando negativo: em GLSL o
+// `%` com negativos é **indefinido**, e o terreno tem coordenadas dos dois lados.
+const int   FIELD_WRAP_BIAS = FIELD_SIDE * 1024;
 
-// Altura lida do campo cozido.
+// Altura lida do campo cozido, com endereçamento **toroidal**.
+//
+// O slot de um tile na textura é `tile mod 17`, e um tile são 256 amostras,
+// portanto o texel de uma amostra global é `g mod (17*256)`. Daí este shader não
+// precisar de saber onde está a janela: quem tem de saber é a CPU, que decide o
+// que está residente. A versão anterior fixava a janela na origem do mundo e
+// limitava o índice com `clamp` -- e era isso que punha 902 pixels errados na
+// linha do horizonte assim que a câmara andava (D61).
 //
 // `texelFetch` e não um amostrador: os vértices do clipmap caem **em cima** de
 // texels (o snap de cada nível é múltiplo da célula base), portanto não há meio
-// texel nem filtragem a inventar valores. É isso que torna esta leitura
-// bit-a-bit igual ao que o FBM daria no mesmo ponto.
-float field_height(vec2 world_xz) {
-    ivec2 t = ivec2(round(world_xz / FIELD_SPACING)) - ivec2(FIELD_ORIGIN_TEXEL);
-    t = clamp(t, ivec2(0), ivec2(FIELD_SIDE - 1));
-    return texelFetch(heap[nonuniformEXT(cb.field)], t, 0).r;
+// texel nem filtragem a inventar valores.
+ivec2 field_texel(vec2 world_xz) {
+    ivec2 g = ivec2(round(world_xz / FIELD_SPACING));
+    return (g + ivec2(FIELD_WRAP_BIAS)) % ivec2(FIELD_SIDE);
+}
+
+float field_at(ivec2 texel) {
+    return texelFetch(heap[nonuniformEXT(cb.field)], texel, 0).r;
+}
+
+// Envolver um índice que já está quase dentro custa uma comparação; o `%` custa
+// uma divisão. Os vizinhos da normal estão a menos de uma largura do centro,
+// portanto uma soma ou uma subtracção chega.
+int wrap1(int v) {
+    if (v < 0) {
+        return v + FIELD_SIDE;
+    }
+    return v >= FIELD_SIDE ? v - FIELD_SIDE : v;
 }
 
 // Um só sítio a decidir de onde vem a altura. O ramo é uniforme no draw inteiro.
 float height_at(vec2 p) {
-    return cb.field != 0u ? field_height(p) : terrain_height(p.x, p.y);
+    return cb.field != 0u ? field_at(field_texel(p)) : terrain_height(p.x, p.y);
 }
 
 void main() {
@@ -199,8 +220,21 @@ void main() {
     // Normal por diferenças centrais à escala da célula: mais fina e a normal
     // descreve detalhe que a malha não tem, o que dá luz a tremer nas bordas.
     float eps = cell;
-    float dx = height_at(world_xz + vec2(eps, 0.0)) - height_at(world_xz - vec2(eps, 0.0));
-    float dz = height_at(world_xz + vec2(0.0, eps)) - height_at(world_xz - vec2(0.0, eps));
+    float dx, dz;
+    if (cb.field != 0u) {
+        // Um `%` por vértice, não cinco: o texel do centro envolve-se uma vez e
+        // os quatro vizinhos saem dele com somas. A distância entre amostras
+        // vizinhas é `cell` em mundo, que são `1 << level` texels.
+        ivec2 b = field_texel(world_xz);
+        int s = 1 << level;
+        dx = field_at(ivec2(wrap1(b.x + s), b.y)) - field_at(ivec2(wrap1(b.x - s), b.y));
+        dz = field_at(ivec2(b.x, wrap1(b.y + s))) - field_at(ivec2(b.x, wrap1(b.y - s)));
+    } else {
+        dx = terrain_height(world_xz.x + eps, world_xz.y)
+           - terrain_height(world_xz.x - eps, world_xz.y);
+        dz = terrain_height(world_xz.x, world_xz.y + eps)
+           - terrain_height(world_xz.x, world_xz.y - eps);
+    }
 
     v_world = world;
     v_normal = normalize(vec3(-dx, 2.0 * eps, -dz));

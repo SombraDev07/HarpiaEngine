@@ -929,3 +929,28 @@ era pedir o impossível.
 `-- --field` fica **opt-in** até a janela seguir a câmara — que é exactamente o
 item de streaming da fase. O `rayon` entrou (§14.1) com número: 1373 → **429 ms**
 para cozer os 256 tiles.
+
+## A janela passou a seguir a câmara, e a medição passou a valer (2026-09-12)
+
+Janela toroidal de 17 tiles: o slot de um tile é `tile mod 17`, o texel de uma
+amostra é `g mod 4352`, e quem entra ocupa o lugar de quem sai — 17 tiles por
+travessia em vez de 289. O upload é um compute a copiar de um storage buffer, e as
+barreiras saem do grafo (D62).
+
+**Imagem: 930 → 11 pixels** diferentes do FBM, máximo 1/255, validation 0 no
+lavapipe e na placa. Os 902 da borda eram o defeito; os 11 são a aritmética.
+
+E ao medir o custo apareceram dois problemas de método e um bug antigo:
+
+- o `--stats` reportava **um frame** de GPU, não a série. Agora é mediana com
+  min/max — e todos os tempos de GPU anteriores nestas notas são amostra de um;
+- um gate que voa não serve para comparar: entrou `-- --static`, e o controlo
+  passou de ±27% para ±1.8%;
+- com isso, **campo 0.127 ms (0.126–0.139) contra FBM 0.171 (0.169–0.175)**,
+  câmara quieta, mediana de ~112 frames iguais, cinco corridas de cada.
+
+**O bug antigo:** o gate repõe o contador do indirecto com `write_storage_buffer`,
+que não espera por nada, com 2 frames em voo — e de vez em quando sai
+`visiveis_gpu=130` contra `visiveis_cpu=65`, o dobro exacto. Acontece **também no
+caminho clássico** (1 em 12), portanto é pré-existente. Apanhou-o a verificação
+CPU-contra-GPU do próprio gate. Falta corrigir: repor na GPU ou um buffer por slot.

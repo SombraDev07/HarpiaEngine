@@ -228,7 +228,9 @@ fn run_winit(config: AppConfig, sample: impl Sample) -> Result<ExitCode> {
         input: Input::new(),
         last_frame: None,
         cpu_ms: Vec::new(),
-        gpu_stats: harpia_rhi::GpuStats::default(),
+        gpu_ms: Vec::new(),
+        gpu_passes: std::collections::BTreeMap::new(),
+        gpu_counts: harpia_rhi::GpuStats::default(),
     };
     event_loop.run_app(&mut app).context("winit run")?;
     match app.exit_code {
@@ -249,9 +251,17 @@ struct WinitApp<S> {
     last_frame: Option<std::time::Instant>,
     /// CPU milliseconds per frame, for `--stats`.
     cpu_ms: Vec<f32>,
-    /// The most recent GPU stats seen. Timestamps arrive a frame or two late, so
-    /// the last complete one is the one worth reporting.
-    gpu_stats: harpia_rhi::GpuStats,
+    /// One GPU time per frame, and one per pass -- not just the last one.
+    ///
+    /// `--stats` used to report the **last complete frame**, and a single frame
+    /// cannot tell 0.107 ms from 0.150 in the same configuration: that is how a
+    /// whole probe came back inconclusive while the control moved as much as the
+    /// effect. The series is kept and the median reported, exactly as the CPU
+    /// side already did.
+    gpu_ms: Vec<f32>,
+    gpu_passes: std::collections::BTreeMap<&'static str, Vec<f32>>,
+    /// Counters, which do not vary from frame to frame: the last is fine.
+    gpu_counts: harpia_rhi::GpuStats,
 }
 
 impl<S: Sample> WinitApp<S> {
@@ -326,20 +336,45 @@ impl<S: Sample> WinitApp<S> {
             vsync = self.config.vsync,
             "cpu"
         );
-        let g = &self.gpu_stats;
-        if g.frame_ms > 0.0 {
-            tracing::info!(
-                gpu_frame_ms = format!("{:.3}", g.frame_ms),
-                draws = g.draws,
-                dispatches = g.dispatches,
-                triangles = g.triangles,
-                "gpu"
-            );
-            for (label, ms) in &g.passes {
-                tracing::info!(pass = label, ms = format!("{ms:.3}"), "gpu pass");
+        // Mediana e não média: um frame que apanhou o compositor não pode puxar o
+        // número, e é a mediana que se compara entre corridas.
+        let summarise = |series: &[f32]| -> Option<(usize, f32, f32, f32)> {
+            let mut v = series.to_vec();
+            if v.len() > WARMUP * 2 {
+                v.drain(..WARMUP);
             }
-        } else {
-            tracing::warn!("no GPU timestamps: the queue may not support them");
+            if v.is_empty() {
+                return None;
+            }
+            v.sort_by(f32::total_cmp);
+            Some((v.len(), v[v.len() / 2], v[0], v[v.len() - 1]))
+        };
+
+        match summarise(&self.gpu_ms) {
+            Some((n, med, lo, hi)) => {
+                tracing::info!(
+                    frames = n,
+                    gpu_frame_ms = format!("{med:.3}"),
+                    gpu_min_ms = format!("{lo:.3}"),
+                    gpu_max_ms = format!("{hi:.3}"),
+                    draws = self.gpu_counts.draws,
+                    dispatches = self.gpu_counts.dispatches,
+                    triangles = self.gpu_counts.triangles,
+                    "gpu"
+                );
+                for (label, series) in &self.gpu_passes {
+                    if let Some((_, med, lo, hi)) = summarise(series) {
+                        tracing::info!(
+                            pass = label,
+                            ms = format!("{med:.3}"),
+                            min = format!("{lo:.3}"),
+                            max = format!("{hi:.3}"),
+                            "gpu pass"
+                        );
+                    }
+                }
+            }
+            None => tracing::warn!("no GPU timestamps: the queue may not support them"),
         }
     }
 
@@ -380,7 +415,11 @@ impl<S: Sample> WinitApp<S> {
         gpu.end_frame()?;
         let stats = gpu.take_stats();
         if stats.frame_ms > 0.0 {
-            self.gpu_stats = stats;
+            self.gpu_ms.push(stats.frame_ms);
+            for (label, ms) in &stats.passes {
+                self.gpu_passes.entry(label).or_default().push(*ms);
+            }
+            self.gpu_counts = stats;
         }
         self.input.end_frame();
         self.cpu_ms.push(frame_started.elapsed().as_secs_f32() * 1000.0);

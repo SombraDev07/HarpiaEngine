@@ -432,3 +432,24 @@ output.**
   trocar uma avaliação na GPU por um valor cozido na CPU herda esse desacordo e dá
   dezenas de pixels diferentes nas silhuetas. O critério honesto é medir a
   diferença e dizer de onde vem, não exigir zero (D61).
+- **`write_storage_buffer` não espera por nada.** É um memcpy para um buffer
+  mapeado, e há **2 frames em voo**: repor um contador assim corre contra o compute
+  do frame anterior, que ainda o incrementa, e contra o draw indirecto, que ainda o
+  lê. O sintoma é intermitente e tem cara de bug de lógica — `visiveis_gpu=130`
+  contra `visiveis_cpu=65`, exactamente o dobro. Repõe-se **na GPU**, dentro do
+  command buffer, ou usa-se um buffer por slot (D62).
+- **Um número de GPU tirado de um frame não é uma medição.** Até 2026-09-12 o
+  `--stats` reportava o último frame completo: a mesma configuração deu 0.107 e
+  0.150, e uma sonda saiu inconclusiva com o controlo a variar ±27%. Agora é
+  mediana com min/max sobre a série — e qualquer tempo de GPU anterior a essa data
+  nestas notas é uma amostra só (D62).
+- **Para comparar tempos, congela a câmara** (`-- --static` no `gate-terrain`). Com
+  ela a voar cada frame desenha outro mundo e a dispersão dentro de uma corrida
+  (0.03 a 0.61 ms) engole a diferença entre caminhos; com ela quieta o controlo
+  fica em ±1.8% (D62).
+- **Um arnês não verificado mente com ar de dados.** Defini uma função de shell que
+  lê do stdin e chamei-a com um nome de ficheiro: o `sed` ficou à espera de stdin
+  vazio, escreveu ficheiros vazios, saiu com **sucesso**, e a tabela de diagnóstico
+  saiu toda a zeros — incluindo para corridas que eu sabia terem funcionado. É a
+  mesma família do `str.replace` que não casa. Confere o arnês contra um caso que
+  sabes o resultado antes de acreditares no que ele diz (D62).

@@ -1901,9 +1901,104 @@ aritmética, não de mecanismo.
 Não passa a omissão enquanto a janela não seguir a câmara — seria trocar 0.036 ms
 por um defeito visível no horizonte.
 
-### E o `rayon` entrou
+### E o `rayon` entrou (ver também D62, que corrige os números desta entrada)
 
 Autorizado no §14.1 para a fase 6 («bake de noise, build de clipmap, geração de
 mips»), e entrou **com número**: cozer os 256 tiles da janela media **1373 ms** em
 série no arranque, e **429 ms** em 16 cores. Não é o frame graph, que continua
 single-thread por D0.
+
+## D62 — A janela segue a câmara; e três coisas que só apareceram por medir bem
+
+O D61 deixou um defeito identificado: a janela do campo estava centrada na origem
+do mundo e o clipmap está centrado na câmara, portanto o nível de fora saía dela e
+o `clamp` lia a borda. Corrigido — e a correcção destapou dois problemas de
+**medição** e um bug **pré-existente** que ninguém tinha visto.
+
+### A janela toroidal
+
+17 tiles de lado (4352 amostras), não 16: a origem anda de tile em tile e o
+clipmap pode sair até meio tile de uma janela do tamanho exacto do alcance. O slot
+de um tile é `tile mod 17`, portanto o texel de uma amostra global é `g mod 4352`
+— e daí o shader **não precisar de saber onde está a janela**. Quem entra ocupa o
+lugar de quem sai, e a cada travessia sobem 17 tiles em vez de 289.
+
+O upload é um compute (`field_upload.cs`) a copiar de um storage buffer para a
+textura, e não um upload de sub-região: o RHI sobe mips inteiros e publica a
+textura quando o último sobe, o que não serve para escrever um tile de cada vez.
+Escrever por storage image é o padrão que a pirâmide Hi-Z já usa, e as barreiras
+saem do grafo.
+
+| | antes (D61) | agora |
+|---|---|---|
+| pixels diferentes do FBM | 930 | **11** |
+| diferença máxima | 23/255 | **1/255** |
+| validation | 0 | 0 (lavapipe **e** RX 6700) |
+
+Os 902 da borda desapareceram, como tinham de desaparecer. Os que sobram são a
+aritmética da CPU contra a da GPU (D41: 0.19 mm), agora reduzida porque os
+vizinhos da normal saem por offset de texel em vez de nova conversão de mundo.
+
+### O `--stats` reportava **um frame**
+
+O tempo de GPU vinha de `take_stats()` e o app guardava só o último frame completo
+para o imprimir. O lado da CPU já fazia média, mínimo e p99 sobre 112 frames; o da
+GPU era uma amostra. Foi assim que a mesma configuração mediu 0.107 e 0.150, e que
+uma sonda inteira saiu inconclusiva com o **controlo** a mexer-se tanto como o
+efeito (0.080 ±6% numa ronda, 0.097 ±27% na seguinte).
+
+Agora guarda-se a série e reporta-se mediana com mínimo e máximo, por frame e por
+passe. **Todos os tempos de GPU anteriores a isto nesta árvore são amostras de um
+frame** — incluindo os 0.057 e os 0.093 da D61.
+
+### Um gate que voa não serve para comparar
+
+O gate faz a câmara voar de propósito: um clipmap parado não prova que o snap
+funciona. Mas isso faz de cada frame um mundo diferente, e a dispersão dentro de
+uma corrida (0.03 a 0.61 ms) engolia a diferença entre caminhos. Entrou
+`-- --static`, e com ele o controlo passou a ±1.8%.
+
+Com a câmara quieta, mediana de ~112 frames iguais, cinco corridas de cada:
+
+| | mediana das medianas | amplitude |
+|---|---|---|
+| FBM no VS | **0.171 ms** | 0.169–0.175 |
+| campo cozido | **0.127 ms** | 0.126–0.139 |
+
+As amplitudes não se tocam: o campo custa ~26% menos. É a primeira comparação
+desta linha de trabalho que se aguenta.
+
+### E o bug que estava lá antes de tudo isto
+
+Duas corridas do campo saíram sem número. Não era o arnês: era o `finish()` do
+gate a falhar a sua própria verificação e a devolver erro antes do `report_stats`.
+
+```
+visiveis_gpu=130  visiveis_cpu=65
+ERROR: a GPU guardou 130 patches e a CPU 65 com o mesmo teste
+```
+
+**130 é o dobro de 65**: um frame de incrementos por cima de outro. O gate repõe o
+contador do comando indirecto com `write_storage_buffer`, que é um memcpy para um
+buffer mapeado — sem fence, sem barreira — e há **2 frames em voo**. A reposição
+da CPU corre contra o `cull` do frame anterior, que ainda incrementa esse contador,
+e contra o draw indirecto, que ainda o lê. O grafo nem vê essa escrita: o `args`
+só lá está como escrita do compute e leitura do indirecto, quando existe um
+`Access::HostWrite` no vocabulário precisamente para isto.
+
+Reproduzido nos **dois** caminhos — 1 em 12 no FBM, 2 em ~15 no campo. Portanto é
+pré-existente, e o que o meu trabalho fez foi mudar o tempo o suficiente para ele
+aparecer mais vezes. Quem o apanhou foi a verificação CPU-contra-GPU do próprio
+gate, que é exactamente para isto que lá está.
+
+**Por decidir:** a correcção. Repor o contador **na GPU**, dentro do command
+buffer (ordenado por construção), ou ter um buffer por slot de frame. Enquanto não
+for corrigido, qualquer corrida deste gate pode abortar, e as medições têm de
+dizer quantas correram.
+
+### O que fica
+
+`-- --field` continua **opt-in**. É mais barato na passe, mas custa 0.5 s de bake
+no arranque, a corrida acima ainda está aberta, e a variante `StorageRead` nunca
+foi medida com a instrumentação nova. Passar a omissão sem isso resolvido seria
+trocar um número medido por três por medir.

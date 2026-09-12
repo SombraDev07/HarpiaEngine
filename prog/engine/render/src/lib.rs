@@ -44,8 +44,8 @@ pub use terrain::{CLIPMAP_PATCH, clipmap_patch_grid, clipmap_patches_per_level, 
     CLIPMAP_LEVELS, CLIPMAP_N, TERRAIN_OCTAVES,
 };
 pub use heightmap::{
-    tile_of, HeightTile, HeightmapField, PatchBounds, FIELD_ORIGIN, FIELD_SIDE, TILE_MIPS, TILE_N,
-    TILE_SIZE, TILE_SPACING,
+    tile_of, HeightTile, HeightmapField, PatchBounds, TileUpload, ToroidalField, FIELD_ORIGIN,
+    FIELD_SIDE, FIELD_STREAM_SIDE, FIELD_TILES, TILE_MIPS, TILE_N, TILE_SIZE, TILE_SPACING,
 };
 pub use csm::{compute as compute_csm, Camera, Csm, CASCADE_COUNT, DEFAULT_ATLAS_SIZE};
 pub use fog::{
