@@ -949,8 +949,12 @@ E ao medir o custo apareceram dois problemas de método e um bug antigo:
 - com isso, **campo 0.127 ms (0.126–0.139) contra FBM 0.171 (0.169–0.175)**,
   câmara quieta, mediana de ~112 frames iguais, cinco corridas de cada.
 
-**O bug antigo:** o gate repõe o contador do indirecto com `write_storage_buffer`,
-que não espera por nada, com 2 frames em voo — e de vez em quando sai
-`visiveis_gpu=130` contra `visiveis_cpu=65`, o dobro exacto. Acontece **também no
-caminho clássico** (1 em 12), portanto é pré-existente. Apanhou-o a verificação
-CPU-contra-GPU do próprio gate. Falta corrigir: repor na GPU ou um buffer por slot.
+**O bug antigo:** o gate repunha o contador do indirecto com
+`write_storage_buffer`, que não espera por nada, com 2 frames em voo — e de vez em
+quando saía `visiveis_gpu=130` contra `visiveis_cpu=65`, o dobro exacto. Acontecia
+**também no caminho clássico** (1 em 12), portanto era pré-existente. Apanhou-o a
+verificação CPU-contra-GPU do próprio gate.
+
+**Corrigido:** a reposição passou a ser uma pass de uma invocação (`args_reset.cs`)
+antes do `cull`, ordenada pelo grafo. **0 abortos em 43 corridas**, imagem e tempos
+na mesma. O `--no-cull` usa a mesma pass, com o `instanceCount` inicial no CB.

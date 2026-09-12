@@ -98,6 +98,9 @@ struct TerrainGate {
     blit_pso: Option<GraphicsPipeline>,
     cull_pso: Option<ComputePipeline>,
     bounds_pso: Option<ComputePipeline>,
+    /// Repõe o comando indirecto na GPU. Existe porque a reposição na CPU corria
+    /// contra os frames em voo (D62).
+    reset_pso: Option<ComputePipeline>,
     visible_buf: Option<Buffer>,
     args_buf: Option<Buffer>,
     bounds_buf: Option<Buffer>,
@@ -155,6 +158,7 @@ impl Default for TerrainGate {
             blit_pso: None,
             cull_pso: None,
             bounds_pso: None,
+            reset_pso: None,
             visible_buf: None,
             args_buf: None,
             bounds_buf: None,
@@ -236,6 +240,10 @@ impl TerrainGate {
         if bounds_stale {
             g.pass(Pass::new("bounds").uses(bounds, Access::StorageWrite));
         }
+        // A reposição do comando indirecto é uma pass, não uma escrita da CPU: a
+        // barreira que separa isto do `cull` sai do grafo, e a ordem passa a ser
+        // por construção em vez de depender de quem chega primeiro (D62).
+        g.pass(Pass::new("args").uses(args, Access::StorageWrite));
         g.pass(
             Pass::new("cull")
                 .uses(bounds, Access::StorageRead)
@@ -332,6 +340,13 @@ impl Sample for TerrainGate {
                 cs_entry: "CSMain",
             })
             .context("terrain bounds CS")?,
+        );
+        self.reset_pso = Some(
+            gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/args_reset.cs.spv")),
+                cs_entry: "CSMain",
+            })
+            .context("args reset CS")?,
         );
         self.visible_buf = Some(gpu.create_storage_buffer(
             SLOT_VISIBLE,
@@ -480,8 +495,9 @@ impl Sample for TerrainGate {
         self.last_view_proj = camera.view_proj();
         self.last_camera_xz = Vec2::new(camera.eye.x, camera.eye.z);
 
-        // O contador volta a zero antes do dispatch: o compute só o incrementa.
-        gpu.write_storage_buffer(args, as_bytes(&[clipmap_patch_vertex_count(), 0u32, 0, 0]))?;
+        // O contador volta a zero **na GPU**, na pass `args` mais abaixo: o
+        // compute só o incrementa, e a reposição deixou de ser um memcpy da CPU a
+        // correr contra os dois frames em voo (D62).
 
         let frustum = Frustum::from_view_proj(self.last_view_proj);
         let cull = CullCb {
@@ -496,7 +512,13 @@ impl Sample for TerrainGate {
             counts: Vec4::new(
                 clipmap_patch_vertex_count() as f32,
                 clipmap_patches_per_level() as f32,
-                0.0,
+                // Instâncias iniciais: o culling conta-as a partir de zero; o
+                // controlo `--no-cull` desenha-as todas sem contar nada.
+                if self.no_cull {
+                    clipmap_patch_count() as f32
+                } else {
+                    0.0
+                },
                 0.0,
             ),
         };
@@ -583,13 +605,24 @@ impl Sample for TerrainGate {
         }
         gpu.mark("bounds");
 
+        // A reposição, sempre: uma invocação a escrever os quatro u32 do comando.
+        // O `instanceCount` inicial vem do CB — zero quando o culling conta, todos
+        // no controlo.
+        {
+            let reset_pso = self.reset_pso.as_ref().context("reset pso")?;
+            gpu.write_frame_bytes(one(&cull))?;
+            gpu.set_compute_pipeline(reset_pso)?;
+            gpu.bind_compute_bindless()?;
+            gpu.barriers(&next_barriers())?;
+            gpu.dispatch(1, 1, 1)?;
+        }
+        gpu.mark("args");
+
         if self.no_cull {
+            // A lista continua a vir da CPU: é um controlo que não mede nada, e
+            // escreve sempre o mesmo conteúdo. O contador, esse, já vem da GPU.
             let all: Vec<u32> = (0..clipmap_patch_count()).collect();
             gpu.write_storage_buffer(self.visible_buf.context("visible")?, as_bytes(&all))?;
-            gpu.write_storage_buffer(
-                args,
-                as_bytes(&[clipmap_patch_vertex_count(), clipmap_patch_count(), 0, 0]),
-            )?;
         } else {
             gpu.write_frame_bytes(one(&cull))?;
             gpu.barriers(&next_barriers())?;

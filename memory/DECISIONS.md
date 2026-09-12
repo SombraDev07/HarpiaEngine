@@ -1991,14 +1991,23 @@ pré-existente, e o que o meu trabalho fez foi mudar o tempo o suficiente para e
 aparecer mais vezes. Quem o apanhou foi a verificação CPU-contra-GPU do próprio
 gate, que é exactamente para isto que lá está.
 
-**Por decidir:** a correcção. Repor o contador **na GPU**, dentro do command
-buffer (ordenado por construção), ou ter um buffer por slot de frame. Enquanto não
-for corrigido, qualquer corrida deste gate pode abortar, e as medições têm de
-dizer quantas correram.
+**Corrigido no mesmo dia.** A reposição passou a ser uma **pass** (`args_reset.cs`,
+uma invocação a escrever os quatro `u32` do comando) declarada no grafo antes do
+`cull`, portanto a ordem é por construção e a barreira é derivada. Uma invocação e
+não um workgroup grande porque dentro de um dispatch não há ordem entre workgroups
+— zerar na mesma passagem que incrementa seria trocar uma corrida por outra. O
+controlo `--no-cull` usa a mesma pass: o `instanceCount` inicial vem do CB
+(`counts.z`), zero quando o culling conta e 448 quando não conta.
+
+Medido: **0 abortos em 43 corridas** (30 com culling, 10 com campo, 3 no controlo)
+contra ~1 em 12 antes. Com a taxa antiga, ver zero em 43 por acaso teria ~2.4% de
+probabilidade. A pass não custa: o terreno mede o mesmo (fbm 0.168–0.173, campo
+0.126 nas três corridas) e a imagem não mudou.
 
 ### O que fica
 
-`-- --field` continua **opt-in**. É mais barato na passe, mas custa 0.5 s de bake
-no arranque, a corrida acima ainda está aberta, e a variante `StorageRead` nunca
-foi medida com a instrumentação nova. Passar a omissão sem isso resolvido seria
-trocar um número medido por três por medir.
+`-- --field` continua **opt-in**. É mais barato na passe (0.127 contra 0.171), mas
+custa 0.5 s de bake no arranque e 72 MiB de VRAM, e a variante `StorageRead` nunca
+foi medida com a instrumentação nova. A corrida do contador, essa, já não é razão
+para o travar — está fechada. Falta o custo do arranque e a comparação que falta
+fazer.

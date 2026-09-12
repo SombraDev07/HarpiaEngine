@@ -437,7 +437,10 @@ output.**
   do frame anterior, que ainda o incrementa, e contra o draw indirecto, que ainda o
   lê. O sintoma é intermitente e tem cara de bug de lógica — `visiveis_gpu=130`
   contra `visiveis_cpu=65`, exactamente o dobro. Repõe-se **na GPU**, dentro do
-  command buffer, ou usa-se um buffer por slot (D62).
+  command buffer, ou usa-se um buffer por slot (D62). Feito no `gate-terrain` com
+  uma pass de **uma invocação** antes do `cull` (mais do que uma seria outra
+  corrida, porque entre workgroups não há ordem): 0 abortos em 43 corridas contra
+  ~1 em 12, e sem custo mensurável na passe.
 - **Um número de GPU tirado de um frame não é uma medição.** Até 2026-09-12 o
   `--stats` reportava o último frame completo: a mesma configuração deu 0.107 e
   0.150, e uma sonda saiu inconclusiva com o controlo a variar ±27%. Agora é
