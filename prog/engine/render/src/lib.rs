@@ -6,6 +6,7 @@ mod atmosphere;
 #[cfg(test)]
 mod spvasm_layout;
 mod cloud_noise;
+mod cloud_shadow;
 mod csm;
 mod fly_camera;
 mod fog;
@@ -30,6 +31,9 @@ pub use atmosphere::{
 pub use cloud_noise::{
     base as cloud_noise_base, detail as cloud_noise_detail, volume_desc as cloud_volume_desc,
     CloudCb, CloudSliceCb, NoiseError, NoiseVolume, BASE_SIZE, DETAIL_SIZE,
+};
+pub use cloud_shadow::{
+    CloudField, CloudParams, COVERAGE_FAR, GRAD_BOTTOM, GRAD_TOP, LIGHT_STEPS,
 };
 pub use water::{wave_omega, WaterCb, WATER_GRID, WATER_HALF};
 pub use fly_camera::FlyCamera;
