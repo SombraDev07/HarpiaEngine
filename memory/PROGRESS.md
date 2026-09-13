@@ -31,6 +31,9 @@ cargo run -p gate-csm
 cargo run -p gate-taa
 cargo run -p gate-fog
 cargo run -p gate-fog -- --frames 16 -- --cloud-shadow
+cargo run -p gate-terrain
+cargo run -p gate-terrain -- --frames 16 -- --no-clouds
+cargo run -p gate-terrain -- --frames 16 -- --gradient
 cargo run -p gate-sky
 cargo run -p gate-clouds
 cargo run -p gate-water
@@ -58,6 +61,7 @@ cargo run -p gate-clouds -- --backend null --frames 8
 cargo run -p gate-water -- --backend null --frames 8
 cargo run -p gate-rain -- --backend null --frames 8
 cargo run -p storm -- --backend null --frames 8
+cargo run -p gate-terrain -- --backend null --frames 8
 ```
 
 ## Feito (para não redescobrir)
@@ -449,9 +453,8 @@ Não mesh shaders, RT, FSR, editor.
    decisão tua.
 3. Terreno: ~~clipmap~~ **feito** (D40) e ~~`heightquery`~~ **feito** (D41, que
    apanhou 77 m de divergência entre CPU e GPU). Falta vegetação e instâncias.
-4. **Céu Hillaire e nuvens entram aqui** — num interior não se viam (D32). O
-   inject já amostra a sombra das nuvens quando o índice ≠ 0 (D64); falta
-   compor céu + nuvens + essa sombra **no terreno**.
+4. ~~Céu Hillaire no terreno~~ **feito** (D65). ~~Nuvens compostas com esse céu~~
+   **feito** (D66). Falta a sombra delas no chão e a aerial perspective (D19).
 5. Aerial perspective (froxel 32³), a dívida do D19.
 
 ### Dívida conhecida (documentada, não esquecida)
@@ -1006,5 +1009,28 @@ ao SPIR-V. Campos novos no fim do `FogCb` (480 B); slot 0 = skip.
 
 `-- --cloud-shadow` no `gate-fog` (não na Sponza): mapa CPU 128², 16 frames,
 `validation_errors=0` llvmpipe + RADV + Null. Composite vs default: 2.07% dos
-píxeis, max canal 7. Não fecha a fase 6 — o terreno continua com céu em
-gradiente.
+píxeis, max canal 7. Não fecha a fase 6 — o céu Hillaire no terreno é D65.
+
+## Céu Hillaire no `gate-terrain` (2026-09-13)
+
+O clipmap deixou o gradiente. Cadeia do `gate-sky` (transmittance → MS →
+sky-view) partilhada, composite HDR em GLSL (`sky_hdr.ps.glsl`, sem ACES: o
+blit do terreno é que tonemapa). O fade do último anel amostra a mesma LUT.
+`-- --gradient` é o controlo: 100% dos píxeis diferem, max canal 131.
+
+Raios abaixo do horizonte do planeta não lêem a metade «chão» da LUT (albedo 0,
+D19) — ficam no texel do horizonte até haver aerial perspective. Sem nuvens e
+sem a sombra delas no chão.
+
+16 frames, resize 6/12, `validation_errors=0` llvmpipe + RADV + Null. Sponza
+intocada.
+
+## Nuvens Nubis no `gate-terrain` (2026-09-13)
+
+O mesmo raymarch a meia res + reprojecção do `gate-clouds`, aplicado sobre o
+Hillaire. `apply_clouds.ps.glsl`: `cena * tr + scatter`, mascado pelo D32
+(1 = céu). O chão não recebe nuvens por cima. A marcha corre em **km** — o far
+do clipmap (~1.5 km) cortava a concha.
+
+`-- --no-clouds`: 30.04% dos píxeis diferem, max canal 134. 16 frames,
+`validation_errors=0` llvmpipe + RADV + Null. Falta a sombra no chão.

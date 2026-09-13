@@ -2043,3 +2043,30 @@ atlas, scatter, integrated). `FogCb` cresceu 464 → 480: `cloud_shadow`,
 píxeis do composite diferem (max canal 7) — o lookup é real, não um no-op. Não
 é o céu Hillaire no terreno nem a sombra no mundo aberto; é o primeiro sítio
 onde os froxels lêem transmitância de nuvem.
+
+## D65 — Hillaire no `gate-terrain`; o gradiente fica de controlo
+
+O céu da cena aberta não é um segundo sistema: são as LUTs do `gate-sky`, o
+composite em linear (`sky_hdr.ps.glsl`) e o fade do clipmap a amostrar a mesma
+sky-view. ACES continua no blit. `TerrainCb` 176 → 192, `skyview` no fim;
+`camera_pos.w` passou a altitude em km. Slot 0 = o gradiente antigo.
+
+`-- --gradient` restaura o clear. Sem ele, 100% dos píxeis mudam — o céu e o
+ambiente. Raios abaixo do horizonte do planeta cravam-se no anel do horizonte:
+a metade de baixo da LUT é chão sem bounce (D19) e lia como uma faixa preta
+onde o clipmap acaba.
+
+Não é aerial perspective, não são nuvens, não é a Sponza. O `gate-sky` não
+muda: continua a tonemapar sozinho. As nuvens no mesmo gate são D66.
+
+## D66 — Nuvens no `gate-terrain`, mascadas pelo depth
+
+Não se inventa um segundo traço. São os shaders do `gate-clouds` (meia res +
+reprojecção) e um apply em GLSL: `cena * tr + scatter`, sem ACES. O D32 do
+terreno é amostrado: depth < 1 é chão e fica. `CloudCb` 272 → 288, `scene` e
+`depth` no fim; o march do gate-clouds não os declara.
+
+A câmara da marcha está em km. O `view_proj` do clipmap tem far ~1.5 km e
+cortava a concha (1.5–4 km); há um proj só para as nuvens (near 0.05, far 80).
+
+`-- --no-clouds` é o A/B. Sem sombra no chão e sem aerial perspective.

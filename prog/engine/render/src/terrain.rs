@@ -218,9 +218,10 @@ pub struct TerrainCb {
     /// Índice bindless do campo de altura cozido, ou 0 para avaliar o FBM.
     ///
     /// Zero é o slot do dummy 1×1 e nunca é um campo válido, portanto serve de
-    /// «desligado» sem gastar outro campo no CB — que está cheio nos 176 bytes que
-    /// o teste de layout fixa.
+    /// «desligado» sem gastar outro campo no CB.
     pub field: u32,
+    /// Bindless index of the sky-view LUT. 0 = keep the old gradient fade.
+    pub skyview: u32,
 }
 
 impl Default for TerrainCb {
@@ -238,6 +239,7 @@ impl Default for TerrainCb {
             inv_extent: Vec2::ONE,
             scene: 0,
             field: 0,
+            skyview: 0,
         }
     }
 }
@@ -260,7 +262,8 @@ mod tests {
     #[test]
     fn cb_layout_matches_the_glsl() {
         use std::mem::offset_of;
-        assert_eq!(std::mem::size_of::<TerrainCb>(), 176);
+        assert_eq!(std::mem::size_of::<TerrainCb>(), 192);
+        assert_eq!(offset_of!(TerrainCb, skyview), 176);
         assert!(std::mem::size_of::<TerrainCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
         let expected = [
             (0, 0),
@@ -273,6 +276,7 @@ mod tests {
             (7, offset_of!(TerrainCb, inv_extent) as u32),
             (8, offset_of!(TerrainCb, scene) as u32),
             (9, offset_of!(TerrainCb, field) as u32),
+            (10, offset_of!(TerrainCb, skyview) as u32),
         ];
         for shader in [
             "prog/samples/gates/terrain/shaders/terrain.vs.glsl",

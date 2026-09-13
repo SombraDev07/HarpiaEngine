@@ -11,16 +11,24 @@
 //! A câmara voa (WASD) e mantém-se acima do chão usando a **mesma** função de
 //! altura que o VS desenha. Se as duas discordarem vê-se logo: a câmara atravessa
 //! o terreno ou flutua. É o ensaio do gate `heightquery`, que vem a seguir.
+//!
+//! O fundo já não é um gradiente: o `gate-sky` (Hillaire) compõe-se aqui, e o
+//! fade do último anel amostra a mesma LUT. As nuvens Nubis (meia res +
+//! reprojecção) aplicam-se **por cima do céu**, mascadas pelo depth: o chão não
+//! as recebe. `-- --gradient` restaura o céu antigo; `-- --no-clouds` tira só
+//! as nuvens.
 
 use anyhow::{Context, Result};
 use harpia_app::{AppConfig, Sample, run};
-use harpia_math::{Mat4, Vec2, Vec3, Vec4};
+use harpia_math::{perspective_vk, Mat4, Vec2, Vec3, Vec4};
 use harpia_render::{
-    Access, CLIPMAP_LEVELS, CLIPMAP_N, CLIPMAP_PATCH, FIELD_STREAM_SIDE, FlyCamera,
-    GBUFFER_DEPTH_FORMAT, Load, Pass, PassPlan, RenderGraph, TILE_N, TerrainCb, TileUpload,
-    ToroidalField, clipmap_patch_bounds, clipmap_patch_count, clipmap_patch_vertex_count,
-    clipmap_patches_per_level, clipmap_range, clipmap_vertex_count, color_desc, depth_desc,
-    terrain_height,
+    cloud_noise_base, cloud_noise_detail, cloud_volume_desc, Access, AtmosphereCb, CLIPMAP_LEVELS,
+    CLIPMAP_N, CLIPMAP_PATCH, CloudCb, FIELD_STREAM_SIDE, FlyCamera, GBUFFER_DEPTH_FORMAT, Load,
+    MULTISCATTER_SIZE, NoiseVolume, Pass, PassPlan, RenderGraph, SKYVIEW_H, SKYVIEW_W, TILE_N,
+    TRANSMITTANCE_H, TRANSMITTANCE_W, TerrainCb, TileUpload, ToroidalField, clipmap_patch_bounds,
+    clipmap_patch_count, clipmap_patch_vertex_count, clipmap_patches_per_level, clipmap_range,
+    clipmap_vertex_count, color_desc, multiscatter_desc, skyview_desc, terrain_height,
+    transmittance_desc,
 };
 use harpia_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
@@ -92,6 +100,16 @@ const EYE_CLEARANCE: f32 = 2.0;
 /// Linear: o blit é que faz o tonemap, como no resto da árvore.
 const HDR: Format = Format::Rgba16Float;
 const HDR_FORMATS: [Format; 1] = [HDR];
+const LUT: Format = Format::Rgba16Float;
+const LUT_FORMATS: [Format; 1] = [LUT];
+const CLOUD_RT: Format = Format::Rgba16Float;
+const CLOUD_FORMATS: [Format; 1] = [CLOUD_RT];
+/// 1 world unit = 1 metre. The atmosphere lives in kilometres.
+const METRES_TO_KM: f32 = 0.001;
+/// Cloud march lives in km; the clipmap far plane is only ~1.5 km and would
+/// clip the shell (1.5–4 km).
+const CLOUD_NEAR_KM: f32 = 0.05;
+const CLOUD_FAR_KM: f32 = 80.0;
 
 struct TerrainGate {
     pso: Option<GraphicsPipeline>,
@@ -128,6 +146,27 @@ struct TerrainGate {
     /// maior que a diferença entre os dois caminhos. Com a câmara quieta, os 112
     /// frames desenham o mesmo, e o que sobra é ruído de medição.
     still: bool,
+    /// `-- --gradient`: the old solid-colour sky. Control for the Hillaire
+    /// composition — without it there is no A/B against the gradient this gate
+    /// used to clear to.
+    gradient: bool,
+    transmittance_pso: Option<GraphicsPipeline>,
+    multiscatter_pso: Option<GraphicsPipeline>,
+    skyview_pso: Option<GraphicsPipeline>,
+    sky_pso: Option<GraphicsPipeline>,
+    transmittance: Option<Texture>,
+    multiscatter: Option<Texture>,
+    skyview: Option<Texture>,
+    /// `-- --no-clouds`: Hillaire sky, no Nubis. A/B for this slice.
+    no_clouds: bool,
+    clouds_pso: Option<GraphicsPipeline>,
+    reproject_pso: Option<GraphicsPipeline>,
+    apply_clouds_pso: Option<GraphicsPipeline>,
+    cloud_march: Option<Texture>,
+    cloud_history: [Option<Texture>; 2],
+    cloud_composite: Option<Texture>,
+    prev_view_proj_km: Mat4,
+    cloud_warm: bool,
     /// `-- --field`: a altura vem do campo cozido em vez do FBM avaliado no VS.
     ///
     /// Opt-in enquanto não estiver medido. O caminho analítico fica a ser o
@@ -168,6 +207,23 @@ impl Default for TerrainGate {
             checked: false,
             no_cull: false,
             still: false,
+            gradient: false,
+            transmittance_pso: None,
+            multiscatter_pso: None,
+            skyview_pso: None,
+            sky_pso: None,
+            transmittance: None,
+            multiscatter: None,
+            skyview: None,
+            no_clouds: false,
+            clouds_pso: None,
+            reproject_pso: None,
+            apply_clouds_pso: None,
+            cloud_march: None,
+            cloud_history: [None, None],
+            cloud_composite: None,
+            prev_view_proj_km: Mat4::IDENTITY,
+            cloud_warm: false,
             field: false,
             field_tex: None,
             field_win: ToroidalField::new(),
@@ -217,6 +273,7 @@ impl TerrainGate {
         &self,
         bounds_stale: bool,
         field_upload: bool,
+        frame_index: u32,
     ) -> Result<(RenderGraph, Vec<PassPlan>)> {
         let mut g = RenderGraph::new();
         // As caixas sobrevivem entre frames: é a cache que faz o culling valer a
@@ -250,15 +307,53 @@ impl TerrainGate {
                 .uses(visible, Access::StorageWrite)
                 .uses(args, Access::StorageWrite),
         );
+
+        let mut skyview_res = None;
+        if !self.gradient {
+            let tr = g.texture("transmittance", self.transmittance.context("transmittance")?);
+            let ms = g.texture("multiscatter", self.multiscatter.context("multiscatter")?);
+            let sv = g.texture("skyview", self.skyview.context("skyview")?);
+            skyview_res = Some(sv);
+            g.pass(Pass::new("transmittance").uses(tr, Access::ColorWrite));
+            g.pass(
+                Pass::new("multiscatter")
+                    .uses(tr, Access::Sampled)
+                    .uses(ms, Access::ColorWrite),
+            );
+            g.pass(
+                Pass::new("skyview")
+                    .uses(tr, Access::Sampled)
+                    .uses(ms, Access::Sampled)
+                    .uses(sv, Access::ColorWrite),
+            );
+            g.pass(
+                Pass::new("sky")
+                    .uses(sv, Access::Sampled)
+                    .uses(color, Access::ColorWrite)
+                    .load(color, Load::Clear([0.0, 0.0, 0.0, 1.0])),
+            );
+        }
+
         // O campo é lido **no vertex shader**; o `StorageRead` dá o layout GENERAL
         // e uma barreira cujo destino inclui o estágio de vértices.
         let mut terrain = Pass::new("terrain")
             .uses(args, Access::Indirect)
             .uses(visible, Access::StorageRead)
             .uses(color, Access::ColorWrite)
-            .uses(depth, Access::DepthWrite)
-            .load(color, Load::Clear([0.62, 0.72, 0.86, 1.0]))
-            .load(depth, Load::Clear([1.0, 0.0, 0.0, 0.0]));
+            .uses(depth, Access::DepthWrite);
+        if self.gradient {
+            terrain = terrain
+                .load(color, Load::Clear([0.62, 0.72, 0.86, 1.0]))
+                .load(depth, Load::Clear([1.0, 0.0, 0.0, 0.0]));
+        } else {
+            // O céu já escreveu o fundo. Keep, senão o Hillaire desaparece.
+            terrain = terrain
+                .load(color, Load::Keep)
+                .load(depth, Load::Clear([1.0, 0.0, 0.0, 0.0]));
+        }
+        if let Some(sv) = skyview_res {
+            terrain = terrain.uses(sv, Access::Sampled);
+        }
         if let Some(f) = field {
             // `Sampled` e não `StorageRead`: muda o layout de GENERAL para
             // SHADER_READ_ONLY antes desta passe, e de volta antes do próximo
@@ -270,7 +365,39 @@ impl TerrainGate {
             terrain = terrain.uses(f, Access::Sampled);
         }
         g.pass(terrain);
-        g.pass(Pass::new("blit").uses(color, Access::Sampled));
+
+        if self.wants_clouds() {
+            let march = g.texture("cloud-march", self.cloud_march.context("cloud march")?);
+            let dst = self.cloud_history_dst(frame_index);
+            let resolved = g.persistent_texture("cloud-resolved", dst);
+            let apply_out = g.texture(
+                "cloud-composite",
+                self.cloud_composite.context("cloud composite")?,
+            );
+            g.pass(Pass::new("clouds").uses(march, Access::ColorWrite));
+            let mut reproject = Pass::new("reproject")
+                .uses(march, Access::Sampled)
+                .uses(resolved, Access::ColorWrite);
+            if self.cloud_warm {
+                let prev = self.cloud_history_src(frame_index);
+                reproject = reproject.uses(
+                    g.persistent_texture("cloud-history", prev),
+                    Access::Sampled,
+                );
+            }
+            g.pass(reproject);
+            g.pass(
+                Pass::new("apply-clouds")
+                    .uses(resolved, Access::Sampled)
+                    .uses(color, Access::Sampled)
+                    .uses(depth, Access::Sampled)
+                    .uses(apply_out, Access::ColorWrite)
+                    .load(apply_out, Load::Clear([0.0, 0.0, 0.0, 1.0])),
+            );
+            g.pass(Pass::new("blit").uses(apply_out, Access::Sampled));
+        } else {
+            g.pass(Pass::new("blit").uses(color, Access::Sampled));
+        }
 
         if let Err(errors) = g.validate() {
             let msg = errors
@@ -284,15 +411,47 @@ impl TerrainGate {
         Ok((g, plans))
     }
 
+    fn wants_clouds(&self) -> bool {
+        !self.gradient && !self.no_clouds
+    }
+
+    fn cloud_history_dst(&self, frame_index: u32) -> Texture {
+        let i = usize::from(frame_index % 2 == 1);
+        self.cloud_history[i].expect("cloud history")
+    }
+
+    fn cloud_history_src(&self, frame_index: u32) -> Texture {
+        let i = usize::from(frame_index % 2 == 1);
+        self.cloud_history[1 - i].expect("cloud history")
+    }
+
     fn recreate(&mut self, gpu: &mut Gpu, extent: Extent2D) -> Result<()> {
         let w = extent.width.max(1);
         let h = extent.height.max(1);
+        let cw = w.max(2);
+        let ch = h.max(2);
         self.color = Some(gpu.create_texture(&color_desc(w, h, HDR))?);
-        self.depth = Some(gpu.create_texture(&depth_desc(w, h))?);
+        // Sampled: the cloud apply reads D32 to keep the layer off the hills.
+        self.depth = Some(gpu.create_texture(&TextureDesc {
+            width: w,
+            height: h,
+            format: GBUFFER_DEPTH_FORMAT,
+            sampled: true,
+            depth: true,
+            color_attachment: false,
+            ..Default::default()
+        })?);
+        self.cloud_march = Some(gpu.create_texture(&color_desc(cw / 2, ch / 2, CLOUD_RT))?);
+        self.cloud_history = [
+            Some(gpu.create_texture(&color_desc(cw / 2, ch / 2, CLOUD_RT))?),
+            Some(gpu.create_texture(&color_desc(cw / 2, ch / 2, CLOUD_RT))?),
+        ];
+        self.cloud_composite = Some(gpu.create_texture(&color_desc(w, h, HDR))?);
         self.extent = Extent2D {
             width: w,
             height: h,
         };
+        self.cloud_warm = false;
         Ok(())
     }
 }
@@ -327,6 +486,118 @@ impl Sample for TerrainGate {
             })
             .context("blit PSO")?,
         );
+        self.transmittance_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/transmittance.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &LUT_FORMATS,
+                    ..Default::default()
+                },
+            })
+            .context("transmittance PSO")?,
+        );
+        self.multiscatter_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/multiscatter.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &LUT_FORMATS,
+                    ..Default::default()
+                },
+            })
+            .context("multiscatter PSO")?,
+        );
+        self.skyview_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/skyview.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &LUT_FORMATS,
+                    ..Default::default()
+                },
+            })
+            .context("skyview PSO")?,
+        );
+        self.sky_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/sky_hdr.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &HDR_FORMATS,
+                    ..Default::default()
+                },
+            })
+            .context("sky HDR PSO")?,
+        );
+        self.transmittance = Some(gpu.create_texture(&transmittance_desc())?);
+        self.multiscatter = Some(gpu.create_texture(&multiscatter_desc())?);
+        self.skyview = Some(gpu.create_texture(&skyview_desc())?);
+
+        let dir = cache_dir();
+        let base = cloud_noise_base(&dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let detail = cloud_noise_detail(&dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let base_tex = upload_volume(gpu, &base)?;
+        let detail_tex = upload_volume(gpu, &detail)?;
+        gpu.bind_volume_srv(0, base_tex)?;
+        gpu.bind_volume_srv(1, detail_tex)?;
+        tracing::info!(base = base.size, detail = detail.size, "cloud noise ready");
+
+        self.clouds_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/clouds.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &CLOUD_FORMATS,
+                    ..Default::default()
+                },
+            })
+            .context("clouds PSO")?,
+        );
+        self.reproject_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/reproject.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &CLOUD_FORMATS,
+                    ..Default::default()
+                },
+            })
+            .context("reproject PSO")?,
+        );
+        self.apply_clouds_pso = Some(
+            gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/apply_clouds.ps.spv")),
+                vs_entry: "VSMain",
+                fs_entry: "PSMain",
+                bindless: true,
+                targets: PipelineTargets {
+                    color_formats: &HDR_FORMATS,
+                    ..Default::default()
+                },
+            })
+            .context("apply clouds PSO")?,
+        );
+
         self.cull_pso = Some(
             gpu.create_compute_pipeline(&ComputePipelineDesc {
                 cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/terrain_cull.cs.spv")),
@@ -429,7 +700,26 @@ impl Sample for TerrainGate {
     }
 
     fn capture_targets(&self) -> Vec<(&'static str, Texture)> {
-        self.color.map_or_else(Vec::new, |c| vec![("terrain", c)])
+        let mut out = Vec::new();
+        let scene = if self.wants_clouds() {
+            self.cloud_composite
+        } else {
+            self.color
+        };
+        if let Some(c) = scene {
+            out.push(("terrain", c));
+        }
+        if !self.gradient {
+            if let Some(t) = self.skyview {
+                out.push(("skyview-lut", t));
+            }
+        }
+        if self.wants_clouds() {
+            if let Some(t) = self.cloud_march {
+                out.push(("cloud-rt", t));
+            }
+        }
+        out
     }
 
     fn frame(&mut self, gpu: &mut Gpu, info: FrameInfo) -> Result<()> {
@@ -474,9 +764,10 @@ impl Sample for TerrainGate {
         }
         self.field_uploads += upload.len() as u64;
 
+        let alt_km = camera.eye.y.max(1.0) * METRES_TO_KM;
         let mut cb = TerrainCb {
             view_proj: camera.view_proj(),
-            camera_pos: Vec4::new(camera.eye.x, camera.eye.y, camera.eye.z, 1.0),
+            camera_pos: Vec4::new(camera.eye.x, camera.eye.y, camera.eye.z, alt_km),
             sun_dir: Vec4::new(sun.x, sun.y, sun.z, 0.0),
             inv_extent: Vec2::new(1.0 / w, 1.0 / h),
             sky_horizon: Vec4::new(0.62, 0.72, 0.86, clipmap_range() * 0.85),
@@ -486,6 +777,11 @@ impl Sample for TerrainGate {
             field: match (self.field_ready, self.field_tex) {
                 (true, Some(t)) => gpu.bindless_index(t)?,
                 _ => 0,
+            },
+            skyview: if self.gradient {
+                0
+            } else {
+                gpu.bindless_index(self.skyview.context("skyview")?)?
             },
             ..Default::default()
         };
@@ -540,7 +836,11 @@ impl Sample for TerrainGate {
 
         // O frame declarado como grafo. As barreiras que se seguem vêm daqui, e
         // não de raciocínio caso a caso.
-        let (_graph, plans) = self.build_graph(!stale.is_empty(), !upload.is_empty())?;
+        let (_graph, plans) = self.build_graph(
+            !stale.is_empty(),
+            !upload.is_empty(),
+            info.frame_index as u32,
+        )?;
         let mut plan = plans.into_iter();
         let mut next_barriers = move || plan.next().map(|p| p.barriers).unwrap_or_default();
 
@@ -623,6 +923,9 @@ impl Sample for TerrainGate {
             // escreve sempre o mesmo conteúdo. O contador, esse, já vem da GPU.
             let all: Vec<u32> = (0..clipmap_patch_count()).collect();
             gpu.write_storage_buffer(self.visible_buf.context("visible")?, as_bytes(&all))?;
+            // A pass `cull` está no grafo na mesma: consumir a barreira para o
+            // iterador não se desencontrar das passes que se seguem.
+            gpu.barriers(&next_barriers())?;
         } else {
             gpu.write_frame_bytes(one(&cull))?;
             gpu.barriers(&next_barriers())?;
@@ -633,11 +936,64 @@ impl Sample for TerrainGate {
         }
         gpu.mark("cull");
 
+        if !self.gradient {
+            let transmittance = self.transmittance.context("transmittance")?;
+            let multiscatter = self.multiscatter.context("multiscatter")?;
+            let skyview = self.skyview.context("skyview")?;
+            let transmittance_pso = self.transmittance_pso.as_ref().context("tr pso")?;
+            let multiscatter_pso = self.multiscatter_pso.as_ref().context("ms pso")?;
+            let skyview_pso = self.skyview_pso.as_ref().context("sv pso")?;
+            let sky_pso = self.sky_pso.as_ref().context("sky pso")?;
+
+            let atmos = AtmosphereCb {
+                inv_view_proj: camera.view_proj().inverse(),
+                camera_pos: Vec4::new(camera.eye.x, camera.eye.y, camera.eye.z, alt_km),
+                sun_dir: Vec4::new(sun.x, sun.y, sun.z, 0.0),
+                sun_illuminance: cb.sun_color,
+                ..Default::default()
+            };
+
+            let mut lut_cb = atmos;
+            lut_cb.inv_extent =
+                Vec2::new(1.0 / TRANSMITTANCE_W as f32, 1.0 / TRANSMITTANCE_H as f32);
+            gpu.write_frame_bytes(lut_cb.as_bytes())?;
+            gpu.barriers(&next_barriers())?;
+            draw_fullscreen(gpu, transmittance_pso, transmittance)?;
+
+            let mut ms_cb = atmos;
+            ms_cb.transmittance_lut = gpu.bindless_index(transmittance)?;
+            ms_cb.inv_extent =
+                Vec2::new(1.0 / MULTISCATTER_SIZE as f32, 1.0 / MULTISCATTER_SIZE as f32);
+            gpu.write_frame_bytes(ms_cb.as_bytes())?;
+            gpu.barriers(&next_barriers())?;
+            draw_fullscreen(gpu, multiscatter_pso, multiscatter)?;
+
+            let mut sv_cb = atmos;
+            sv_cb.transmittance_lut = gpu.bindless_index(transmittance)?;
+            sv_cb.multiscatter_lut = gpu.bindless_index(multiscatter)?;
+            sv_cb.inv_extent = Vec2::new(1.0 / SKYVIEW_W as f32, 1.0 / SKYVIEW_H as f32);
+            gpu.write_frame_bytes(sv_cb.as_bytes())?;
+            gpu.barriers(&next_barriers())?;
+            draw_fullscreen(gpu, skyview_pso, skyview)?;
+
+            let mut sky_cb = atmos;
+            sky_cb.skyview_lut = gpu.bindless_index(skyview)?;
+            sky_cb.inv_extent = Vec2::new(1.0 / w, 1.0 / h);
+            gpu.write_frame_bytes(sky_cb.as_bytes())?;
+            gpu.barriers(&next_barriers())?;
+            draw_fullscreen(gpu, sky_pso, color)?;
+            gpu.mark("sky");
+        }
+
         gpu.write_frame_bytes(cb.as_bytes())?;
 
-        // O clear é radiância do céu, não uma cor: o alvo é linear.
         gpu.barriers(&next_barriers())?;
-        gpu.begin_color_pass(&[color], Some(depth), &[[0.62, 0.72, 0.86, 1.0]], Some(1.0))?;
+        if self.gradient {
+            gpu.begin_color_pass(&[color], Some(depth), &[[0.62, 0.72, 0.86, 1.0]], Some(1.0))?;
+        } else {
+            // Load the Hillaire sky; only depth is cleared.
+            gpu.begin_color_pass(&[color], Some(depth), &[], Some(1.0))?;
+        }
         gpu.set_pipeline(pso)?;
         gpu.bind_graphics_bindless()?;
         // **Um** draw para o clipmap inteiro, e a CPU não sabe quantos patches
@@ -646,8 +1002,69 @@ impl Sample for TerrainGate {
         gpu.end_color_pass()?;
         gpu.mark("terrain");
 
+        let mut blit_src = color;
+        if self.wants_clouds() {
+            let march = self.cloud_march.context("cloud march")?;
+            let resolved = self.cloud_history_dst(info.frame_index as u32);
+            let previous = self.cloud_history_src(info.frame_index as u32);
+            let apply_out = self.cloud_composite.context("cloud composite")?;
+            let clouds_pso = self.clouds_pso.as_ref().context("clouds pso")?;
+            let reproject_pso = self.reproject_pso.as_ref().context("reproject pso")?;
+            let apply_pso = self.apply_clouds_pso.as_ref().context("apply pso")?;
+
+            let eye_km = camera.eye * METRES_TO_KM;
+            let view_km = Mat4::look_at_rh(eye_km, eye_km + self.cam.forward(), Vec3::Y);
+            let proj_km = perspective_vk(self.cam.fov_y, w / h, CLOUD_NEAR_KM, CLOUD_FAR_KM);
+            let view_proj_km = proj_km * view_km;
+            let t = info.frame_index as f32 * 0.01;
+            let cloud_base = CloudCb {
+                inv_view_proj: view_proj_km.inverse(),
+                camera_pos: Vec4::new(eye_km.x, eye_km.y, eye_km.z, alt_km),
+                sun_dir: Vec4::new(sun.x, sun.y, sun.z, 0.0),
+                sun_color: cb.sun_color,
+                wind: Vec4::new(t, 0.0, t * 0.6, info.frame_index as f32),
+                prev_view_proj: self.prev_view_proj_km,
+                ambient: Vec4::new(0.10, 0.15, 0.26, 6360.0),
+                ..Default::default()
+            };
+
+            let mut march_cb = cloud_base;
+            march_cb.inv_extent = Vec2::new(2.0 / w, 2.0 / h);
+            gpu.write_frame_bytes(march_cb.as_bytes())?;
+            gpu.barriers(&next_barriers())?;
+            draw_fullscreen(gpu, clouds_pso, march)?;
+            gpu.mark("clouds");
+
+            let mut rep_cb = cloud_base;
+            rep_cb.cloud_rt = gpu.bindless_index(march)?;
+            rep_cb.history_rt = if self.cloud_warm {
+                gpu.bindless_index(previous)?
+            } else {
+                rep_cb.cloud_rt
+            };
+            rep_cb.inv_extent = Vec2::new(2.0 / w, 2.0 / h);
+            gpu.write_frame_bytes(rep_cb.as_bytes())?;
+            gpu.barriers(&next_barriers())?;
+            draw_fullscreen(gpu, reproject_pso, resolved)?;
+            gpu.mark("reproject");
+
+            let mut apply_cb = cloud_base;
+            apply_cb.cloud_rt = gpu.bindless_index(resolved)?;
+            apply_cb.scene = gpu.bindless_index(color)?;
+            apply_cb.depth = gpu.bindless_index(depth)?;
+            apply_cb.inv_extent = Vec2::new(1.0 / w, 1.0 / h);
+            gpu.write_frame_bytes(apply_cb.as_bytes())?;
+            gpu.barriers(&next_barriers())?;
+            draw_fullscreen(gpu, apply_pso, apply_out)?;
+            gpu.mark("apply-clouds");
+
+            self.prev_view_proj_km = view_proj_km;
+            self.cloud_warm = true;
+            blit_src = apply_out;
+        }
+
         gpu.barriers(&next_barriers())?;
-        cb.scene = gpu.bindless_index(color)?;
+        cb.scene = gpu.bindless_index(blit_src)?;
         gpu.write_frame_bytes(cb.as_bytes())?;
         gpu.begin_swapchain_pass([0.0, 0.0, 0.0, 1.0])?;
         gpu.set_pipeline(blit_pso)?;
@@ -767,13 +1184,42 @@ fn main() -> Result<std::process::ExitCode> {
     let no_cull = config.extra.iter().any(|a| a == "--no-cull");
     let field = config.extra.iter().any(|a| a == "--field");
     let still = config.extra.iter().any(|a| a == "--static");
+    let gradient = config.extra.iter().any(|a| a == "--gradient");
+    let no_clouds = config.extra.iter().any(|a| a == "--no-clouds");
     run(
         config,
         TerrainGate {
             no_cull,
             field,
             still,
+            gradient,
+            no_clouds,
             ..TerrainGate::default()
         },
     )
+}
+
+fn cache_dir() -> std::path::PathBuf {
+    let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for _ in 0..4 {
+        p.pop();
+    }
+    p.push("assets");
+    p.push("cache");
+    p
+}
+
+fn upload_volume(gpu: &mut Gpu, v: &NoiseVolume) -> Result<Texture> {
+    let tex = gpu.create_texture(&cloud_volume_desc(v.size))?;
+    gpu.upload_texture_mip(tex, 0, &v.rgba)?;
+    Ok(tex)
+}
+
+fn draw_fullscreen(gpu: &mut Gpu, pso: &GraphicsPipeline, target: Texture) -> Result<()> {
+    gpu.begin_color_pass(&[target], None, &[[0.0, 0.0, 0.0, 1.0]], None)?;
+    gpu.set_pipeline(pso)?;
+    gpu.bind_graphics_bindless()?;
+    gpu.draw(3, 1, 0, 0)?;
+    gpu.end_color_pass()?;
+    Ok(())
 }

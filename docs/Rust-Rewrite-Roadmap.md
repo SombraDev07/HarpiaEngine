@@ -619,6 +619,10 @@ Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
 
 - [x] Só `ClipmapTerrain` SV_VertexID. `gate-terrain`: 7 níveis, alcance 1024,
       **2 draws**, 0.077 ms de GPU, zero vertex buffers (D40).
+      **+ céu Hillaire** no mesmo gate (D65): LUTs do `gate-sky`, composite HDR,
+      fade do clipmap na sky-view. `-- --gradient` é o A/B.
+      **+ nuvens Nubis** (D66): meia res + reprojecção, apply mascado pelo depth.
+      `-- --no-clouds` é o A/B. Falta a sombra no chão.
 - [x] Culling de patches em compute → `drawIndirect`: 448 patches, 84.8% cortados,
       a CPU não percorre nenhum. Imagem verificada contra `--no-cull`. As caixas
       só se recalculam quando o nível muda de snap (2.2 de 7 por frame), e a soma

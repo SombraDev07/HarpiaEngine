@@ -112,6 +112,10 @@ pub struct CloudCb {
     /// Last frame's view-projection. The reprojection needs it to find where
     /// this pixel's cloud sat on screen a frame ago.
     pub prev_view_proj: Mat4,
+    /// HDR colour the apply pass composites over. 0 during the march.
+    pub scene: u32,
+    /// Sampled D32 of the scene; 1 = sky. 0 = apply over every pixel.
+    pub depth: u32,
 }
 
 impl Default for CloudCb {
@@ -130,6 +134,8 @@ impl Default for CloudCb {
             cloud_rt: 0,
             history_rt: 0,
             prev_view_proj: Mat4::IDENTITY,
+            scene: 0,
+            depth: 0,
         }
     }
 }
@@ -399,7 +405,7 @@ mod tests {
     #[test]
     fn cloud_cb_layout_matches_the_spvasm() {
         use std::mem::offset_of;
-        assert_eq!(std::mem::size_of::<CloudCb>(), 272);
+        assert_eq!(std::mem::size_of::<CloudCb>(), 288);
         assert_eq!(std::mem::offset_of!(CloudCb, camera_pos), 64);
         assert_eq!(std::mem::offset_of!(CloudCb, sun_dir), 80);
         assert_eq!(std::mem::offset_of!(CloudCb, sun_color), 96);
@@ -412,6 +418,8 @@ mod tests {
         assert_eq!(std::mem::offset_of!(CloudCb, cloud_rt), 200);
         assert_eq!(std::mem::offset_of!(CloudCb, history_rt), 204);
         assert_eq!(std::mem::offset_of!(CloudCb, prev_view_proj), 208);
+        assert_eq!(std::mem::offset_of!(CloudCb, scene), 272);
+        assert_eq!(std::mem::offset_of!(CloudCb, depth), 276);
         assert!(std::mem::size_of::<CloudCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
 
         let expected = [
@@ -428,6 +436,8 @@ mod tests {
             (10, offset_of!(CloudCb, cloud_rt) as u32),
             (11, offset_of!(CloudCb, history_rt) as u32),
             (12, offset_of!(CloudCb, prev_view_proj) as u32),
+            (13, offset_of!(CloudCb, scene) as u32),
+            (14, offset_of!(CloudCb, depth) as u32),
         ];
         for shader in [
             "prog/samples/gates/clouds/shaders/clouds.ps.spvasm",
@@ -437,6 +447,10 @@ mod tests {
         ] {
             crate::spvasm_layout::assert_prefix_matches(shader, "Cloud", &expected);
         }
+        crate::spvasm_layout::assert_glsl_offsets(
+            "prog/samples/gates/clouds/shaders/apply_clouds.ps.glsl",
+            &expected,
+        );
     }
 
     #[test]

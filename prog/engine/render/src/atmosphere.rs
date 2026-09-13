@@ -224,6 +224,10 @@ mod tests {
         ] {
             crate::spvasm_layout::assert_prefix_matches(shader, "Atmos", &expected);
         }
+        crate::spvasm_layout::assert_glsl_offsets(
+            "prog/samples/gates/sky/shaders/sky_hdr.ps.glsl",
+            &expected,
+        );
     }
 
     /// Straight up from the ground is exactly the atmosphere thickness; straight

@@ -9,5 +9,12 @@ fn main() {
         ("blit.ps.glsl", "blit.ps.spv"),
         // partilhado: uma cópia só, ou diverge
         ("../../fog/shaders/fullscreen.vs.spvasm", "fullscreen.vs.spv"),
+        ("../../sky/shaders/transmittance.ps.spvasm", "transmittance.ps.spv"),
+        ("../../sky/shaders/multiscatter.ps.spvasm", "multiscatter.ps.spv"),
+        ("../../sky/shaders/skyview.ps.spvasm", "skyview.ps.spv"),
+        ("../../sky/shaders/sky_hdr.ps.glsl", "sky_hdr.ps.spv"),
+        ("../../clouds/shaders/clouds.ps.spvasm", "clouds.ps.spv"),
+        ("../../clouds/shaders/reproject.ps.spvasm", "reproject.ps.spv"),
+        ("../../clouds/shaders/apply_clouds.ps.glsl", "apply_clouds.ps.spv"),
     ]);
 }
