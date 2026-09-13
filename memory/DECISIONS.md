@@ -532,10 +532,12 @@ problema. Decisão do Bruno; a D20 fica corrigida nesta parte.
 
 ## D34 — Demos compilados numa pasta
 
-`prog/tools/build_demos.sh` compila em release e junta os 11 samples em `demos/`
-com nomes que dizem para que servem (`03-luz-pbr`, `04-sombras`, `sponza`, …),
-mais um README. Os gates já eram um-por-funcionalidade — isto é empacotamento,
-não código novo. A pasta está no `.gitignore`; o script é que é commitado.
+`prog/tools/build_demos.sh` compila em release e junta os samples em `demos/`
+com nomes que dizem para que servem (`03-luz-pbr`, `04-sombras`, `sponza`,
+`storm`, …), mais um README. Os gates já eram um-por-funcionalidade — isto é
+empacotamento, não código novo. A pasta está no `.gitignore`; o script é que é
+commitado. O código da tempestade vive em `prog/samples/storm`; o binário que se
+corre é `demos/storm`.
 
 ## D35 — Fase 5.5: o toolchain sempre esteve cá
 
@@ -2011,3 +2013,17 @@ custa 0.5 s de bake no arranque e 72 MiB de VRAM, e a variante `StorageRead` nun
 foi medida com a instrumentação nova. A corrida do contador, essa, já não é razão
 para o travar — está fechada. Falta o custo do arranque e a comparação que falta
 fazer.
+
+## D63 — Storm é a composição de clima; a Sponza não
+
+A Sponza é o mapa de luz (D10). Meter lá chuva melhor, Gerstner e lanternas
+mistura dois jobs e esconde o clima num interior. A demo `storm` é o sítio: água
++ chuva + luzes, rain map a ocluir streaks **e** molhado, poças no tempo, vento
+nas riscas. Os gates `gate-water` / `gate-rain` ficam isolados; o CB deles não
+muda. `StormCb` (576 B) vive em `harpia_render::rain` porque o teste de layout
+tem de o cravar contra o GLSL da demo.
+
+Não se troca as riscas por partículas: cobrem o ecrã, as partículas da Dagor
+não. Não se copia o `setOccluder` em caixa — o mapa top-down 1024² já ganha
+nesse ponto. FFT / inject GLSL / ligar isto à Sponza: não, até haver um oceano
+ou um pedido explícito.

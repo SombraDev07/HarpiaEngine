@@ -37,7 +37,10 @@ pub use cloud_shadow::{
 };
 pub use water::{wave_omega, WaterCb, WATER_GRID, WATER_HALF};
 pub use fly_camera::FlyCamera;
-pub use rain::{rain_map_view_proj, RainCb, RAIN_MAP_SIZE};
+pub use rain::{
+    apply_wetness, clamp_range, puddle_growth, rain_map_view_proj, shore_wetness, RainCb, StormCb,
+    RAIN_MAP_SIZE, WET_F0, WET_POROSITY, WET_ROUGHNESS,
+};
 pub use lights::{
     assign as assign_lights, assign_counted as assign_lights_counted, depth_slice, slice_depth,
     ClusterAssignment, ClusterRange, ConeStats, Light, PointLight,

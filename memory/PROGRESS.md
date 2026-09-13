@@ -34,6 +34,8 @@ cargo run -p gate-sky
 cargo run -p gate-clouds
 cargo run -p gate-water
 cargo run -p gate-rain
+cargo run -p storm -- --frames 16
+# ou o binário empacotado: ./demos/storm --frames 16
 cargo run -p sponza -- --frames 90
 # assets: python3 prog/tools/fetch_sponza.py  (glTF gitignored)
 # um caminho novo que possa pendurar a GPU corre-se primeiro em CPU (D60):
@@ -53,6 +55,7 @@ cargo run -p gate-sky -- --backend null --frames 8
 cargo run -p gate-clouds -- --backend null --frames 8
 cargo run -p gate-water -- --backend null --frames 8
 cargo run -p gate-rain -- --backend null --frames 8
+cargo run -p storm -- --backend null --frames 8
 ```
 
 ## Feito (para não redescobrir)
@@ -976,3 +979,21 @@ e a sombra delas na cena aberta (num interior não se viam, D32) mais a perspect
 aérea, e nada disso está feito: o `gate-terrain` desenha um gradiente de céu, não a
 atmosfera. Marcar a fase como fechada só porque os quatro gates passam seria contar
 passes em vez de olhar para o pixel — e a barra proíbe isso.
+
+## Storm: água + chuva + luzes, fora da Sponza (2026-09-13)
+
+A Sponza fica o mapa de luz. O sítio que compõe o clima é `cargo run -p storm`
+(código em `prog/samples/storm`; binário em `demos/storm` via `build_demos.sh`).
+Cais sobre Gerstner, praia que encontra a água (não um plano dentro dela), 8 omni
+quentes + 2 spots no mar, rain map 1024² de verdade (não a caixa da Dagor),
+streaks com vento, molhado por porosimetria, poças que crescem, e o telhado a
+secar o cais — streaks **e** albedo. As lanternas aparecem no ecrã e no spec da
+água; o gate-water nunca teve luz.
+
+**Porque não o inject em GLSL primeiro.** O pedido era uma demo de water/rain, e
+o inject não se vê nesta cena. Continua o próximo incremento da sombra das nuvens
+(CPU já está em `cloud_shadow.rs`). FFT Tessendorf também não: não há oceano
+aberto que o peça.
+
+16 frames, resize 6/12, `validation_errors=0` no llvmpipe e na RX 6700. Null 8
+frames. Sponza intocada.

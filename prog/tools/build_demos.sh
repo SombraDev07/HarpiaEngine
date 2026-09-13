@@ -43,7 +43,8 @@ demos=(
   "17-veg:gate-veg:60000 plantas, culling por frustum e por oclusao Hi-Z do mesmo frame. Com -- --no-occlusion para o A/B."
   "18-ibl:gate-ibl:O split-sum IBL contra Monte Carlo de 4096 amostras. Sem GPU: corre em qualquer maquina."
   "16-instancias:gate-instances:Culling em compute e UM draw indirecto. Com -- --cubes N ate 1e6, e -- --cpu-cull para o A/B."
-  "sponza:sponza:A cena de referência: glTF, CSM+PCSS, fog default-on, chuva mascarada pelo mapa de chuva."
+  "sponza:sponza:A cena de referência de luz: glTF, CSM+PCSS, fog default-on. Não é o sítio do clima."
+  "storm:storm:Água + chuva + lanternas, compostos. Rain map real, molhado por porosimetria, spots no mar. Não é a Sponza."
 )
 
 for entry in "${demos[@]}"; do
@@ -80,7 +81,7 @@ Cada demo aceita as mesmas opções:
 
 ## Câmara
 
-`sponza`, `09-agua` e `10-chuva` voam: **WASD** move, **Q/E** sobe e desce,
+`sponza`, `storm`, `09-agua` e `10-chuva` voam: **WASD** move, **Q/E** sobe e desce,
 **Shift** acelera, **botão direito** ou as **setas** olham, a **roda** ajusta a
 velocidade. Os restantes têm câmara fixa ou animada de propósito.
 
@@ -106,7 +107,8 @@ que uma captura seja sempre a mesma imagem. Só `-i` tem relógio e input a sér
 | `13-furnace` | **conservação de energia** do BRDF, medida contra 1.0 |
 | `14-heightquery` | **CPU vs GPU**: a mesma função de altura, medida |
 | `15-ecs` | ECS: spawn, iteração, query esparsa, churn (sem GPU) |
-| `sponza` | **integração**: tudo junto numa cena a sério |
+| `sponza` | **luz**: glTF, CSM+PCSS, fog. Mapa de lighting, não de clima |
+| `storm` | **clima composto**: Gerstner + chuva + lanternas. Fora da Sponza |
 
 `sponza` precisa dos assets: `python3 prog/tools/fetch_sponza.py` (o glTF está no
 `.gitignore`).
