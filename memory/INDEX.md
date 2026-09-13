@@ -5,7 +5,7 @@ Persistência entre sessões da IA. **Não** é o allocator (`prog/engine/memory
 ## Onde estás (lê isto primeiro)
 
 **Fase 5 (clima) FECHADA. Próxima = fase 6 (terreno + vegetação + mundo).**
-Céu, nuvens e sombra das nuvens entram na fase 6: num interior não se viam. Não comecees mesh shaders, RT, FSR, editor. Cena de referência de luz: **Sponza**. Composição de clima (água + chuva + lanternas): **`storm`** (D63), não a Sponza.
+Céu, nuvens e sombra das nuvens entram na fase 6: num interior não se viam. Não comecees mesh shaders, RT, FSR, editor. Cena de referência de luz: **Sponza**. Composição de clima (água + chuva + lanternas): **`storm`** (D63), não a Sponza. Inject em GLSL (D64); `-- --cloud-shadow` no `gate-fog` é opt-in, ainda não no terreno.
 
 **Os mesh shaders (fase 9) foram escritos fora de ordem e medidos a negativo** — 1.099 ms contra 0.738 na Sponza, opt-in atrás de `-- --mesh`, roadmap §15 actualizado (D60). O desvio não se repete: a fase 6 continua por fazer e é o passo seguinte.
 

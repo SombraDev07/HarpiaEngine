@@ -6,7 +6,7 @@ fn main() {
         ("forward.ps.spvasm", "forward.ps.spv"),
         ("fullscreen.vs.spvasm", "fullscreen.vs.spv"),
         ("apply.ps.spvasm", "apply.ps.spv"),
-        ("inject.cs.spvasm", "inject.cs.spv"),
+        ("inject.cs.glsl", "inject.cs.spv"),
         ("integrate.cs.spvasm", "integrate.cs.spv"),
         ("blit.ps.spvasm", "blit.ps.spv"),
     ]);

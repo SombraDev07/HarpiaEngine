@@ -12,7 +12,7 @@ fn main() {
           // partilhado: uma cópia só, ou diverge
         ("../../gates/rain/shaders/rain.ps.spvasm", "rain.ps.spv"),
           // partilhado: uma cópia só, ou diverge
-        ("../../gates/fog/shaders/inject.cs.spvasm", "inject.cs.spv"),
+        ("../../gates/fog/shaders/inject.cs.glsl", "inject.cs.spv"),
           // partilhado: uma cópia só, ou diverge
         ("../../gates/fog/shaders/integrate.cs.spvasm", "integrate.cs.spv"),
           // partilhado: uma cópia só, ou diverge

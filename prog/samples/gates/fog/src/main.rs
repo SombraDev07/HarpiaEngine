@@ -2,10 +2,10 @@ use anyhow::{Context, Result};
 use harpia_app::{AppConfig, Sample, run};
 use harpia_math::{Vec2, Vec3, Vec4};
 use harpia_render::{
-    Access, Camera, DEFAULT_ATLAS_SIZE, FogCb, GBUFFER_DEPTH_FORMAT, INSTANCE_STRIDE, Load,
-    MaterialGpu, Pass, PassPlan, PushConstants, RenderGraph, SphereInstance, SphereMesh,
-    VERTEX_STRIDE, color_desc, compute_csm, depth_desc, froxel_desc, halton2, inject_dispatch,
-    integrate_dispatch, shadow_atlas_desc,
+    Access, Camera, CloudField, CloudParams, DEFAULT_ATLAS_SIZE, FogCb, GBUFFER_DEPTH_FORMAT,
+    INSTANCE_STRIDE, Load, MaterialGpu, NoiseVolume, Pass, PassPlan, PushConstants, RenderGraph,
+    SphereInstance, SphereMesh, VERTEX_STRIDE, color_desc, compute_csm, depth_desc, froxel_desc,
+    halton2, inject_dispatch, integrate_dispatch, sampled_desc, shadow_atlas_desc,
 };
 use harpia_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
@@ -30,6 +30,10 @@ const FOV_Y: f32 = 50.0;
 /// UAV slots in set 4 binding 1, SRV slot in set 5 binding 0.
 const SLOT_SCATTER: u32 = 0;
 const SLOT_INTEGRATED: u32 = 1;
+const CLOUD_MAP: u32 = 128;
+const CLOUD_EXTENT: f32 = 80.0;
+const CLOUD_ORIGIN: Vec2 = Vec2::new(0.0, -6.0);
+const CLOUD_BASE_Y: f32 = 14.0;
 
 struct Targets {
     color: Texture,
@@ -59,6 +63,8 @@ struct FogGate {
     sph_count: u32,
     scatter: Option<Texture>,
     integrated: Option<Texture>,
+    cloud_map: Option<Texture>,
+    want_cloud_shadow: bool,
     rt: Option<Targets>,
     extent: Extent2D,
 }
@@ -84,6 +90,8 @@ impl Default for FogGate {
             sph_count: 0,
             scatter: None,
             integrated: None,
+            cloud_map: None,
+            want_cloud_shadow: false,
             rt: None,
             extent: Extent2D {
                 width: 0,
@@ -319,6 +327,9 @@ impl Sample for FogGate {
         self.integrated = Some(integrated);
 
         self.recreate(gpu, gpu.extent())?;
+        if self.want_cloud_shadow {
+            self.cloud_map = Some(upload_cloud_shadow(gpu)?);
+        }
         Ok(())
     }
 
@@ -336,6 +347,9 @@ impl Sample for FogGate {
         }
         if let Some(t) = self.integrated {
             out.push(("froxel-integrated", t));
+        }
+        if let Some(t) = self.cloud_map {
+            out.push(("cloud-shadow", t));
         }
         out
     }
@@ -371,7 +385,7 @@ impl Sample for FogGate {
 
         let csm = compute_csm(&camera, sun, DEFAULT_ATLAS_SIZE);
 
-        let cb = FogCb {
+        let mut cb = FogCb {
             inv_view: camera.view().inverse(),
             camera_pos: Vec4::new(camera.eye.x, camera.eye.y, camera.eye.z, 1.0),
             sun_dir: Vec4::new(sun.x, sun.y, sun.z, 0.0),
@@ -405,6 +419,12 @@ impl Sample for FogGate {
             cascades: csm.view_proj,
             ..Default::default()
         };
+        if let Some(map) = self.cloud_map {
+            cb.cloud_shadow = gpu.bindless_index(map)?;
+            cb.cloud_extent = CLOUD_EXTENT;
+            cb.cloud_origin = CLOUD_ORIGIN;
+            cb.misc.w = CLOUD_BASE_Y;
+        }
         gpu.write_frame_bytes(cb.as_bytes())?;
 
         // 0. cascades. The froxel inject samples this, which is what makes the
@@ -503,6 +523,46 @@ fn instance_bytes(instances: &[SphereInstance]) -> &[u8] {
     }
 }
 
+/// Small deterministic volume, same construction the CPU tests use. The 128³
+/// Nubis bake is for drawing clouds; the inject only needs a map with structure.
+fn upload_cloud_shadow(gpu: &mut Gpu) -> Result<Texture> {
+    let size = 16u32;
+    let mut rgba = Vec::with_capacity((size * size * size) as usize * 4);
+    for z in 0..size {
+        for y in 0..size {
+            for x in 0..size {
+                let v = ((x * 37 + y * 17 + z * 7) % 256) as u8;
+                rgba.extend_from_slice(&[v, 90, 60, 30]);
+            }
+        }
+    }
+    let base = NoiseVolume { size, rgba };
+    let detail = NoiseVolume {
+        size: 4,
+        rgba: vec![0u8; 4 * 4 * 4 * 4],
+    };
+    let params = CloudParams {
+        bottom_km: CLOUD_BASE_Y,
+        top_km: CLOUD_BASE_Y + 8.0,
+        coverage: 0.88,
+        density: 1.8,
+        base_scale: 0.05,
+        detail_scale: 0.4,
+        detail_strength: 0.0,
+        wind: Vec3::ZERO,
+        ground_radius_km: 0.0,
+        light_len_km: 18.0,
+        extinction: 1.8,
+    };
+    let field = CloudField::new(&base, &detail, params);
+    let sun = Vec3::new(0.30, 0.34, -0.89).normalize();
+    let map = field.shadow_map(sun, (CLOUD_ORIGIN.x, CLOUD_ORIGIN.y), CLOUD_EXTENT, CLOUD_MAP);
+    let bytes: Vec<u8> = map.iter().flat_map(|v| v.to_ne_bytes()).collect();
+    let tex = gpu.create_texture(&sampled_desc(CLOUD_MAP, CLOUD_MAP, 1, Format::R32Float))?;
+    gpu.upload_texture_mip(tex, 0, &bytes)?;
+    Ok(tex)
+}
+
 fn main() -> Result<std::process::ExitCode> {
     let mut config = AppConfig::parse(std::env::args())?;
     config.title = "Harpia — fog".into();
@@ -515,5 +575,12 @@ fn main() -> Result<std::process::ExitCode> {
     if !interactive {
         config.resize_at = vec![(6, 800, 600), (12, 1280, 720)];
     }
-    run(config, FogGate::default())
+    let want_cloud_shadow = config.extra.iter().any(|a| a == "--cloud-shadow");
+    run(
+        config,
+        FogGate {
+            want_cloud_shadow,
+            ..FogGate::default()
+        },
+    )
 }

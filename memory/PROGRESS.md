@@ -30,6 +30,7 @@ cargo run -p gate-pbr-grid -- --frames 90
 cargo run -p gate-csm
 cargo run -p gate-taa
 cargo run -p gate-fog
+cargo run -p gate-fog -- --frames 16 -- --cloud-shadow
 cargo run -p gate-sky
 cargo run -p gate-clouds
 cargo run -p gate-water
@@ -51,6 +52,7 @@ cargo run -p gate-pbr-grid -- --backend null --frames 8
 cargo run -p gate-csm -- --backend null --frames 8
 cargo run -p gate-taa -- --backend null --frames 8
 cargo run -p gate-fog -- --backend null --frames 8
+cargo run -p gate-fog -- --backend null --frames 8 -- --cloud-shadow
 cargo run -p gate-sky -- --backend null --frames 8
 cargo run -p gate-clouds -- --backend null --frames 8
 cargo run -p gate-water -- --backend null --frames 8
@@ -447,8 +449,9 @@ Não mesh shaders, RT, FSR, editor.
    decisão tua.
 3. Terreno: ~~clipmap~~ **feito** (D40) e ~~`heightquery`~~ **feito** (D41, que
    apanhou 77 m de divergência entre CPU e GPU). Falta vegetação e instâncias.
-4. **Céu Hillaire e nuvens entram aqui** — num interior não se viam (D32). A
-   sombra das nuvens nos froxels do fog também, que é onde passa a haver chão.
+4. **Céu Hillaire e nuvens entram aqui** — num interior não se viam (D32). O
+   inject já amostra a sombra das nuvens quando o índice ≠ 0 (D64); falta
+   compor céu + nuvens + essa sombra **no terreno**.
 5. Aerial perspective (froxel 32³), a dívida do D19.
 
 ### Dívida conhecida (documentada, não esquecida)
@@ -469,11 +472,9 @@ Não mesh shaders, RT, FSR, editor. Não VSM.
 3. ~~Clouds: raymarch Nubis a meia resolução. Gate `clouds`.~~ **feito**
 4. ~~Reprojecção temporal das nuvens.~~ **feito** (D22)
 5. ~~Sombras volumétricas no fog (CSM no inject).~~ **feito** (D23)
-6. **Sombra das nuvens** nos mesmos froxels — falta ler a transmitância das nuvens
-   onde o inject já lê o CSM. **Mas** o sítio natural para isto é a fase 6: a
-   Sponza é interior e o `gate-clouds` não tem chão, portanto não há onde a sombra
-   cair. Mesma razão adia o céu Hillaire na Sponza (pelas aberturas vê-se quase
-   nada). Fazer com o terreno, não antes.
+6. ~~Sombra das nuvens~~ **lookup no inject** (D64): GLSL bit-idêntico sem mapa;
+   `-- --cloud-shadow` no `gate-fog` amostra o mapa CPU. Ainda falta cair no
+   chão do mundo aberto — a Sponza é interior.
 7. ~~Fog default-on na Sponza.~~ **feito** (D25)
 8. ~~Water: Gerstner, Fresnel, absorção, SSR e espuma.~~ **feito** (D26, D29)
 9. Rain **por último** (GBuffer wet + post; cones sem HDR SRV; `--frames 16` only).
@@ -991,9 +992,19 @@ secar o cais — streaks **e** albedo. As lanternas aparecem no ecrã e no spec 
 água; o gate-water nunca teve luz.
 
 **Porque não o inject em GLSL primeiro.** O pedido era uma demo de water/rain, e
-o inject não se vê nesta cena. Continua o próximo incremento da sombra das nuvens
-(CPU já está em `cloud_shadow.rs`). FFT Tessendorf também não: não há oceano
-aberto que o peça.
+o inject não se vê nesta cena. O slice seguinte é D64. FFT Tessendorf também
+não: não há oceano aberto que o peça.
 
 16 frames, resize 6/12, `validation_errors=0` no llvmpipe e na RX 6700. Null 8
 frames. Sponza intocada.
+
+## Inject em GLSL + sombra das nuvens nos froxels (2026-09-13)
+
+Primeiro slice da composição céu/nuvens/sombra no mundo aberto: o inject passou
+a GLSL (`inject.cs.spvasm` fica referência). Capture default **byte-idêntico**
+ao SPIR-V. Campos novos no fim do `FogCb` (480 B); slot 0 = skip.
+
+`-- --cloud-shadow` no `gate-fog` (não na Sponza): mapa CPU 128², 16 frames,
+`validation_errors=0` llvmpipe + RADV + Null. Composite vs default: 2.07% dos
+píxeis, max canal 7. Não fecha a fase 6 — o terreno continua com céu em
+gradiente.

@@ -1361,6 +1361,7 @@ impl Sample for Sponza {
             shadow_strength: 0.85,
             splits: csm.splits,
             cascades: csm.view_proj,
+            ..Default::default()
         };
         gpu.write_frame_bytes(fog_cb.as_bytes())?;
         // As barreiras vêm **antes** da pass que protegem. Na primeira versão deste

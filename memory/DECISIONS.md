@@ -2025,5 +2025,21 @@ tem de o cravar contra o GLSL da demo.
 
 Não se troca as riscas por partículas: cobrem o ecrã, as partículas da Dagor
 não. Não se copia o `setOccluder` em caixa — o mapa top-down 1024² já ganha
-nesse ponto. FFT / inject GLSL / ligar isto à Sponza: não, até haver um oceano
-ou um pedido explícito.
+nesse ponto. FFT / ligar isto à Sponza: não, até haver um oceano ou um pedido
+explícito. O inject em GLSL é D64.
+
+## D64 — Inject em GLSL; a sombra das nuvens entra no fim do FogCb
+
+O `inject.cs.spvasm` passou a referência. O live é `inject.cs.glsl`: a mesma tap
+CSM, o mesmo HG com o cosseno invertido, o mesmo height fog. Sem mapa (slot 0)
+o `--capture` do `gate-fog` é **bit-idêntico** ao assembly (composite, scene,
+atlas, scatter, integrated). `FogCb` cresceu 464 → 480: `cloud_shadow`,
+`cloud_extent`, `cloud_origin` no fim; `misc.w` é a base Y da camada quando o
+índice não é 0. A Sponza preenche os campos novos com `Default` e não muda.
+
+`-- --cloud-shadow` no `gate-fog` é **opt-in**: bake CPU (`CloudField::shadow_map`)
+→ `R32Float` 128², o inject amostra no XZ onde o raio do sol acerta a camada.
+16 frames, `validation_errors=0` (llvmpipe e RX 6700). Com o flag, 2.07% dos
+píxeis do composite diferem (max canal 7) — o lookup é real, não um no-op. Não
+é o céu Hillaire no terreno nem a sombra no mundo aberto; é o primeiro sítio
+onde os froxels lêem transmitância de nuvem.

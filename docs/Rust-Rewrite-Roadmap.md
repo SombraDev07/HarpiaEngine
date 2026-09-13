@@ -588,7 +588,8 @@ Ordem: fog compute → clouds (sem driveRain) → water → **rain por último**
       Cornette-Shanks com multiple scattering em 3 oitavas. `gate-clouds` 16 frames.
       **+ reprojecção temporal** com profundidade analítica no meio da concha e
       clamp 3×3 (D22): −44.6% de ruído na banda do horizonte.
-      Falta a sombra das **nuvens** nos froxels (a das malhas já lá está, D23).
+      Sombra das **nuvens** no inject (D64): GLSL, skip se o índice é 0;
+      `-- --cloud-shadow` no `gate-fog`. Ainda não no terreno / mundo aberto.
 - [x] Water: Gerstner + Fresnel + absorção (D26) **+ SSR e espuma** (D29).
       `gate-water` 16 frames, validation 0. SSR marchado no mundo com espessura
       adaptativa; espuma na contacto e nas cristas.
