@@ -19,6 +19,9 @@ mod material;
 mod mesh;
 mod packing;
 mod dds;
+mod exposure;
+mod occupancy;
+mod probes;
 mod rain;
 mod taa;
 mod terrain;
@@ -79,7 +82,18 @@ pub use ibl::{
     generate as generate_ibl, generate_env, sample_latlong, sample_lod, sky_radiance, IblCpu,
     RgbaImage,
 };
+pub use exposure::{
+    adapt as adapt_exposure, target_from_luma, ADAPT_SPEED, EXPOSURE_MAX, EXPOSURE_MIN,
+    EXPOSURE_UAV_SLOT, MIDDLE_GREY,
+};
 pub use lighting::{LightingCb, PushConstants, PCSS_LIGHT_SIZE};
+pub use occupancy::{
+    cone_ao, OccupancyVolume, OCCUPANCY_SIZE, OCCUPANCY_SLOT,
+};
+pub use probes::{
+    atrium_radiance, box_radiance, seed as seed_probe, ReflectionProbe, PROBE_LAT_H, PROBE_LAT_W,
+    PROBE_MAX, PROBE_MIPS,
+};
 pub use material::{MaterialGpu, SphereInstance};
 pub use mesh::{MeshVertex, SphereMesh, Vertex};
 pub use packing::{

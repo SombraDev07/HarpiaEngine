@@ -20,5 +20,12 @@ fn main() {
           // partilhado: uma cópia só, ou diverge
         ("../../gates/fog/shaders/fullscreen.vs.spvasm", "fullscreen.vs.spv"),
         ("blit.ps.spvasm", "blit.ps.spv"),
+        ("gi.ps.glsl", "gi.ps.spv"),
+        ("bloom_add.ps.glsl", "bloom_add.ps.spv"),
+        ("copy_view_depth.cs.glsl", "copy_view_depth.cs.spv"),
+        ("normals.cs.glsl", "normals.cs.spv"),
+        ("../../gates/bloom/shaders/copy.cs.glsl", "bloom_copy.cs.spv"),
+        ("../../gates/exposure/shaders/luma.cs.glsl", "luma.cs.spv"),
+        ("../../gates/exposure/shaders/adapt.cs.glsl", "adapt.cs.spv"),
     ]);
 }

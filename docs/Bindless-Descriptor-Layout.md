@@ -14,7 +14,9 @@ O pipeline layout é o contrato. Shaders **não** adivinham collisions de `regis
 |---|---|
 | 0–127 | `viewProj` (64) + `world` (64). 128 B no total. |
 
-Estágios: vertex + fragment (+ compute quando o pass for compute).
+Estágios: vertex + fragment. Compute **não** está na range — SPD/SSSR lêem o UBO
+set 0 (D70). Não alargar a range a COMPUTE sem gravar 128 B também no compute
+(`VUID-vkCmdPushConstants-offset-01796`).
 
 Push constants **não** são um descriptor set. Ficam no `PipelineLayout` (`VkPushConstantRange`).
 
@@ -28,7 +30,10 @@ Push constants **não** são um descriptor set. Ficam no `PipelineLayout` (`VkPu
 | 2 | 0 | `SAMPLER` | pequeno (linear / point / clamp / wrap) | `s0…` | Pool **separado** do heap 8192 |
 | 3 | 1… | `STORAGE_BUFFER` | N buffers **soltos** | `StructuredBuffer` / `RWStructuredBuffer` | **Não** começar em `u0` se o set também tiver `t0` |
 | 4 | 0… | `STORAGE_IMAGE` | UAV 2D/3D | `RWTexture2D` / `RWTexture3D` | 3D UAV em `GENERAL` |
-| 5 | 0 | `SAMPLED_IMAGE` (3D) | heap 3D ou bindings nomeados | `Texture3D` | Clouds / fog. **Não** misturar com o heap 2D do set 1 |
+| 5 | 0 | `SAMPLED_IMAGE` (3D) | heap 3D ou bindings nomeados | `Texture3D` | Fog slot 0; occupancy slot **2** (Sponza). Dummy RGBA16F; occupancy é RGBA8 (como o ruído do terreno). |
+
+Set 3 buffers (runtime array): SPD atomic **slot 9** (0–8 são prims/args na Sponza); luma acc **slot 10**.
+Set 4 UAV 2D: Hi-Z/pirâmide 0..N; normals **13**; exposure 1×1 **14**; SSR **15**. Último bind do slot vale o CB inteiro (D70).
 
 Set 1 flags (binding 0):
 

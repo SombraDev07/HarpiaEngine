@@ -20,6 +20,8 @@ harpia-render.workspace = true
 harpia-scene.workspace = true
 bevy_ecs.workspace = true
 harpia-rhi.workspace = true
+harpia-ffx-spd = { path = "../../plugins/ffx-spd" }
+harpia-ffx-sssr = { path = "../../plugins/ffx-sssr" }
 
 [build-dependencies]
 harpia-shader-build.workspace = true

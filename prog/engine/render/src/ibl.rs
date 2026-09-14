@@ -308,6 +308,29 @@ pub fn generate_env(w: u32, h: u32) -> RgbaImage {
     generate_sky(w, h)
 }
 
+/// Lat-long from an arbitrary radiance function. Probe CPU seed uses this.
+pub fn latlong_from_fn(w: u32, h: u32, radiance: impl Fn(Vec3) -> Vec3) -> RgbaImage {
+    let mut px = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let d = uv_to_dir((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
+            write_px(&mut px, w, x, y, radiance(d));
+        }
+    }
+    RgbaImage {
+        width: w,
+        height: h,
+        mip_levels: 1,
+        mips: vec![px],
+    }
+}
+
+/// GGX prefilter of a lat-long. Probes reuse the IBL cook so a miss is the
+/// same split-sum the rest of the lighting already believes.
+pub fn prefilter(env: &RgbaImage, mip_levels: u32) -> RgbaImage {
+    prefilter_ggx(env, mip_levels)
+}
+
 fn uv_to_dir(u: f32, v: f32) -> Vec3 {
     let phi = (u * 2.0 - 1.0) * PI;
     let theta = v * PI;

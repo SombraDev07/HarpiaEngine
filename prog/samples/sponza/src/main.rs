@@ -1,15 +1,18 @@
 use anyhow::{Context, Result};
 use harpia_app::{AppConfig, Sample, run};
 use harpia_math::{Mat4, Vec2, Vec3, Vec4};
+use harpia_ffx_spd::{self as spd, Dispatch};
+use harpia_ffx_sssr::{self as sssr, DEPTH_THICKNESS, MAX_TRAVERSAL_INTERSECTIONS};
 use harpia_render::{
-    Access, CpuScene, DEFAULT_ATLAS_SIZE, FlyCamera, FogCb, GBUFFER_DEPTH_FORMAT, LightingCb, Load,
-    Pass, PassPlan, PushConstants, RAIN_MAP_SIZE, RainCb, RenderGraph, VERTEX_STRIDE_UV,
-    color_desc, compute_csm, depth_desc, froxel_desc, halton2, inject_dispatch, integrate_dispatch,
-    load_gltf, rain_map_view_proj, sampled_desc, shadow_atlas_desc,
+    atrium_radiance, color_desc, compute_csm, depth_desc, froxel_desc, halton2, inject_dispatch,
+    integrate_dispatch, load_gltf, rain_map_view_proj, sampled_desc, seed_probe, shadow_atlas_desc,
+    Access, CpuScene, DEFAULT_ATLAS_SIZE, EXPOSURE_UAV_SLOT, FlyCamera, FogCb, GBUFFER_DEPTH_FORMAT,
+    LightingCb, Load, OCCUPANCY_SLOT, OccupancyVolume, Pass, PassPlan, PROBE_MIPS, PushConstants,
+    RAIN_MAP_SIZE, RainCb, RenderGraph, VERTEX_STRIDE_UV, ADAPT_SPEED,
 };
 use harpia_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
-    GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture,
+    GraphicsPipeline, GraphicsPipelineDesc, PipelineTargets, Texture, TextureDesc, TextureDim,
 };
 use harpia_scene::{
     ActiveFrustum, Bounds, CullStats, Frustum, Material, Mesh, MeshRange, TwoSided, WorldTransform,
@@ -35,11 +38,30 @@ const RAIN_HALF: f32 = 26.0;
 const RAIN_HEIGHT: f32 = 24.0;
 const SLOT_SCATTER: u32 = 0;
 const SLOT_INTEGRATED: u32 = 1;
+const SLOT_SPD_ATOMIC: u32 = 9;
+const SLOT_LUMA: u32 = 10;
+const SLOT_NORMALS: u32 = 13;
+const SLOT_SSR: u32 = 15;
+const FLAG_GTAO: u32 = 1;
+const FLAG_OCC: u32 = 2;
+const FLAG_SSR: u32 = 4;
+const FLAG_PROBE: u32 = 8;
+const FLAG_EXPOSURE: u32 = 16;
+const FLAG_BLOOM: u32 = 32;
 
 struct SceneRt {
     color: Texture,
     view_depth: Texture,
     depth: Texture,
+    /// Phase 7 compose (GTAO/occupancy/SSR/probes/exposure). Rain reads this.
+    post: Texture,
+    bloomed: Texture,
+    pyramid: Texture,
+    ssr: Texture,
+    ssr_hiz: Texture,
+    normals: Texture,
+    exposure: Texture,
+    spd: Dispatch,
     /// The scene with the streaks added, still linear. The rain pass samples the
     /// scene, so it cannot also be writing to it.
     rained: Texture,
@@ -104,6 +126,23 @@ struct Sponza {
     meshlet_tris: usize,
     /// `-- --mesh` desenha a cena com mesh shaders em vez de draws indirectos.
     mesh_path: bool,
+    /// Phase 7 compose. 0 = skip (`-- --no-gi`).
+    gi_flags: u32,
+    gi_pso: Option<GraphicsPipeline>,
+    bloom_add_pso: Option<GraphicsPipeline>,
+    bloom_copy_pso: Option<ComputePipeline>,
+    spd_karis_pso: Option<ComputePipeline>,
+    spd_min_pso: Option<ComputePipeline>,
+    copy_depth_pso: Option<ComputePipeline>,
+    normals_pso: Option<ComputePipeline>,
+    intersect_pso: Option<ComputePipeline>,
+    luma_pso: Option<ComputePipeline>,
+    adapt_pso: Option<ComputePipeline>,
+    occupancy: Option<Texture>,
+    probe: Option<Texture>,
+    origin_extent: Vec4,
+    spd_atomic: Option<Buffer>,
+    luma_acc: Option<Buffer>,
     /// Tecto de vértices únicos por meshlet: 64 com mesh shaders, sem limite sem eles.
     max_verts: usize,
     mesh_pso: Option<GraphicsPipeline>,
@@ -135,6 +174,22 @@ impl Default for Sponza {
             meshlet_bounds: Vec::new(),
             meshlet_tris: usize::MAX,
             mesh_path: false,
+            gi_flags: 0,
+            gi_pso: None,
+            bloom_add_pso: None,
+            bloom_copy_pso: None,
+            spd_karis_pso: None,
+            spd_min_pso: None,
+            copy_depth_pso: None,
+            normals_pso: None,
+            intersect_pso: None,
+            luma_pso: None,
+            adapt_pso: None,
+            occupancy: None,
+            probe: None,
+            origin_extent: Vec4::ZERO,
+            spd_atomic: None,
+            luma_acc: None,
             max_verts: usize::MAX,
             mesh_pso: None,
             mesh_pso_two_sided: None,
@@ -196,6 +251,13 @@ impl Sponza {
         let color = g.texture("scene-color", rt.color);
         let view_depth = g.texture("view-depth", rt.view_depth);
         let depth = g.texture("depth", rt.depth);
+        let post = g.texture("post", rt.post);
+        let bloomed = g.texture("bloomed", rt.bloomed);
+        let pyramid = g.texture("pyramid", rt.pyramid);
+        let ssr = g.texture("ssr", rt.ssr);
+        let ssr_hiz = g.texture("ssr-hiz", rt.ssr_hiz);
+        let normals = g.texture("ssr-normals", rt.normals);
+        let exposure = g.texture("exposure", rt.exposure);
         let rained = g.texture("rained", rt.rained);
         let composite = g.texture("composite", rt.composite);
         let scatter = g.texture("fog-scatter", self.scatter.context("scatter")?);
@@ -262,9 +324,76 @@ impl Sponza {
                     .load(depth, Load::Keep),
             );
         }
+        if self.gi_flags != 0 {
+            g.pass(
+                Pass::new("ssr hiz")
+                    .uses(view_depth, Access::Sampled)
+                    .uses(ssr_hiz, Access::StorageWrite),
+            );
+            g.pass(
+                Pass::new("ssr spd")
+                    .uses(ssr_hiz, Access::StorageWrite)
+                    .uses(ssr_hiz, Access::StorageRead),
+            );
+            g.pass(
+                Pass::new("ssr normals")
+                    .uses(ssr_hiz, Access::Sampled)
+                    .uses(normals, Access::StorageWrite),
+            );
+            if self.gi_flags & FLAG_SSR != 0 {
+                g.pass(
+                    Pass::new("sssr")
+                        .uses(ssr_hiz, Access::Sampled)
+                        .uses(color, Access::Sampled)
+                        .uses(normals, Access::Sampled)
+                        .uses(ssr, Access::StorageWrite),
+                );
+            }
+            g.pass(
+                Pass::new("exposure")
+                    .uses(color, Access::Sampled)
+                    .uses(exposure, Access::StorageWrite),
+            );
+            let mut gi = Pass::new("gi")
+                .uses(color, Access::Sampled)
+                .uses(ssr_hiz, Access::Sampled)
+                .uses(exposure, Access::Sampled)
+                .uses(post, Access::ColorWrite)
+                .load(post, Load::Clear([0.0; 4]));
+            if self.gi_flags & FLAG_SSR != 0 {
+                gi = gi.uses(ssr, Access::Sampled);
+            }
+            g.pass(gi);
+            if self.gi_flags & FLAG_BLOOM != 0 {
+                g.pass(
+                    Pass::new("bloom copy")
+                        .uses(post, Access::Sampled)
+                        .uses(pyramid, Access::StorageWrite),
+                );
+                g.pass(
+                    Pass::new("bloom spd")
+                        .uses(pyramid, Access::StorageWrite)
+                        .uses(pyramid, Access::StorageRead),
+                );
+                g.pass(
+                    Pass::new("bloom add")
+                        .uses(post, Access::Sampled)
+                        .uses(pyramid, Access::Sampled)
+                        .uses(bloomed, Access::ColorWrite)
+                        .load(bloomed, Load::Clear([0.0; 4])),
+                );
+            }
+        }
+        let rain_src = if self.gi_flags & FLAG_BLOOM != 0 {
+            bloomed
+        } else if self.gi_flags != 0 {
+            post
+        } else {
+            color
+        };
         g.pass(
             Pass::new("rain")
-                .uses(color, Access::Sampled)
+                .uses(rain_src, Access::Sampled)
                 .uses(view_depth, Access::Sampled)
                 .uses(rain_map, Access::Sampled)
                 .uses(rained, Access::ColorWrite)
@@ -306,6 +435,70 @@ impl Sponza {
     fn recreate_scene(&mut self, gpu: &mut Gpu, extent: Extent2D) -> Result<()> {
         let w = extent.width.max(1);
         let h = extent.height.max(1);
+        let dispatch = spd::setup(w, h, None);
+        let mips = dispatch.texture_mips().min(SLOT_SSR);
+        let pyramid = gpu.create_texture(&TextureDesc {
+            width: w,
+            height: h,
+            depth_slices: 1,
+            dim: TextureDim::D2,
+            mip_levels: mips,
+            format: SCENE_FORMAT,
+            sampled: true,
+            storage: true,
+            color_attachment: false,
+            depth: false,
+        })?;
+        let ssr_hiz = gpu.create_texture(&TextureDesc {
+            width: w,
+            height: h,
+            depth_slices: 1,
+            dim: TextureDim::D2,
+            mip_levels: mips,
+            format: Format::R32Float,
+            sampled: true,
+            storage: true,
+            color_attachment: false,
+            depth: false,
+        })?;
+        let ssr = gpu.create_texture(&TextureDesc {
+            width: w,
+            height: h,
+            depth_slices: 1,
+            dim: TextureDim::D2,
+            mip_levels: 1,
+            format: SCENE_FORMAT,
+            sampled: true,
+            storage: true,
+            color_attachment: false,
+            depth: false,
+        })?;
+        let normals = gpu.create_texture(&TextureDesc {
+            width: w,
+            height: h,
+            depth_slices: 1,
+            dim: TextureDim::D2,
+            mip_levels: 1,
+            format: Format::Rgba8Unorm,
+            sampled: true,
+            storage: true,
+            color_attachment: false,
+            depth: false,
+        })?;
+        let exposure = gpu.create_texture(&TextureDesc {
+            width: 1,
+            height: 1,
+            depth_slices: 1,
+            dim: TextureDim::D2,
+            mip_levels: 1,
+            format: Format::R32Float,
+            sampled: true,
+            storage: true,
+            color_attachment: false,
+            depth: false,
+        })?;
+        // Storage images start in GENERAL. `upload_texture_mip` would leave
+        // TRANSFER_DST, and adapt's UAV expects GENERAL.
         self.scene = Some(SceneRt {
             color: gpu.create_texture(&color_desc(w, h, SCENE_FORMAT))?,
             view_depth: gpu.create_texture(&color_desc(w, h, VIEW_DEPTH))?,
@@ -315,6 +508,14 @@ impl Sponza {
                 sampled: true,
                 ..depth_desc(w, h)
             })?,
+            post: gpu.create_texture(&color_desc(w, h, SCENE_FORMAT))?,
+            bloomed: gpu.create_texture(&color_desc(w, h, SCENE_FORMAT))?,
+            pyramid,
+            ssr,
+            ssr_hiz,
+            normals,
+            exposure,
+            spd: dispatch,
             rained: gpu.create_texture(&color_desc(w, h, SCENE_FORMAT))?,
             composite: gpu.create_texture(&color_desc(w, h, COMPOSITE))?,
         });
@@ -725,6 +926,38 @@ impl Sample for Sponza {
                 slot as u32,
             ]);
         }
+        if self.gi_flags & FLAG_OCC != 0 && !self.meshlet_bounds.is_empty() {
+            let mut mn = Vec3::splat(f32::MAX);
+            let mut mx = Vec3::splat(f32::MIN);
+            for (c, e) in &self.meshlet_bounds {
+                mn = mn.min(*c - *e);
+                mx = mx.max(*c + *e);
+            }
+            let origin = mn - Vec3::splat(0.5);
+            let extent = (mx - mn + Vec3::splat(1.0)).max_element().max(1.0);
+            let mut vol = OccupancyVolume::new(origin, Vec3::splat(extent));
+            for (c, e) in &self.meshlet_bounds {
+                vol.stamp_aabb(*c - *e, *c + *e);
+            }
+            let tex = gpu.create_texture(&OccupancyVolume::desc())?;
+            gpu.upload_texture_mip(tex, 0, &vol.voxels)?;
+            gpu.bind_volume_srv(OCCUPANCY_SLOT, tex)?;
+            self.occupancy = Some(tex);
+            self.origin_extent = Vec4::new(origin.x, origin.y, origin.z, extent);
+            tracing::info!(
+                voxels = vol.occupied_count(),
+                extent,
+                "occupancy 32³ no lighting da Sponza"
+            );
+        }
+        if self.gi_flags & FLAG_PROBE != 0 {
+            let seeded = seed_probe(Vec3::new(0.0, 3.0, 0.0), 22.0, atrium_radiance);
+            let probe = gpu.create_texture(&seeded.latlong.desc())?;
+            for (mip, data) in seeded.latlong.mips.iter().enumerate() {
+                gpu.upload_texture_mip(probe, mip as u32, data)?;
+            }
+            self.probe = Some(probe);
+        }
         // Só o mesh shader lê o formato canónico, e só com ele se constrói. Sem
         // `--mesh` há um meshlet por primitiva e nenhum tecto de vértices: o
         // empacotamento partia-as para caberem nos 64 vértices de saída, o `ensure!`
@@ -948,6 +1181,71 @@ impl Sample for Sponza {
             })
             .context("integrate PSO")?,
         );
+        if self.gi_flags != 0 {
+            const POST: [Format; 1] = [SCENE_FORMAT];
+            self.gi_pso = Some(
+                gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                    vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                    fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/gi.ps.spv")),
+                    vs_entry: "VSMain",
+                    fs_entry: "PSMain",
+                    bindless: true,
+                    targets: PipelineTargets {
+                        color_formats: &POST,
+                        ..Default::default()
+                    },
+                })
+                .context("gi PSO")?,
+            );
+            self.bloom_add_pso = Some(
+                gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
+                    vs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vs.spv")),
+                    fs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/bloom_add.ps.spv")),
+                    vs_entry: "VSMain",
+                    fs_entry: "PSMain",
+                    bindless: true,
+                    targets: PipelineTargets {
+                        color_formats: &POST,
+                        ..Default::default()
+                    },
+                })
+                .context("bloom add PSO")?,
+            );
+            self.bloom_copy_pso = Some(gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/bloom_copy.cs.spv")),
+                cs_entry: "CSMain",
+            })?);
+            self.spd_karis_pso = Some(gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: spd::karis_spirv(),
+                cs_entry: "CSMain",
+            })?);
+            self.spd_min_pso = Some(gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: spd::min_spirv(),
+                cs_entry: "CSMain",
+            })?);
+            self.copy_depth_pso = Some(gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/copy_view_depth.cs.spv")),
+                cs_entry: "CSMain",
+            })?);
+            self.normals_pso = Some(gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/normals.cs.spv")),
+                cs_entry: "CSMain",
+            })?);
+            self.intersect_pso = Some(gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: sssr::intersect_spirv(),
+                cs_entry: "CSMain",
+            })?);
+            self.luma_pso = Some(gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/luma.cs.spv")),
+                cs_entry: "CSMain",
+            })?);
+            self.adapt_pso = Some(gpu.create_compute_pipeline(&ComputePipelineDesc {
+                cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/adapt.cs.spv")),
+                cs_entry: "CSMain",
+            })?);
+            self.spd_atomic = Some(gpu.create_storage_buffer(SLOT_SPD_ATOMIC, &spd::atomic_zeros())?);
+            self.luma_acc = Some(gpu.create_storage_buffer(SLOT_LUMA, &[0u8; 8])?);
+        }
         let scatter = gpu.create_texture(&froxel_desc())?;
         let integrated = gpu.create_texture(&froxel_desc())?;
         gpu.bind_volume_uav(SLOT_SCATTER, scatter)?;
@@ -1311,9 +1609,20 @@ impl Sample for Sponza {
             gpu.mark("scene 2");
         }
 
+        if self.gi_flags != 0 {
+            self.record_gi(gpu, &mut next_barriers, &camera, view, view_proj, w, h)?;
+        }
+
         // Rain, default-on: streaks over the scene, masked by the rain map so
         // they fall in the nave and not through the arcade roof. Linear in and
         // linear out -- the fog composite still owns the tonemap.
+        let hdr_for_rain = if self.gi_flags & FLAG_BLOOM != 0 {
+            scene.bloomed
+        } else if self.gi_flags != 0 {
+            scene.post
+        } else {
+            scene.color
+        };
         let rain_cb = RainCb {
             inv_view_proj: view_proj.inverse(),
             view_proj,
@@ -1322,7 +1631,7 @@ impl Sample for Sponza {
             sky_zenith: Vec4::new(1.10, 1.20, 1.45, 0.0),
             sky_horizon: Vec4::new(0.95, 1.02, 1.20, 0.0),
             inv_extent: Vec2::new(1.0 / w, 1.0 / h),
-            scene_color: gpu.bindless_index(scene.color)?,
+            scene_color: gpu.bindless_index(hdr_for_rain)?,
             scene_depth: gpu.bindless_index(scene.view_depth)?,
             rain_map: gpu.bindless_index(rain_map)?,
             rain_map_vp: rain_vp,
@@ -1400,11 +1709,308 @@ impl Sample for Sponza {
     }
 }
 
+impl Sponza {
+    fn record_gi<F: FnMut() -> Vec<harpia_rhi::BarrierDesc>>(
+        &self,
+        gpu: &mut Gpu,
+        next: &mut F,
+        camera: &harpia_render::Camera,
+        view: Mat4,
+        view_proj: Mat4,
+        w: f32,
+        h: f32,
+    ) -> Result<()> {
+        let scene = self.scene.as_ref().context("scene rt")?;
+        let flags = self.gi_flags;
+        let iw = w.max(1.0) as u32;
+        let ih = h.max(1.0) as u32;
+        let mips = scene.spd.texture_mips().min(SLOT_SSR);
+        let proj = view_proj * view.inverse();
+        let inv_view_proj = view_proj.inverse();
+        let inv_proj = proj.inverse();
+
+        gpu.barriers(&next())?;
+        for mip in 0..mips {
+            gpu.bind_storage_image(scene.ssr_hiz, mip, mip)?;
+        }
+        gpu.bind_storage_image(scene.ssr, 0, SLOT_SSR)?;
+        gpu.bind_storage_image(scene.normals, 0, SLOT_NORMALS)?;
+        gpu.bind_storage_image(scene.exposure, 0, EXPOSURE_UAV_SLOT)?;
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct CopyCb {
+            params: Vec4,
+            clip: Vec4,
+        }
+        gpu.write_frame_bytes(unsafe {
+            std::slice::from_raw_parts(
+                (&CopyCb {
+                    params: Vec4::new(
+                        gpu.bindless_index(scene.view_depth)? as f32,
+                        w,
+                        h,
+                        0.0,
+                    ),
+                    clip: Vec4::new(camera.near, camera.far, 0.0, 0.0),
+                } as *const CopyCb)
+                    .cast::<u8>(),
+                std::mem::size_of::<CopyCb>(),
+            )
+        })?;
+        gpu.bind_compute_bindless()?;
+        gpu.set_compute_pipeline(self.copy_depth_pso.as_ref().context("copy depth")?)?;
+        gpu.dispatch(iw.div_ceil(8), ih.div_ceil(8), 1)?;
+
+        gpu.barriers(&next())?;
+        gpu.write_frame_bytes(&scene.spd.constants_bytes())?;
+        gpu.bind_compute_bindless()?;
+        gpu.set_compute_pipeline(self.spd_min_pso.as_ref().context("spd min")?)?;
+        gpu.dispatch(scene.spd.groups_x, scene.spd.groups_y, 1)?;
+
+        gpu.barriers(&next())?;
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct NrmCb {
+            inv_view_proj: Mat4,
+            params: Vec4,
+            depth: u32,
+            _pad: [u32; 3],
+        }
+        gpu.write_frame_bytes(unsafe {
+            std::slice::from_raw_parts(
+                (&NrmCb {
+                    inv_view_proj,
+                    params: Vec4::new(w, h, 1.0 / w, 1.0 / h),
+                    depth: gpu.bindless_index(scene.ssr_hiz)?,
+                    _pad: [0; 3],
+                } as *const NrmCb)
+                    .cast::<u8>(),
+                std::mem::size_of::<NrmCb>(),
+            )
+        })?;
+        gpu.bind_compute_bindless()?;
+        gpu.set_compute_pipeline(self.normals_pso.as_ref().context("normals")?)?;
+        gpu.dispatch(iw.div_ceil(8), ih.div_ceil(8), 1)?;
+
+        if flags & FLAG_SSR != 0 {
+            gpu.barriers(&next())?;
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct SssrCb {
+                inv_view_proj: Mat4,
+                inv_proj: Mat4,
+                view: Mat4,
+                proj: Mat4,
+                screen: Vec4,
+                depth: u32,
+                normal: u32,
+                color: u32,
+                max_steps: u32,
+                thickness: f32,
+                _pad: [u32; 3],
+            }
+            gpu.write_frame_bytes(unsafe {
+                std::slice::from_raw_parts(
+                    (&SssrCb {
+                        inv_view_proj,
+                        inv_proj,
+                        view,
+                        proj,
+                        screen: Vec4::new(w, h, 1.0 / w, 1.0 / h),
+                        depth: gpu.bindless_index(scene.ssr_hiz)?,
+                        normal: gpu.bindless_index(scene.normals)?,
+                        color: gpu.bindless_index(scene.color)?,
+                        max_steps: MAX_TRAVERSAL_INTERSECTIONS,
+                        thickness: DEPTH_THICKNESS,
+                        _pad: [0; 3],
+                    } as *const SssrCb)
+                        .cast::<u8>(),
+                    std::mem::size_of::<SssrCb>(),
+                )
+            })?;
+            gpu.bind_compute_bindless()?;
+            gpu.set_compute_pipeline(self.intersect_pso.as_ref().context("sssr")?)?;
+            gpu.dispatch(iw.div_ceil(8), ih.div_ceil(8), 1)?;
+        }
+
+        gpu.barriers(&next())?;
+        gpu.write_frame_bytes(unsafe {
+            std::slice::from_raw_parts(
+                (&CopyCb {
+                    params: Vec4::new(
+                        gpu.bindless_index(scene.color)? as f32,
+                        w,
+                        h,
+                        SLOT_LUMA as f32,
+                    ),
+                    clip: Vec4::ZERO,
+                } as *const CopyCb)
+                    .cast::<u8>(),
+                std::mem::size_of::<CopyCb>(),
+            )
+        })?;
+        gpu.bind_compute_bindless()?;
+        gpu.set_compute_pipeline(self.luma_pso.as_ref().context("luma")?)?;
+        gpu.dispatch(iw.div_ceil(8), ih.div_ceil(8), 1)?;
+        gpu.storage_barrier_buffer(self.luma_acc.context("luma acc")?)?;
+        gpu.write_frame_bytes(unsafe {
+            std::slice::from_raw_parts(
+                (&Vec4::new(1.0 / 60.0, ADAPT_SPEED, SLOT_LUMA as f32, 0.0) as *const Vec4)
+                    .cast::<u8>(),
+                16,
+            )
+        })?;
+        gpu.bind_compute_bindless()?;
+        gpu.set_compute_pipeline(self.adapt_pso.as_ref().context("adapt")?)?;
+        gpu.dispatch(1, 1, 1)?;
+
+        gpu.barriers(&next())?;
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct GiCb {
+            inv_view_proj: Mat4,
+            inv_proj: Mat4,
+            camera_pos: Vec4,
+            screen: Vec4,
+            origin_extent: Vec4,
+            color: u32,
+            depth: u32,
+            ssr: u32,
+            probe: u32,
+            exposure_tex: u32,
+            flags: u32,
+            probe_mips: u32,
+            _pad: u32,
+            gtao_radius: f32,
+            _pad2: [f32; 3],
+        }
+        let probe_idx = self
+            .probe
+            .map(|t| gpu.bindless_index(t))
+            .transpose()?
+            .unwrap_or(0);
+        gpu.write_frame_bytes(unsafe {
+            std::slice::from_raw_parts(
+                (&GiCb {
+                    inv_view_proj,
+                    inv_proj,
+                    camera_pos: Vec4::new(camera.eye.x, camera.eye.y, camera.eye.z, 1.0),
+                    screen: Vec4::new(w, h, 1.0 / w, 1.0 / h),
+                    origin_extent: self.origin_extent,
+                    color: gpu.bindless_index(scene.color)?,
+                    depth: gpu.bindless_index(scene.ssr_hiz)?,
+                    ssr: gpu.bindless_index(scene.ssr)?,
+                    probe: probe_idx,
+                    exposure_tex: gpu.bindless_index(scene.exposure)?,
+                    flags,
+                    probe_mips: PROBE_MIPS,
+                    _pad: 0,
+                    gtao_radius: 1.4,
+                    _pad2: [0.0; 3],
+                } as *const GiCb)
+                    .cast::<u8>(),
+                std::mem::size_of::<GiCb>(),
+            )
+        })?;
+        gpu.begin_color_pass(&[scene.post], None, &[[0.0; 4]], None)?;
+        gpu.set_pipeline(self.gi_pso.as_ref().context("gi")?)?;
+        gpu.bind_graphics_bindless()?;
+        gpu.draw(3, 1, 0, 0)?;
+        gpu.end_color_pass()?;
+        gpu.mark("gi");
+
+        if flags & FLAG_BLOOM != 0 {
+            gpu.barriers(&next())?;
+            for mip in 0..mips {
+                gpu.bind_storage_image(scene.pyramid, mip, mip)?;
+            }
+            gpu.write_frame_bytes(unsafe {
+                std::slice::from_raw_parts(
+                    (&CopyCb {
+                        params: Vec4::new(gpu.bindless_index(scene.post)? as f32, w, h, 1.0),
+                        clip: Vec4::ZERO,
+                    } as *const CopyCb)
+                        .cast::<u8>(),
+                    std::mem::size_of::<CopyCb>(),
+                )
+            })?;
+            gpu.bind_compute_bindless()?;
+            gpu.set_compute_pipeline(self.bloom_copy_pso.as_ref().context("bloom copy")?)?;
+            gpu.dispatch(iw.div_ceil(8), ih.div_ceil(8), 1)?;
+
+            gpu.barriers(&next())?;
+            gpu.write_frame_bytes(&scene.spd.constants_bytes())?;
+            gpu.bind_compute_bindless()?;
+            gpu.set_compute_pipeline(self.spd_karis_pso.as_ref().context("spd karis")?)?;
+            gpu.dispatch(scene.spd.groups_x, scene.spd.groups_y, 1)?;
+
+            gpu.barriers(&next())?;
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct BloomCb {
+                inv_extent: [f32; 2],
+                hdr: u32,
+                pyramid: u32,
+                mips: u32,
+                enable: u32,
+                _pad: [u32; 2],
+            }
+            gpu.write_frame_bytes(unsafe {
+                std::slice::from_raw_parts(
+                    (&BloomCb {
+                        inv_extent: [1.0 / w, 1.0 / h],
+                        hdr: gpu.bindless_index(scene.post)?,
+                        pyramid: gpu.bindless_index(scene.pyramid)?,
+                        mips,
+                        enable: 1,
+                        _pad: [0; 2],
+                    } as *const BloomCb)
+                        .cast::<u8>(),
+                    std::mem::size_of::<BloomCb>(),
+                )
+            })?;
+            gpu.begin_color_pass(&[scene.bloomed], None, &[[0.0; 4]], None)?;
+            gpu.set_pipeline(self.bloom_add_pso.as_ref().context("bloom add")?)?;
+            gpu.bind_graphics_bindless()?;
+            gpu.draw(3, 1, 0, 0)?;
+            gpu.end_color_pass()?;
+            gpu.mark("bloom");
+        }
+        Ok(())
+    }
+}
+
 fn main() -> Result<std::process::ExitCode> {
     let mut config = AppConfig::parse(std::env::args())?;
     config.title = "Harpia — sponza".into();
     let occlusion = config.extra.iter().any(|a| a == "--occlusion");
     let mesh_path = config.extra.iter().any(|a| a == "--mesh");
+    let no = |name: &str| config.extra.iter().any(|a| a == name);
+    let gi_flags = if no("--no-gi") {
+        0
+    } else {
+        let mut f = FLAG_GTAO | FLAG_OCC | FLAG_SSR | FLAG_PROBE | FLAG_EXPOSURE | FLAG_BLOOM;
+        if no("--no-gtao") {
+            f &= !FLAG_GTAO;
+        }
+        if no("--no-occupancy") {
+            f &= !FLAG_OCC;
+        }
+        if no("--no-ssr") {
+            f &= !FLAG_SSR;
+        }
+        if no("--no-probes") {
+            f &= !FLAG_PROBE;
+        }
+        if no("--no-exposure") {
+            f &= !FLAG_EXPOSURE;
+        }
+        if no("--no-bloom") {
+            f &= !FLAG_BLOOM;
+        }
+        f
+    };
     let meshlet_tris = config
         .extra
         .iter()
@@ -1433,6 +2039,7 @@ fn main() -> Result<std::process::ExitCode> {
                 usize::MAX
             },
             meshlet_tris,
+            gi_flags,
             ..Default::default()
         },
     )

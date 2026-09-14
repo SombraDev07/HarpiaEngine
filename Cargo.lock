@@ -1218,6 +1218,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate-bloom"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-ffx-spd",
+ "harpia-math",
+ "harpia-memory",
+ "harpia-render",
+ "harpia-rhi",
+ "harpia-shader-build",
+]
+
+[[package]]
 name = "gate-clouds"
 version = "0.1.0"
 dependencies = [
@@ -1256,6 +1270,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate-exposure"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-math",
+ "harpia-memory",
+ "harpia-render",
+ "harpia-rhi",
+ "harpia-shader-build",
+ "tracing",
+]
+
+[[package]]
 name = "gate-fog"
 version = "0.1.0"
 dependencies = [
@@ -1270,6 +1298,20 @@ dependencies = [
 
 [[package]]
 name = "gate-furnace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-math",
+ "harpia-memory",
+ "harpia-render",
+ "harpia-rhi",
+ "harpia-shader-build",
+ "tracing",
+]
+
+[[package]]
+name = "gate-gtao"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1337,6 +1379,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gate-occupancy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-math",
+ "harpia-memory",
+ "harpia-render",
+ "harpia-rhi",
+ "harpia-shader-build",
+ "tracing",
+]
+
+[[package]]
 name = "gate-pbr-grid"
 version = "0.1.0"
 dependencies = [
@@ -1347,6 +1403,22 @@ dependencies = [
  "harpia-render",
  "harpia-rhi",
  "harpia-shader-build",
+]
+
+[[package]]
+name = "gate-probes"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-ffx-spd",
+ "harpia-ffx-sssr",
+ "harpia-math",
+ "harpia-memory",
+ "harpia-render",
+ "harpia-rhi",
+ "harpia-shader-build",
+ "tracing",
 ]
 
 [[package]]
@@ -1369,6 +1441,21 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "harpia-app",
+ "harpia-math",
+ "harpia-memory",
+ "harpia-render",
+ "harpia-rhi",
+ "harpia-shader-build",
+]
+
+[[package]]
+name = "gate-ssr"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harpia-app",
+ "harpia-ffx-spd",
+ "harpia-ffx-sssr",
  "harpia-math",
  "harpia-memory",
  "harpia-render",

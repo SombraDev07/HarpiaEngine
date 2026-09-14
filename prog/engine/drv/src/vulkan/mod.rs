@@ -262,6 +262,10 @@ impl VulkanGpu {
             avail12.shader_sampled_image_array_non_uniform_indexing,
             "shaderSampledImageArrayNonUniformIndexing",
         )?;
+        require_true(
+            avail12.shader_storage_buffer_array_non_uniform_indexing,
+            "shaderStorageBufferArrayNonUniformIndexing",
+        )?;
 
         let mut props12 = vk::PhysicalDeviceVulkan12Properties::default();
         let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut props12);
@@ -289,7 +293,9 @@ impl VulkanGpu {
             .descriptor_binding_storage_image_update_after_bind(true)
             .descriptor_binding_variable_descriptor_count(true)
             .runtime_descriptor_array(true)
-            .shader_sampled_image_array_non_uniform_indexing(true);
+            .shader_sampled_image_array_non_uniform_indexing(true)
+            .shader_storage_image_array_non_uniform_indexing(true)
+            .shader_storage_buffer_array_non_uniform_indexing(true);
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
             .features(
                 vk::PhysicalDeviceFeatures::default()
@@ -304,6 +310,8 @@ impl VulkanGpu {
                     // a amostrar a mesma textura (D56).
                     .draw_indirect_first_instance(true)
                     .shader_sampled_image_array_dynamic_indexing(true)
+                    .shader_storage_image_array_dynamic_indexing(true)
+                    .shader_storage_buffer_array_dynamic_indexing(true)
                     .shader_storage_image_write_without_format(
                         storage_write_without_format == vk::TRUE,
                     ),

@@ -468,13 +468,18 @@ sem informação. A coluna «fase» é o contrato.
 | **6** (terreno/veg/mundo) | **ECS** — ver decisão abaixo | milhões de instâncias de vegetação e streaming de células precisam de storage por arquétipo. Antes da fase 6 **não há entidades**, só sistemas. |
 | **6** | `rayon` — **dentro** (2026-09-11) | bake de noise, build de clipmap, geração de mips. Entrou com medição: cozer os 256 tiles do campo de altura eram 1373 ms em série e 429 ms em 16 cores (D61). **Não** para o frame graph — esse é single-thread por decisão (D0). |
 | **6** | `serde` + `postcard` (ou `bincode`) | descrever mundo/células em disco. `rkyv` só se o profiling mostrar que a desserialização dói. |
+| **7** (GI/post) | FidelityFX SPD + SSSR em `prog/3rdPartyLibs/` + plugins | Bloom Karis e SSR Hi-Z. **Não** o host C++ da AMD (chama `vkCmd*`). FSR continua depois do exit. |
 | **7** (GI/post) | `parry3d` | queries de geometria para probes e occlusion. Vem com o Rapier, mas usa-se sozinha. |
 | **8** (editor) | `egui` + **`egui-ash-renderer`** | tooling. Já no overlay (D67). **Não `egui-wgpu`**. Pool à parte do heap 8192 (mina 7). |
-| **8** | `puffin` ou `tracy-client` + `profiling` | precisa de editor para ver o resultado; antes disso o `--frames N` chega. |
+| **8** | `serde` + `ron` | cena de **authoring** (E1). `postcard` no cook (E6). |
+| **8** | `bevy_reflect` | Inspector data-driven (E3). |
+| **8** | `rfd` | file dialog (E1). Não bloquear o GPU loop sem fence. |
+| **8** | `puffin` ou `tracy-client` + `profiling` | painel depois de E0; antes disso `--frames N` chega. |
+| **8+** (preview colisão) | `rapier3d` | lib, não solver nosso (D33/D73). Componente `Collider` authoring pode existir antes. |
+| **quando houver clip skinned no viewport** | clips do `gltf` | sem graph editor. |
 | **9** (opcional) | `kira` (áudio), `cpal` por baixo | `rodio` é mais simples e menos capaz; `kira` tem mixer, spatial, clocks, tweens. |
-| **9** | `gilrs` | gamepads com hotplug e mapeamentos SDL. |
+| **9** | `gilrs` | gamepads com hotplug e mapeamentos SDL. **Editor usa `winit`+egui.** |
 | **9** | `quinn` (QUIC) ou `renet` | só se houver multiplayer no plano. `laminar` está parado. |
-| **quando houver física** | ver decisão abaixo | |
 
 ### Decisões em aberto (não escolher antes da fase)
 
@@ -491,15 +496,9 @@ Recomendação: **`hecs` se o frame graph continuar a mandar**, `bevy_ecs` se se
 quiser o scheduler dele. Decidir na fase 6 com um gate que crie 1e6 instâncias de
 vegetação e meça, não por gosto.
 
-**Física.** O pedido foi «Jolt ou box3d». Duas notas antes de escolher:
-
-- **Jolt** é C++; em Rust usa-se por bindings (`jolt-rust` / `joltc-sys`), o que
-  traz uma toolchain C++ ao build. É excelente e é usado em produção (Horizon).
-- **`box3d` não existe.** `Box2D` é 2D. Se a intenção era Bullet, são
-  `bullet3-sys`; se era Box2D, não serve a uma engine 3D. **Isto precisa de ser
-  clarificado antes de a fase de física abrir.**
-- `rapier3d` é o Rust puro, determinístico, sem toolchain C++. É o fallback óbvio
-  e a escolha certa se não se quiser C++ no build.
+**Física.** Fechada para o editor: **`rapier3d`** (D33/D73). Box3D (Erin Catto,
+2026) ou Jolt só se rede/replay o exigirem. Não se escreve solver. Notas
+históricas: D20 estava errada (“box3d não existe”); D33 corrigiu.
 
 **Assets.** `gltf` + `image` já chegam. `tobj` só se aparecer OBJ, e a Sponza é
 glTF. `bevy_asset` traz o modelo de asset do Bevy inteiro (handles, hot-reload,
@@ -531,9 +530,9 @@ Cada fase: código + **um binário que corre N frames e sai 0**. Sem pixel-ident
 | 3 | Deferred PBR | `pbr-grid` 90 frames | **feito** (RADV, validation 0) |
 | 4 | Sombras + TAA | `csm` + `taa` 16; **Sponza** 90 (integração) | **feito** (RADV, validation 0, PCSS) |
 | 5 | Clima | `fog` `clouds` `water` `rain` | **feito** (RADV, validation 0) |
-| 6 | Terreno + veg + mundo | `terrain` `heightquery` `veg` `instances` | **próximo** |
-| 7 | GI + post extra | `ssr` `probes` (+ occupancy honesta ou 0 bytes) | — |
-| 8 | Editor | docking + viewport `--frames 8` | — |
+| 6 | Terreno + veg + mundo | `terrain` `heightquery` `veg` `instances` | **feito** |
+| 7 | GI + post extra | `ssr` `probes` `gtao` `occupancy` `exposure` `bloom` | **feito** (D71) |
+| 8 | Editor | docking + viewport `--frames 8` | **próximo** — higiene Swarm S1 (`docs/Swarm-Reference-Roadmap.md`) |
 | 9 | Opcional | mesh shaders / RT / OIT / física | mesh shaders **escritos e medidos** (negativo, opt-in); o resto depois do editor |
 
 ### Fase 0 — Contrato — [x] feito
@@ -648,24 +647,38 @@ Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
       `-- --field` continua opt-in (bake + VRAM). VT/feedback fica a seguir.
 - [x] **Exit:** gates `terrain` `heightquery` `veg` `instances`. VT/feedback a seguir.
 
-### Fase 7 — GI + post extra — [ ]
+### Fase 7 — GI + post extra — [x]
 
 Barra: occupancy **no lighting neste PR** ou o volume não nasce. SSGI de 8 taps **não** é o exit.
 
-- [ ] GTAO, bloom, auto-exposure (já no path default Tucano). TAA já veio da fase 4.
-- [ ] SSR, probes (seed CPU + captura) no miss do SSR.
-- [ ] Occupancy 32³ amostrada no lighting **ou omitida**. Meio volume órfão é recusado.
-- [ ] WorldSDF JFA só se o compose/lighting ler o atlas.
-- [ ] SSGI/DDGI: **fora do exit**. Só depois, com gate de bounce (caixas coloridas), não bleed de vizinhos.
-- [ ] **Exit:** gates `ssr` `probes`. Occupancy: gate `occupancy` (pixel muda com o volume) **ou** zero bytes GPU. Tudo o que sobreviver tem de ser visível na **Sponza** (§0.1), não só no cubo do gate.
+- [x] GTAO, bloom, auto-exposure (já no path default Tucano). TAA já veio da fase 4.
+      Bloom: FidelityFX SPD (Karis) em plugin + `gate-bloom`. `-- --no-bloom` é o A/B.
+      GTAO: Jimenez 3×4, `gate-gtao` (68% dos canais). Auto-exposure: luma atómica + 1×1 R32, `gate-exposure` (70%).
+- [x] SSR, probes (seed CPU + captura) no miss do SSR.
+      SSSR hierarchical + Hi-Z (SPD min) em plugin + `gate-ssr`. `-- --no-ssr` é o A/B.
+      Probes: lat-long CPU (`box_radiance` / `atrium_radiance`) + GGX, `gate-probes` (43% no miss). Sem `parry3d`.
+- [x] Occupancy 32³ amostrada no lighting **ou omitida**. Meio volume órfão é recusado.
+      `gate-occupancy`: cone-trace no Lambert PS (1.85%). Sponza lê o volume no compose (`gi.ps`) para ser visível na cena de referência. Stamp CPU de AABBs. Slot set 5 = 2.
+- [x] WorldSDF JFA só se o compose/lighting ler o atlas. **Não entrou** — nada o leria.
+- [x] SSGI/DDGI: **fora do exit**. Só depois, com gate de bounce (caixas coloridas), não bleed de vizinhos.
+- [x] **Exit:** gates `ssr` `probes` `gtao` `occupancy` `exposure` `bloom`. Occupancy: pixel muda com o volume. Tudo visível na **Sponza** (`--frames 90`, validation 0, resize 30/60). `-- --no-gi` desliga a pilha. D71.
 
 ### Fase 8 — Editor — [ ]
 
+Checks completos (pré-requisitos, prefabs, scatter, cook, libs):
+`docs/Harpia-Editor-Roadmap.md`. **Este §15 só fecha com a wave E0.**
+
+Higiene Swarm **dentro** destes PRs (não é exit extra): path GPU para a
+Sponza no viewport, path CPU para a selecção; PSOs criados no load; blit
+partilhado nos ficheiros novos. Contrato: `docs/Swarm-Reference-Roadmap.md`
+S1. Draw list packed / placement **não** entram aqui.
+
 - [ ] egui/imgui pool **separado**.
 - [ ] Viewport = RT offscreen `present_format` + ImGui image, free de descriptors atrasado.
-- [ ] Outliner / Inspector gerados por reflection (o C++ usa `TUCANO_FIELD` — em Rust: `bevy_reflect` ou macros próprias).
-- [ ] File dialog: rfd / native; não bloquear o GPU loop sem fence.
-- [ ] **Exit:** `--frames 8` docking + viewport 3D. Sem crash resize.
+- [ ] Crate `harpia-editor` + sample próprio (não o HUD do `storm`).
+- [ ] Outliner / Inspector gerados por reflection — **E1/E3**, não o exit E0.
+- [ ] File dialog: rfd / native; não bloquear o GPU loop sem fence — **E1**.
+- [ ] **Exit (E0):** `--frames 8` docking + viewport 3D. Sem crash resize.
       Overlay de debug já existe no `storm -- --interactive` (D67); isto é o editor.
 
 ### Fase 9 — Opcional (depois do editor) — [ ]
@@ -752,6 +765,14 @@ Teste de honestidade antes de mergear um pass: o nome bate com o paper? O lighti
 ### Barra de qualidade (o que *não* clonar)
 
 `docs/Rust-Rewrite-Quality-Bar.md` — nota 6/10 do renderer C++, o 6 vs o 4, teste de honestidade, evidência (`computeCascadeVP`, `sampleVSM`, `PSSSGI`, VoxelGI órfão).
+
+### Geometria / shaders (referência Swarm, não port)
+
+`docs/Swarm-Reference-Roadmap.md` — híbrido explícito, instance packed, draw list por PSO, pass unit + precache. Recusa uber/ECS DSL/GPU 100%. S1 na fase 8; S2–S5 depois do editor verde.
+
+### Editor (waves + checks)
+
+`docs/Harpia-Editor-Roadmap.md` — P → E0…E6. Fase 8 oficial = E0. Authoring ≠ GPU. Anim/física/áudio/input = crates.
 
 ---
 
