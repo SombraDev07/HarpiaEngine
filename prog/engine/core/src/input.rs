@@ -125,6 +125,12 @@ impl Input {
         self.mouse_delta
     }
 
+    /// Drop look input for this frame (pointer is over the debug overlay).
+    pub fn suppress_look(&mut self) {
+        self.mouse_delta = (0.0, 0.0);
+        self.buttons[MouseButton::Right as usize] = false;
+    }
+
     pub fn scroll(&self) -> f32 {
         self.scroll
     }

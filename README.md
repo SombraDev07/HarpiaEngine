@@ -12,7 +12,7 @@ PBR, IBL, fog, clima e bindless honestos — não a checklist a copiar.
 
 ## Estado
 
-Fases **0–5 fechadas**. Fase **6** (terreno, vegetação, mundo) em curso.
+Fases **0–6 fechadas**. Fase **7** (GI + post extra) é a próxima.
 Linux é a plataforma de desenvolvimento; o host de referência é AMD / RADV.
 
 | Fase | Gate | Estado |
@@ -60,6 +60,7 @@ python3 prog/tools/fetch_sponza.py          # Sponza glTF (CC-BY, Khronos / Cryt
 
 cargo run -p sponza --release -- --frames 90
 cargo run -p storm --release -- --frames 16
+cargo run -p storm --release -- --interactive   # overlay egui; F1 esconde
 cargo run -p gate-terrain --release -- --frames 16
 ```
 

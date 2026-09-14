@@ -9,7 +9,6 @@ layout(set = 0, binding = 0, std140) uniform Storm {
     layout(offset = 240) vec4 sky_zenith;
     layout(offset = 256) vec4 sky_horizon;
     layout(offset = 272) vec4 rain;
-    layout(offset = 304) vec4 ripple;
     layout(offset = 320) vec4 wind;
     layout(offset = 336) vec4 shallow;
     layout(offset = 352) vec4 deep;
@@ -19,6 +18,8 @@ layout(set = 0, binding = 0, std140) uniform Storm {
     layout(offset = 472) uint scene_color;
     layout(offset = 476) uint scene_depth;
     layout(offset = 484) uint light_count;
+    layout(offset = 576) uvec4 rain_tex0; // _, _, ripple_a, ripple_b
+    layout(offset = 592) uvec4 rain_tex1; // _, flow
 } cb;
 
 struct Light {
@@ -29,6 +30,7 @@ struct Light {
 layout(set = 3, binding = 0, std430) readonly buffer Lights { Light lights[]; } light_buf[];
 
 layout(set = 1, binding = 0) uniform texture2D heap[];
+layout(set = 2, binding = 0) uniform sampler samp_wrap;
 layout(set = 2, binding = 1) uniform sampler samp_clamp;
 
 layout(location = 0) in vec3 v_world;
@@ -39,20 +41,30 @@ layout(location = 0) out vec4 out_color;
 
 const float PI = 3.14159265359;
 
-float hash11(float x) {
-    uint n = uint(int(floor(x))) * 374761393u;
-    n = (n ^ (n >> 13)) * 1274126177u;
-    n = n ^ (n >> 16);
-    return float(n) * (1.0 / 4294967296.0);
+vec2 unpack_xy(vec4 n) {
+    return n.xy * 2.0 - 1.0;
 }
 
-float cell_ripple(vec2 cell, vec2 pxz, float t) {
-    float h0 = hash11(cell.x * 13.0 + cell.y * 7.0);
-    float h1 = hash11(cell.x * 5.0 + cell.y * 17.0 + 3.0);
-    vec2 ctr = (cell + vec2(h0, h1)) * cb.ripple.x;
-    float dist = length(pxz - ctr);
-    float wave = sin(dist * cb.ripple.y - t * cb.ripple.z + h0 * 6.28318531);
-    return wave * exp(-dist * cb.ripple.w);
+// Tucano GBuffer rain: two staggered ripple frames + a little surface flow.
+// The old cell `sin` rings read as a tiled target from any camera height.
+vec2 rain_ripple_n(vec2 xz, float t, vec2 wind) {
+    vec2 n = vec2(0.0);
+    uint a = cb.rain_tex0.z;
+    uint b = cb.rain_tex0.w;
+    if (a != 0u) {
+        vec2 uv = xz * 0.18 + wind * t * -0.08;
+        n += unpack_xy(textureLod(sampler2D(heap[nonuniformEXT(a)], samp_wrap), uv, 0.0));
+    }
+    if (b != 0u) {
+        vec2 uv = xz * 0.31 - wind * t * 0.05;
+        n += unpack_xy(textureLod(sampler2D(heap[nonuniformEXT(b)], samp_wrap), uv, 0.0)) * 0.65;
+    }
+    uint flow = cb.rain_tex1.y;
+    if (flow != 0u) {
+        vec2 uv = xz * 0.4 + wind * 0.02;
+        n += unpack_xy(textureLod(sampler2D(heap[nonuniformEXT(flow)], samp_wrap), uv, 0.0)) * 0.35;
+    }
+    return n;
 }
 
 vec3 analytic_sky(vec3 R, vec3 sun, vec3 sun_c, vec3 zenith, vec3 horiz) {
@@ -78,17 +90,9 @@ float cone_falloff(vec3 l, vec4 dir_cos_outer, float cos_inner) {
 
 void main() {
     vec3 N = normalize(v_nrm);
-    // Rain hits the water: perturb the normal with the same cell rings the
-    // ground uses, so the puddles and the surface speak the same language.
-    vec2 pxz = v_world.xz;
-    vec2 base = floor(pxz / max(cb.ripple.x, 1e-3));
-    float acc = 0.0;
-    acc += cell_ripple(base + vec2(0.0, 0.0), pxz, cb.rain.w);
-    acc += cell_ripple(base + vec2(1.0, 0.0), pxz, cb.rain.w);
-    acc += cell_ripple(base + vec2(0.0, 1.0), pxz, cb.rain.w);
-    acc += cell_ripple(base + vec2(1.0, 1.0), pxz, cb.rain.w);
-    float rain_n = acc * cb.rain.x * cb.rain.z * 0.12;
-    N = normalize(N + vec3(rain_n, 0.0, rain_n * 0.7));
+    vec2 rip = rain_ripple_n(v_world.xz, cb.rain.w, cb.wind.xy);
+    float rain_k = cb.rain.x * cb.rain.z * 0.22;
+    N = normalize(N + vec3(rip.x, 0.0, rip.y) * rain_k);
 
     vec3 cam = cb.camera_pos.xyz;
     vec3 V = normalize(cam - v_world);

@@ -222,6 +222,13 @@ pub struct TerrainCb {
     pub field: u32,
     /// Bindless index of the sky-view LUT. 0 = keep the old gradient fade.
     pub skyview: u32,
+    /// Bindless index of the cloud-shadow map. 0 = the dummy, skip.
+    pub cloud_shadow: u32,
+    /// Volume SRV slot of the aerial 32³. 0 = off (slot 0 is the dummy 3D).
+    pub aerial: u32,
+    pub _pad_aerial: u32,
+    /// xy origin of the cloud-shadow map (km), z = extent km, w = aerial far km.
+    pub cloud_origin: Vec4,
 }
 
 impl Default for TerrainCb {
@@ -240,6 +247,10 @@ impl Default for TerrainCb {
             scene: 0,
             field: 0,
             skyview: 0,
+            cloud_shadow: 0,
+            aerial: 0,
+            _pad_aerial: 0,
+            cloud_origin: Vec4::ZERO,
         }
     }
 }
@@ -262,8 +273,11 @@ mod tests {
     #[test]
     fn cb_layout_matches_the_glsl() {
         use std::mem::offset_of;
-        assert_eq!(std::mem::size_of::<TerrainCb>(), 192);
+        assert_eq!(std::mem::size_of::<TerrainCb>(), 208);
         assert_eq!(offset_of!(TerrainCb, skyview), 176);
+        assert_eq!(offset_of!(TerrainCb, cloud_shadow), 180);
+        assert_eq!(offset_of!(TerrainCb, aerial), 184);
+        assert_eq!(offset_of!(TerrainCb, cloud_origin), 192);
         assert!(std::mem::size_of::<TerrainCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
         let expected = [
             (0, 0),
@@ -277,6 +291,9 @@ mod tests {
             (8, offset_of!(TerrainCb, scene) as u32),
             (9, offset_of!(TerrainCb, field) as u32),
             (10, offset_of!(TerrainCb, skyview) as u32),
+            (11, offset_of!(TerrainCb, cloud_shadow) as u32),
+            (12, offset_of!(TerrainCb, aerial) as u32),
+            (13, offset_of!(TerrainCb, cloud_origin) as u32),
         ];
         for shader in [
             "prog/samples/gates/terrain/shaders/terrain.vs.glsl",

@@ -6,14 +6,37 @@
 //!   so the same rock reads darker *and* shinier. Up-facing surfaces additionally
 //!   collect standing water, which flattens their normal towards straight up and
 //!   carries ripples.
-//! * **Streaks**, as a screen-space post pass. Simulating drops as geometry costs
-//!   far more than it shows at these speeds — a streak crosses the frame in a few
-//!   frames and is never seen still.
+//! * **Streaks**, as a post pass on three view-space planes. Hash columns in
+//!   screen UV read as a barcode; Tucano's rainfall maps + gaussian drops, lit
+//!   with HG backscatter, are the contract. Geometry particles stay out — they
+//!   GPUVM'd RADV.
 
 use harpia_math::{Mat4, Vec2, Vec3, Vec4};
+use std::path::PathBuf;
 
 /// Side of the top-down rain map, in texels.
 pub const RAIN_MAP_SIZE: u32 = 1024;
+
+/// Cry/Tucano ripple flipbook length. CPU picks two frames 8 apart.
+pub const RIPPLE_FRAMES: usize = 24;
+
+/// Workspace `assets/rain/` — Tucano's EngineAssets/Textures/Rain, decoded at load.
+pub fn rain_asset_dir() -> PathBuf {
+    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for _ in 0..3 {
+        p.pop();
+    }
+    p.join("assets/rain")
+}
+
+/// Two bindless frames of the ripple atlas, matching Tucano's `rainAnim.z`.
+pub fn ripple_frames(time: f32) -> (usize, usize) {
+    let n = RIPPLE_FRAMES as f32;
+    let f = (time * 12.0).rem_euclid(n);
+    let a = f.floor() as usize % RIPPLE_FRAMES;
+    let b = (a + 8) % RIPPLE_FRAMES;
+    (a, b)
+}
 
 /// Orthographic view-projection looking straight down over `centre`.
 ///
@@ -194,6 +217,12 @@ pub struct StormCb {
     /// Dry albedo rgb, dry roughness. Rewritten per draw group.
     pub material: Vec4,
     pub rain_map_vp: Mat4,
+    /// rainfall, rainfall_n, ripple_a, ripple_b.
+    pub rain_tex0: [u32; 4],
+    /// spatter, flow, _, _.
+    pub rain_tex1: [u32; 4],
+    /// fov tan, aspect, _, _.
+    pub rain_view: Vec4,
 }
 
 impl Default for StormCb {
@@ -226,6 +255,9 @@ impl Default for StormCb {
             light_count: 0,
             material: Vec4::new(0.30, 0.29, 0.27, 0.55),
             rain_map_vp: Mat4::IDENTITY,
+            rain_tex0: [0; 4],
+            rain_tex1: [0; 4],
+            rain_view: Vec4::new(0.5206, 16.0 / 9.0, 0.0, 0.0),
         }
     }
 }
@@ -298,6 +330,14 @@ mod tests {
         assert!(high.z < low.z, "high {} vs low {}", high.z, low.z);
     }
 
+    #[test]
+    fn ripple_frames_are_eight_apart() {
+        assert_eq!(ripple_frames(0.0), (0, 8));
+        assert_eq!(ripple_frames(2.0), (0, 8));
+        let (a, b) = ripple_frames(1.0 / 12.0);
+        assert_eq!((a, b), (1, 9));
+    }
+
     /// Wet darkens. Getting this backwards makes rain look like frost.
     #[test]
     fn wetness_darkens_monotonically() {
@@ -363,7 +403,7 @@ mod tests {
     #[test]
     fn storm_cb_layout_matches_the_glsl() {
         use std::mem::offset_of;
-        assert_eq!(std::mem::size_of::<StormCb>(), 576);
+        assert_eq!(std::mem::size_of::<StormCb>(), 624);
         assert!(std::mem::size_of::<StormCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
         assert_eq!(offset_of!(StormCb, view_proj), 64);
         assert_eq!(offset_of!(StormCb, view), 128);
@@ -378,6 +418,9 @@ mod tests {
         assert_eq!(offset_of!(StormCb, light_count), 484);
         assert_eq!(offset_of!(StormCb, material), 496);
         assert_eq!(offset_of!(StormCb, rain_map_vp), 512);
+        assert_eq!(offset_of!(StormCb, rain_tex0), 576);
+        assert_eq!(offset_of!(StormCb, rain_tex1), 592);
+        assert_eq!(offset_of!(StormCb, rain_view), 608);
 
         let expected = [
             (0, 0),
@@ -407,6 +450,9 @@ mod tests {
             (24, offset_of!(StormCb, light_count) as u32),
             (25, offset_of!(StormCb, material) as u32),
             (26, offset_of!(StormCb, rain_map_vp) as u32),
+            (27, offset_of!(StormCb, rain_tex0) as u32),
+            (28, offset_of!(StormCb, rain_tex1) as u32),
+            (29, offset_of!(StormCb, rain_view) as u32),
         ];
         for shader in [
             "prog/samples/storm/shaders/opaque.ps.glsl",

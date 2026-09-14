@@ -1,9 +1,9 @@
 # Progress
 
-**Fase actual: 5 (clima) FECHADA** (Linux / RADV, 2026-09). Os quatro gates verdes
-a 32 frames com validation 0; fog e chuva **default-on na Sponza** e medidos lá.
-**Próxima: fase 6** (terreno + vegetação + mundo), que é onde céu, nuvens e sombra
-das nuvens entram — precisam de chão para se verem. Decidir o ECS aí (D28).
+**Fase actual: 6 (mundo) FECHADA** (Linux / RADV, 2026-09). Clipmap + veg +
+instâncias + streaming D62 + Hillaire/Nubis + sombra das nuvens no chão + aerial
+32³. **Próxima: fase 7** (GI + post extra). Occupancy no lighting no mesmo PR
+em que o volume nascer, ou não nasce.
 
 Quadro: `docs/Rust-Rewrite-Roadmap.md` §15. Este ficheiro é o diário; o roadmap é o mapa.
 
@@ -15,7 +15,7 @@ Quadro: `docs/Rust-Rewrite-Roadmap.md` §15. Este ficheiro é o diário; o roadm
 - [x] Fase 3 — deferred PBR, `cargo run -p gate-pbr-grid -- --frames 90`, validation 0, resize 30/60; Null `--frames 8`
 - [x] Fase 4 — CSM câmara real + TAA + Sponza 90
 - [x] Fase 5 — fog → céu → clouds → water → rain, todos verdes; fog e chuva na Sponza
-- [ ] Fase 6 — um clipmap + veg + mundo **(próxima)**
+- [x] Fase 6 — um clipmap + veg + mundo
 - [ ] Fase 7 — GI honesta (occupancy no lighting ou 0 bytes)
 - [ ] Fase 8 — editor
 - [ ] Fase 9 — opcional
@@ -33,12 +33,15 @@ cargo run -p gate-fog
 cargo run -p gate-fog -- --frames 16 -- --cloud-shadow
 cargo run -p gate-terrain
 cargo run -p gate-terrain -- --frames 16 -- --no-clouds
+cargo run -p gate-terrain -- --frames 16 -- --no-cloud-shadow
+cargo run -p gate-terrain -- --frames 16 -- --no-aerial
 cargo run -p gate-terrain -- --frames 16 -- --gradient
 cargo run -p gate-sky
 cargo run -p gate-clouds
 cargo run -p gate-water
 cargo run -p gate-rain
 cargo run -p storm -- --frames 16
+cargo run -p storm -- --interactive
 # ou o binário empacotado: ./demos/storm --frames 16
 cargo run -p sponza -- --frames 90
 # assets: python3 prog/tools/fetch_sponza.py  (glTF gitignored)
@@ -1034,3 +1037,35 @@ do clipmap (~1.5 km) cortava a concha.
 
 `-- --no-clouds`: 30.04% dos píxeis diferem, max canal 134. 16 frames,
 `validation_errors=0` llvmpipe + RADV + Null. Falta a sombra no chão.
+
+## Overlay egui no `storm` (2026-09-14)
+
+Não é o editor. `egui` + `egui-winit` no loop; o draw é `egui-ash-renderer`
+dentro do RHI (pool próprio, não o heap 8192). Só `--interactive`. `--frames N`
+não cria o Context — os gates não vêem sliders. Painéis: luz, chuva, água.
+Fog e nuvens não estão nesta cena; o painel diz-o.
+
+Null 8 frames exit 0. F1 esconde a janela.
+
+## Chuva Tucano no `storm` (2026-09-14)
+
+As colunas de hash e os anéis `sin` saíram. Mapas do Tucano em `assets/rain/`,
+planos em view-space, HG, flipbook de ripple. Sem particles (GPUVM). Null 8,
+RADV 16 `validation_errors=0`. D68. `gate-rain` e Sponza intocados.
+
+## Fase 6 fechada: sombra no chão + aerial (2026-09-14)
+
+Os quatro gates já estavam verdes. O que faltava no pixel: a sombra das nuvens
+**no terreno** (não só no inject do fog) e `lit * T + inScatter` em vez do fade
+para a sky-view. Streaming era D62 — o checkbox do §15 é que estava em atraso.
+
+Mapa CPU 64² da mesma `CloudField` que o Nubis (cobertura ao longe, mean_tr
+0.57); o PS projecta o chão ao sol até à base da camada. Aerial 32³, far 2 km,
+densidade ×12. Fade do clipmap só na borda (0.85–1.0).
+
+A/B `-- --static` 16 frames, 1280×720: sombra 28.75% dos píxeis (max canal 30);
+aerial 55.72% (max 43). Null 8 + RADV 16 `validation_errors=0` nos quatro
+gates de exit. `-- --no-cloud-shadow` / `-- --no-aerial` / `-- --gradient`.
+
+VT/feedback, grama compute, impostores: a seguir, não neste exit. D69.
+

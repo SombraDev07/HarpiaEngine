@@ -15,6 +15,36 @@ Copiado do roadmap C++ + o que esta sessão já toca. Actualizar quando GPUVM / 
 - `present_format` real: no X11/Mesa costuma ser **BGRA**, não RGBA hardcoded.
 - Extent 0×0 (minimize): não adquirir imagem; skip o frame.
 
+## Overlay egui (D67)
+
+- Descriptor pool **à parte** do heap bindless 8192. O `egui-ash-renderer` traz o
+  dele; não o liques no set 1.
+- O sample tem de **terminar** a pass da swapchain antes do overlay. A imagem
+  está em PRESENT; o RHI faz LOAD → draw → PRESENT outra vez. Chamar a meio da
+  pass é `PassMismatch`.
+- `set_textures` submete command buffers extra no mesmo queue. Só em
+  `--interactive`. `--frames N` não cria o `egui::Context`.
+- `egui-ash-renderer` faz scissor `clip_w.min(fb)` **sem** descontar o offset.
+  Um tooltip à direita do ecrã (slider, color picker) rebenta a validation e o
+  loop mata o processo. O RHI crava o clip antes de `cmd_draw`.
+- Atlas/glyphs: `set_textures` faz layout transition e submete no mesmo queue.
+
+## Chuva Tucano (D68)
+
+- Streaks em **planos view-space**, não UV de ecrã. Pintar chuva no UV pinta
+  as paredes e a água.
+- Wrap sampler (set 2 binding 0) nos mapas; clamp no depth / rain-map.
+- **Não** trazer `draw(24576 * 6)` nem cones que lêm HDR. GPUVM RADV
+  2026-08-18. O contrato visual cabe nos mapas + três planos + HG.
+- Upload de textura **só mip 0** (os DDS Tucano têm cadeia; o RHI não a
+  escreve). Uma textura com `mip_levels > 1` e mips UNDEFINED é GPUVM.
+  O outro slot in-flight ainda pode estar a amostrar essa imagem (DrawIndexed).
+  `begin_frame` só espera a fence **deste** slot — sem esperar o outro dá
+  SYNC-HAZARD-WRITE-AFTER-READ. Esperar as fences dos outros slots antes do
+  upload. Só no overlay (`--interactive`).
+- Viewport do editor (fase 8) continua a regra antiga: `present_format()`, não
+  RGBA hardcoded.
+
 ## Frame
 
 - `begin_frame` espera a fence do slot. Sem `vkDeviceWaitIdle` no frame quente.
@@ -456,3 +486,14 @@ output.**
   saiu toda a zeros — incluindo para corridas que eu sabia terem funcionado. É a
   mesma família do `str.replace` que não casa. Confere o arnês contra um caso que
   sabes o resultado antes de acreditares no que ele diz (D62).
+
+## Aerial / sombra das nuvens (D69)
+
+- Volume SRV **slot 2** para a aerial 32³. 0 e 1 são o ruído Nubis; reutilizar o 0
+  apaga as nuvens no frame a seguir.
+- Hillaire 32 km de profundidade **não** cabe no clipmap (~1 km). `radii.w = 2 km`
+  e `mie.w` escala a densidade. Sem a escala, `lit * T + inScatter` é um no-op e
+  a tentação é voltar ao `mix(lit, skyview, fade)` que esta peça substitui.
+- Mapa de sombra das nuvens é **CPU**, mesma `CloudField` do inject do fog. O
+  lookup no chão projecta o ponto ao longo do sol até à base da camada (1.5 km),
+  não o XZ do terreno — senão a sombra não acompanha o sol.

@@ -82,6 +82,23 @@ pub fn create(desc: &DeviceDesc) -> Result<Gpu> {
     }
 }
 
+impl Gpu {
+    /// Composite the debug overlay on the swapchain. No-op on Null.
+    ///
+    /// Call after the sample has ended the swapchain pass, before `end_frame`.
+    pub fn draw_ui(
+        &mut self,
+        pixels_per_point: f32,
+        primitives: &[egui::ClippedPrimitive],
+        textures_delta: &egui::TexturesDelta,
+    ) -> Result<()> {
+        match self {
+            Gpu::Null(_) => Ok(()),
+            Gpu::Vulkan(g) => g.draw_ui(pixels_per_point, primitives, textures_delta),
+        }
+    }
+}
+
 macro_rules! gpu {
     ($self:expr, $method:ident) => {
         match $self {

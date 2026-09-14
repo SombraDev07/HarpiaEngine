@@ -196,4 +196,24 @@ mod tests {
         gpu.end_color_pass().unwrap();
         gpu.end_frame().unwrap();
     }
+
+    #[test]
+    fn null_overlay_is_a_noop() {
+        let mut gpu = create(&DeviceDesc {
+            vsync: true,
+            backend: Backend::Null,
+            validation: false,
+            app_name: "test",
+            width: 64,
+            height: 64,
+            window: None,
+        })
+        .unwrap();
+        let _ = gpu.begin_frame().unwrap();
+        gpu.begin_swapchain_pass([0.0, 0.0, 0.0, 1.0]).unwrap();
+        gpu.end_swapchain_pass().unwrap();
+        gpu.draw_ui(1.0, &[], &egui::TexturesDelta::default())
+            .unwrap();
+        gpu.end_frame().unwrap();
+    }
 }

@@ -5,6 +5,7 @@ mod debug;
 mod layers;
 mod resources;
 mod swapchain;
+mod ui;
 mod window;
 
 use std::ffi::{CStr, CString};
@@ -106,6 +107,8 @@ pub struct VulkanGpu {
     zero_extent: bool,
     window_extent: Extent2D,
     validation_errors: Arc<AtomicU32>,
+    /// Debug overlay. Own pool, not the bindless heap. Created on first draw.
+    ui: Option<ui::Overlay>,
 }
 
 impl VulkanGpu {
@@ -585,6 +588,7 @@ impl VulkanGpu {
             zero_extent: false,
             window_extent,
             validation_errors,
+            ui: None,
         })
     }
 
@@ -2660,6 +2664,7 @@ impl Drop for VulkanGpu {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            self.ui = None;
             for pso in self.pipelines.drain(..) {
                 self.device.destroy_pipeline(pso, None);
             }

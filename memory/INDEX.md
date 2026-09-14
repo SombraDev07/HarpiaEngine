@@ -4,10 +4,13 @@ Persistência entre sessões da IA. **Não** é o allocator (`prog/engine/memory
 
 ## Onde estás (lê isto primeiro)
 
-**Fase 5 (clima) FECHADA. Próxima = fase 6 (terreno + vegetação + mundo).**
-Céu Hillaire no `gate-terrain` (D65) **com nuvens Nubis** (D66). `-- --no-clouds` tira só as nuvens; `-- --gradient` o céu antigo. Falta a sombra delas no chão e a aerial perspective.
+**Fase 6 (mundo) FECHADA. Próxima = fase 7 (GI + post extra).**
+Céu Hillaire + nuvens Nubis + sombra das nuvens no chão + aerial 32³ no
+`gate-terrain` (D65–D66, D69). Overlay **egui** no `storm -- --interactive` (D67).
+Chuva do `storm` passou a mapas Tucano + planos em view-space (D68) — não é
+CryEngine. Streaming do campo: janela toroidal D62. VT/feedback fica a seguir.
 
-**Os mesh shaders (fase 9) foram escritos fora de ordem e medidos a negativo** — 1.099 ms contra 0.738 na Sponza, opt-in atrás de `-- --mesh`, roadmap §15 actualizado (D60). O desvio não se repete: a fase 6 continua por fazer e é o passo seguinte.
+**Os mesh shaders (fase 9) foram escritos fora de ordem e medidos a negativo** — 1.099 ms contra 0.738 na Sponza, opt-in atrás de `-- --mesh`, roadmap §15 actualizado (D60). O desvio não se repete: a fase 7 é o passo seguinte.
 
 Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abaixo em `PROGRESS.md`. Sem gate verde, a fase não está feita.
 
@@ -19,7 +22,7 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 | 3 PBR | `gate-pbr-grid` 90 frames | feito |
 | **4 CSM+TAA** | **`csm` + `taa` 16; Sponza 90** | **feito** |
 | **5 clima** | fog → clouds → water → rain | **feito** |
-| **6 mundo** | terreno + veg + instâncias | **agora** |
+| **6 mundo** | terreno + veg + instâncias | **feito** |
 | 7…9 | ver roadmap §15 | não |
 
 ## Ordem de leitura (início de sessão)
@@ -55,25 +58,24 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 código. Resumo: o BRDF aguenta; só temos uma luz; eles fazem culling de terreno em
 CPU e é aí que podemos passar à frente. A `DagorEngine/` está no `.gitignore`.
 
-`docs/Dagor-Ceu-Fog.md` — **base para fechar a fase 6**: céu, nuvens, fog e a
-perspectiva aérea. O fog deles é iluminado pela pilha toda (CSM, static, FOM,
-clustered, GI) e **amostra a sombra das nuvens** com dois termos — um para o
-scattering, outro para o resto. A perspectiva aérea existe e chama-se
-`skies_frustum_scattering` (a dívida da nossa D19). E o céu não conhece o fog:
-pede-o por uma macro com stub «sem fog». Temos as três peças; falta a composição.
+`docs/Dagor-Ceu-Fog.md` — céu, nuvens, fog e perspectiva aérea. O fog deles é
+iluminado pela pilha toda e amostra a sombra das nuvens em dois termos. A
+perspectiva aérea chama-se `skies_frustum_scattering` (D19 → D69 no terreno).
+O céu não conhece o fog: pede-o por uma macro. As três peças estão ligadas no
+`gate-terrain`; o fog da Sponza continua a ser outra composição.
 
-`docs/Dagor-Fase6.md` — **base para a fase 6**: vegetação (rendInst), grama,
-colocação por GPU e mundo, lidos no código. O culling deles é CPU **também** na
-vegetação (zero `draw_indirect`/`dispatch` em `rendInst`, `landMesh` e `heightmap`),
-o que confirma a abertura do lado do nosso compute. O que nos falta e lá está:
-pirâmide min/max de alturas, LODs com impostores, grama gerada em compute e vento
-que escreve motion vectors.
+`docs/Dagor-Fase6.md` — vegetação (rendInst), grama, colocação por GPU e mundo,
+lidos no código. O culling deles é CPU **também** na vegetação (zero
+`draw_indirect`/`dispatch` em `rendInst`, `landMesh` e `heightmap`), o que
+confirma a abertura do lado do nosso compute. O que nos falta e lá está:
+pirâmide min/max de alturas, LODs com impostores, grama gerada em compute e
+vento que escreve motion vectors.
 
 ## Isto é AAA?
 
 Não, e `docs/AAA-Gap-Analysis.md` diz porquê com números medidos, o que falta por
 ordem de alavancagem, e um roadmap revisto (fases 5.5 e 6.5 novas). Leitura
-obrigatória antes de planear a fase 6.
+obrigatória antes de planear a fase 7.
 
 ## Fim de sessão
 

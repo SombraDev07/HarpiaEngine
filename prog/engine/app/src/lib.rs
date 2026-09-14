@@ -22,6 +22,8 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+pub use egui;
+
 #[derive(Clone, Debug)]
 pub struct AppConfig {
     pub title: String,
@@ -156,6 +158,12 @@ pub trait Sample {
     fn capture_targets(&self) -> Vec<(&'static str, Texture)> {
         Vec::new()
     }
+
+    /// Immediate-mode debug overlay. Only called in `--interactive`.
+    ///
+    /// `--frames N` never runs this: gates stay a function of the baked
+    /// constants, not of whoever last dragged a slider.
+    fn debug_ui(&mut self, _ctx: &egui::Context) {}
 }
 
 pub fn run(config: AppConfig, sample: impl Sample) -> Result<ExitCode> {
@@ -231,11 +239,37 @@ fn run_winit(config: AppConfig, sample: impl Sample) -> Result<ExitCode> {
         gpu_ms: Vec::new(),
         gpu_passes: std::collections::BTreeMap::new(),
         gpu_counts: harpia_rhi::GpuStats::default(),
+        ui: None,
     };
     event_loop.run_app(&mut app).context("winit run")?;
     match app.exit_code {
         0 => Ok(ExitCode::SUCCESS),
         _ => Ok(ExitCode::from(app.exit_code as u8)),
+    }
+}
+
+struct DebugUi {
+    ctx: egui::Context,
+    winit: egui_winit::State,
+    wants_pointer: bool,
+}
+
+impl DebugUi {
+    fn new(window: &Window) -> Self {
+        let ctx = egui::Context::default();
+        let winit = egui_winit::State::new(
+            ctx.clone(),
+            egui::ViewportId::ROOT,
+            window,
+            Some(window.scale_factor() as f32),
+            None,
+            None,
+        );
+        Self {
+            ctx,
+            winit,
+            wants_pointer: false,
+        }
     }
 }
 
@@ -262,6 +296,7 @@ struct WinitApp<S> {
     gpu_passes: std::collections::BTreeMap<&'static str, Vec<f32>>,
     /// Counters, which do not vary from frame to frame: the last is fine.
     gpu_counts: harpia_rhi::GpuStats,
+    ui: Option<DebugUi>,
 }
 
 impl<S: Sample> WinitApp<S> {
@@ -298,6 +333,11 @@ impl<S: Sample> WinitApp<S> {
         })
         .context("create gpu")?;
         self.sample.init(&mut gpu)?;
+        self.ui = self
+            .config
+            .max_frames
+            .is_none()
+            .then(|| DebugUi::new(window.as_ref()));
         self.gpu = Some(gpu);
         self.window = Some(window);
         self.ready = true;
@@ -308,6 +348,23 @@ impl<S: Sample> WinitApp<S> {
         tracing::error!("{err:#}");
         self.exit_code = 1;
         event_loop.exit();
+    }
+
+    fn paint_debug_ui(sample: &mut S, host: &mut DebugUi, window: &Window, gpu: &mut Gpu) -> Result<()> {
+        let raw = host.winit.take_egui_input(window);
+        let output = host.ctx.run(raw, |ctx| sample.debug_ui(ctx));
+        host.winit
+            .handle_platform_output(window, output.platform_output);
+        let clipped = host.ctx.tessellate(output.shapes, output.pixels_per_point);
+        host.wants_pointer = host.ctx.wants_pointer_input();
+        if let Err(e) = gpu.draw_ui(
+            output.pixels_per_point,
+            &clipped,
+            &output.textures_delta,
+        ) {
+            tracing::error!("debug overlay skipped: {e:#}");
+        }
+        Ok(())
     }
 
     /// Print what the run cost.
@@ -394,6 +451,9 @@ impl<S: Sample> WinitApp<S> {
             // A breakpoint or a dragged window must not teleport the camera.
             dt.clamp(1.0 / 1000.0, 0.1)
         };
+        if self.ui.as_ref().is_some_and(|u| u.wants_pointer) {
+            self.input.suppress_look();
+        }
         self.sample.update(&self.input, dt);
         let frame_started = std::time::Instant::now();
 
@@ -401,6 +461,9 @@ impl<S: Sample> WinitApp<S> {
         let info = gpu.begin_frame()?;
         if !info.skipped {
             self.sample.frame(gpu, info)?;
+            if let (Some(host), Some(window)) = (self.ui.as_mut(), self.window.as_ref()) {
+                Self::paint_debug_ui(&mut self.sample, host, window, gpu)?;
+            }
         }
         // Nothing the validation refused is ever submitted. A command buffer
         // recorded after a validation error is undefined behaviour, and on RADV
@@ -488,6 +551,10 @@ impl<S: Sample> ApplicationHandler for WinitApp<S> {
         if self.exit_code != 0 {
             return;
         }
+        let consumed = match (self.ui.as_mut(), self.window.as_ref()) {
+            (Some(host), Some(window)) => host.winit.on_window_event(window, &event).consumed,
+            _ => false,
+        };
         match event {
             WindowEvent::CloseRequested => {
                 if self.config.max_frames.is_some() && self.gpu.is_some() {
@@ -509,6 +576,9 @@ impl<S: Sample> ApplicationHandler for WinitApp<S> {
                 event_loop.exit();
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                if consumed {
+                    return;
+                }
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if let Some(key) = map_key(code) {
                         self.input.set_key(key, event.state == ElementState::Pressed);
@@ -516,11 +586,17 @@ impl<S: Sample> ApplicationHandler for WinitApp<S> {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if consumed {
+                    return;
+                }
                 if let Some(b) = map_button(button) {
                     self.input.set_button(b, state == ElementState::Pressed);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if consumed {
+                    return;
+                }
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 60.0,

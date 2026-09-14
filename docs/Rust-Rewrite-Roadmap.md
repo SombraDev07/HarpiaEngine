@@ -458,6 +458,7 @@ sem informação. A coluna «fase» é o contrato.
 | `gltf` | Sponza | 4 |
 | `image` | decode + PNG da captura | 4 |
 | `libloading` | ABI de plugins | 5 (dormente) |
+| `egui` + `egui-winit` + `egui-ash-renderer` | overlay de debug (D67). **Não** é o editor. | 6 (cedo) |
 
 ### A entrar, por fase
 
@@ -468,7 +469,7 @@ sem informação. A coluna «fase» é o contrato.
 | **6** | `rayon` — **dentro** (2026-09-11) | bake de noise, build de clipmap, geração de mips. Entrou com medição: cozer os 256 tiles do campo de altura eram 1373 ms em série e 429 ms em 16 cores (D61). **Não** para o frame graph — esse é single-thread por decisão (D0). |
 | **6** | `serde` + `postcard` (ou `bincode`) | descrever mundo/células em disco. `rkyv` só se o profiling mostrar que a desserialização dói. |
 | **7** (GI/post) | `parry3d` | queries de geometria para probes e occlusion. Vem com o Rapier, mas usa-se sozinha. |
-| **8** (editor) | `egui` + **`egui-ash-renderer`** | tooling. **Não `egui-wgpu`** — ver o aviso sobre wgpu abaixo. Pool de descriptors à parte do heap 8192 (mina 7). |
+| **8** (editor) | `egui` + **`egui-ash-renderer`** | tooling. Já no overlay (D67). **Não `egui-wgpu`**. Pool à parte do heap 8192 (mina 7). |
 | **8** | `puffin` ou `tracy-client` + `profiling` | precisa de editor para ver o resultado; antes disso o `--frames N` chega. |
 | **9** (opcional) | `kira` (áudio), `cpal` por baixo | `rodio` é mais simples e menos capaz; `kira` tem mixer, spatial, clocks, tweens. |
 | **9** | `gilrs` | gamepads com hotplug e mapeamentos SDL. |
@@ -589,7 +590,7 @@ Ordem: fog compute → clouds (sem driveRain) → water → **rain por último**
       **+ reprojecção temporal** com profundidade analítica no meio da concha e
       clamp 3×3 (D22): −44.6% de ruído na banda do horizonte.
       Sombra das **nuvens** no inject (D64): GLSL, skip se o índice é 0;
-      `-- --cloud-shadow` no `gate-fog`. Ainda não no terreno / mundo aberto.
+      `-- --cloud-shadow` no `gate-fog`. No terreno: D69.
 - [x] Water: Gerstner + Fresnel + absorção (D26) **+ SSR e espuma** (D29).
       `gate-water` 16 frames, validation 0. SSR marchado no mundo com espessura
       adaptativa; espuma na contacto e nas cristas.
@@ -613,7 +614,7 @@ Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
 - [x] `--vsync 0|1` e `--stats` com timestamps por pass.
 - **Exit:** `sponza --frames 200 --vsync 0 --stats` → GPU 1.569 ms, por pass.
 
-### Fase 6 — Terreno + vegetação + mundo — [ ]
+### Fase 6 — Terreno + vegetação + mundo — [x] feito
 
 - [x] ECS decidido: **`bevy_ecs`**, pelo `gate-ecs` de 1e6 instâncias (D38).
 
@@ -622,7 +623,11 @@ Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
       **+ céu Hillaire** no mesmo gate (D65): LUTs do `gate-sky`, composite HDR,
       fade do clipmap na sky-view. `-- --gradient` é o A/B.
       **+ nuvens Nubis** (D66): meia res + reprojecção, apply mascado pelo depth.
-      `-- --no-clouds` é o A/B. Falta a sombra no chão.
+      `-- --no-clouds` é o A/B.
+      **+ sombra das nuvens no chão** (D69): mapa CPU da mesma densidade que o
+      march de luz, amostrado no PS só no termo directo.
+      **+ aerial perspective** 32³ (D69): `lit * T + inScatter`, far 2 km à
+      escala do clipmap. `-- --no-cloud-shadow` / `-- --no-aerial` são o A/B.
 - [x] Culling de patches em compute → `drawIndirect`: 448 patches, 84.8% cortados,
       a CPU não percorre nenhum. Imagem verificada contra `--no-cull`. As caixas
       só se recalculam quando o nível muda de snap (2.2 de 7 por frame), e a soma
@@ -638,8 +643,10 @@ Ver `docs/AAA-Gap-Analysis.md` e D35/D36.
       lista e o `instanceCount`, a CPU submete **um** `drawIndirect` e não sabe
       quantos saíram. A CPU custa **0.17 ms de 2 500 a 1 000 000** de instâncias;
       o mesmo culling em CPU vai de 0.17 a 2.72 ms (D47).
-- [ ] Streaming: CPU first; GPU cull sem `waitIdle` no frame.
-- [ ] **Exit:** gates `terrain` `heightquery` `veg` `instances`. VT/feedback a seguir.
+- [x] Streaming: CPU first; GPU cull sem `waitIdle` no frame.
+      Janela toroidal de 17 tiles (D62): `field_upload.cs` + `args_reset.cs`.
+      `-- --field` continua opt-in (bake + VRAM). VT/feedback fica a seguir.
+- [x] **Exit:** gates `terrain` `heightquery` `veg` `instances`. VT/feedback a seguir.
 
 ### Fase 7 — GI + post extra — [ ]
 
@@ -659,6 +666,7 @@ Barra: occupancy **no lighting neste PR** ou o volume não nasce. SSGI de 8 taps
 - [ ] Outliner / Inspector gerados por reflection (o C++ usa `TUCANO_FIELD` — em Rust: `bevy_reflect` ou macros próprias).
 - [ ] File dialog: rfd / native; não bloquear o GPU loop sem fence.
 - [ ] **Exit:** `--frames 8` docking + viewport 3D. Sem crash resize.
+      Overlay de debug já existe no `storm -- --interactive` (D67); isto é o editor.
 
 ### Fase 9 — Opcional (depois do editor) — [ ]
 

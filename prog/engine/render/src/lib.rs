@@ -18,15 +18,17 @@ mod lights;
 mod material;
 mod mesh;
 mod packing;
+mod dds;
 mod rain;
 mod taa;
 mod terrain;
 mod water;
 
 pub use atmosphere::{
-    aerial_desc, distance_to_top, multiscatter_desc, skyview_desc, transmittance_desc,
-    AtmosphereCb, AERIAL_DEPTH_KM, AERIAL_SIZE, MULTISCATTER_SIZE, SKYVIEW_H, SKYVIEW_W, TRANSMITTANCE_H,
-    TRANSMITTANCE_W,
+    aerial_desc, aerial_dispatch, distance_to_top, multiscatter_desc, skyview_desc,
+    transmittance_desc, AerialCb, AtmosphereCb, AERIAL_DEPTH_KM, AERIAL_MARCH_STEPS, AERIAL_SIZE,
+    MULTISCATTER_SIZE, SKYVIEW_H, SKYVIEW_W, TERRAIN_AERIAL_DENSITY_SCALE, TERRAIN_AERIAL_FAR_KM,
+    TRANSMITTANCE_H, TRANSMITTANCE_W,
 };
 pub use cloud_noise::{
     base as cloud_noise_base, detail as cloud_noise_detail, volume_desc as cloud_volume_desc,
@@ -37,9 +39,11 @@ pub use cloud_shadow::{
 };
 pub use water::{wave_omega, WaterCb, WATER_GRID, WATER_HALF};
 pub use fly_camera::FlyCamera;
+pub use dds::{decode as decode_dds, DdsError, DdsImage};
 pub use rain::{
-    apply_wetness, clamp_range, puddle_growth, rain_map_view_proj, shore_wetness, RainCb, StormCb,
-    RAIN_MAP_SIZE, WET_F0, WET_POROSITY, WET_ROUGHNESS,
+    apply_wetness, clamp_range, puddle_growth, rain_asset_dir, rain_map_view_proj, ripple_frames,
+    shore_wetness, RainCb, StormCb, RAIN_MAP_SIZE, RIPPLE_FRAMES, WET_F0, WET_POROSITY,
+    WET_ROUGHNESS,
 };
 pub use lights::{
     assign as assign_lights, assign_counted as assign_lights_counted, depth_slice, slice_depth,

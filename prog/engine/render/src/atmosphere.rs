@@ -99,6 +99,93 @@ pub fn aerial_desc() -> TextureDesc {
     }
 }
 
+/// Workgroup for the terrain aerial compute shader: 8×8×4 covers the 32³ volume
+/// in one dispatch.
+pub const AERIAL_GROUP_X: u32 = 8;
+pub const AERIAL_GROUP_Y: u32 = 8;
+pub const AERIAL_GROUP_Z: u32 = 4;
+
+pub fn aerial_dispatch() -> (u32, u32, u32) {
+    (
+        AERIAL_SIZE / AERIAL_GROUP_X,
+        AERIAL_SIZE / AERIAL_GROUP_Y,
+        AERIAL_SIZE / AERIAL_GROUP_Z,
+    )
+}
+
+/// Clipmap-range aerial far plane, in km.
+///
+/// Hillaire's 32 km is for mountains. The terrain clipmap ends at ~1 km, so a
+/// 32 km volume would spend 31 slices on empty air and the haze on the hills
+/// would be invisible. 2 km puts the far edge of the clipmap near the last
+/// slice. Densities are still the Hillaire coefficients; `mie.w` scales them
+/// so 1 km of air reads as atmosphere instead of a fade-to-sky mix.
+pub const TERRAIN_AERIAL_FAR_KM: f32 = 2.0;
+/// Multiply Rayleigh/Mie so a kilometre of clipmap has a visible optical depth.
+pub const TERRAIN_AERIAL_DENSITY_SCALE: f32 = 12.0;
+pub const AERIAL_MARCH_STEPS: f32 = 8.0;
+
+/// Fills the aerial-perspective 32³. Same physics numbers as [`AtmosphereCb`],
+/// shorter far plane, no LUT indices.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct AerialCb {
+    pub inv_view_proj: Mat4,
+    /// World camera in metres, `w` = altitude km.
+    pub camera_pos: Vec4,
+    pub sun_dir: Vec4,
+    pub sun_illuminance: Vec4,
+    /// bottom km, top km, mie `g`, far km.
+    pub radii: Vec4,
+    /// Rayleigh scattering km⁻¹, `w` = scale height km.
+    pub rayleigh: Vec4,
+    /// mie scatter, mie absorption, mie scale height, density scale.
+    pub mie: Vec4,
+    /// march steps, unused.
+    pub steps: Vec4,
+}
+
+impl Default for AerialCb {
+    fn default() -> Self {
+        Self {
+            inv_view_proj: Mat4::IDENTITY,
+            camera_pos: Vec4::new(0.0, 0.0, 0.0, 0.2),
+            sun_dir: Vec4::Y,
+            sun_illuminance: Vec4::new(3.4, 3.2, 2.9, 1.0),
+            radii: Vec4::new(
+                BOTTOM_RADIUS_KM,
+                TOP_RADIUS_KM,
+                MIE_G,
+                TERRAIN_AERIAL_FAR_KM,
+            ),
+            rayleigh: Vec4::new(
+                RAYLEIGH_SCATTER[0],
+                RAYLEIGH_SCATTER[1],
+                RAYLEIGH_SCATTER[2],
+                RAYLEIGH_SCALE_KM,
+            ),
+            mie: Vec4::new(
+                MIE_SCATTER,
+                MIE_ABSORB,
+                MIE_SCALE_KM,
+                TERRAIN_AERIAL_DENSITY_SCALE,
+            ),
+            steps: Vec4::new(AERIAL_MARCH_STEPS, 0.0, 0.0, 0.0),
+        }
+    }
+}
+
+impl AerialCb {
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                (self as *const Self).cast::<u8>(),
+                std::mem::size_of::<Self>(),
+            )
+        }
+    }
+}
+
 /// Per-frame atmosphere constants. Matches the `.spvasm` LUT shaders.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -240,5 +327,33 @@ mod tests {
         let horizon = distance_to_top(b, 0.0, t);
         assert!(horizon > up * 5.0, "the horizon path must be far longer");
         assert!(distance_to_top(t, -1.0, t) > 0.0);
+    }
+
+    #[test]
+    fn aerial_cb_layout_matches_the_glsl() {
+        use std::mem::offset_of;
+        assert_eq!(std::mem::size_of::<AerialCb>(), 176);
+        assert_eq!(offset_of!(AerialCb, camera_pos), 64);
+        assert_eq!(offset_of!(AerialCb, sun_dir), 80);
+        assert_eq!(offset_of!(AerialCb, sun_illuminance), 96);
+        assert_eq!(offset_of!(AerialCb, radii), 112);
+        assert_eq!(offset_of!(AerialCb, rayleigh), 128);
+        assert_eq!(offset_of!(AerialCb, mie), 144);
+        assert_eq!(offset_of!(AerialCb, steps), 160);
+        assert!(std::mem::size_of::<AerialCb>() <= harpia_rhi::FRAME_UBO_SIZE as usize);
+        assert_eq!(aerial_dispatch(), (4, 4, 8));
+        crate::spvasm_layout::assert_glsl_offsets(
+            "prog/samples/gates/terrain/shaders/aerial.cs.glsl",
+            &[
+                (0, 0),
+                (1, 64),
+                (2, 80),
+                (3, 96),
+                (4, 112),
+                (5, 128),
+                (6, 144),
+                (7, 160),
+            ],
+        );
     }
 }

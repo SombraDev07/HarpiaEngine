@@ -15,3 +15,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 winit.workspace = true
 image.workspace = true
+egui.workspace = true
+egui-winit.workspace = true

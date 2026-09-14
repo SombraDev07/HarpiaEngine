@@ -1,10 +1,9 @@
-// Terreno: luz do sol, ambiente do céu por hemisfério, cor por declive, e o
-// terreno a desvanecer para o céu ao longe.
+// Terreno: luz do sol, ambiente do céu por hemisfério, cor por declive.
 //
-// O desvanecimento não é decoração: o último nível do clipmap acaba numa borda
-// dura, e sem ela dissolver no céu vê-se o mundo terminar. O céu que o terreno
-// vê ao longe é a LUT de sky-view (Hillaire), a mesma que o pass do céu usa —
-// um gradiente separado lia como dois mundos.
+// A perspectiva aérea é `lit * T + inScatter` no froxel 32³ (D69). O fade
+// para a sky-view fica só na borda do clipmap — sem ele vê-se o mundo
+// terminar; com ele no sítio da aerial o vale lia como terreno em falta.
+// A sombra das nuvens atenua só o termo directo do sol.
 
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
@@ -19,10 +18,14 @@ layout(set = 0, binding = 0, std140) uniform Terrain {
     layout(offset = 144) vec4 sky_horizon;   // w = distância do fade
     layout(offset = 160) vec2 inv_extent;
     layout(offset = 176) uint skyview;
+    layout(offset = 180) uint cloud_shadow;
+    layout(offset = 184) uint aerial;
+    layout(offset = 192) vec4 cloud_origin;  // xy km, z extent km, w aerial far km
 } cb;
 
 layout(set = 1, binding = 0) uniform texture2D heap[];
 layout(set = 2, binding = 1) uniform sampler samp_clamp;
+layout(set = 5, binding = 0) uniform texture3D volumes[];
 
 layout(location = 0) in vec3 v_world;
 layout(location = 1) in vec3 v_normal;
@@ -33,6 +36,8 @@ layout(location = 0) out vec4 out_color;
 // Must match `harpia_render::atmosphere::BOTTOM_RADIUS_KM`.
 const float BOTTOM_RADIUS_KM = 6360.0;
 const float PI = 3.14159265;
+// Must match `CloudCb.layer.x` — base of the Nubis layer, km.
+const float CLOUD_BASE_KM = 1.5;
 
 // Same parameterisation as `sky_hdr.ps.glsl` / `sky.ps.spvasm`. Keep in sync.
 vec3 sample_skyview(vec3 dir) {
@@ -78,7 +83,20 @@ void main() {
     albedo = mix(albedo, vec3(0.86, 0.86, 0.83), snow);
 
     float ndl = max(dot(n, sun), 0.0);
-    vec3 direct = cb.sun_color.rgb * (ndl / 3.14159265);
+    float cloud_tr = 1.0;
+    if (cb.cloud_shadow != 0u && abs(sun.y) > 1e-4) {
+        float t = (CLOUD_BASE_KM * 1000.0 - v_world.y) / sun.y;
+        vec2 hit = v_world.xz + sun.xz * t;
+        vec2 uv = (hit * 0.001 - cb.cloud_origin.xy) / max(cb.cloud_origin.z, 1e-4) + 0.5;
+        if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) {
+            cloud_tr = textureLod(
+                sampler2D(heap[nonuniformEXT(cb.cloud_shadow)], samp_clamp),
+                uv,
+                0.0
+            ).r;
+        }
+    }
+    vec3 direct = cb.sun_color.rgb * (ndl / 3.14159265) * cloud_tr;
 
     vec3 ambient;
     vec3 distant;
@@ -94,9 +112,20 @@ void main() {
     }
     vec3 lit = albedo * (direct + ambient);
 
-    // Só desvanece perto do fim do clipmap. Linear desde zero fazia o vale a 600
-    // unidades ficar meio céu, o que lia como terreno em falta.
+    if (cb.aerial != 0u) {
+        vec4 clip = cb.view_proj * vec4(v_world, 1.0);
+        vec2 uv = clip.xy / max(clip.w, 1e-4) * 0.5 + 0.5;
+        float tz = clamp(v_view_dist * 0.001 / max(cb.cloud_origin.w, 0.01), 0.0, 1.0);
+        vec4 ap = textureLod(
+            sampler3D(volumes[nonuniformEXT(cb.aerial)], samp_clamp),
+            vec3(clamp(uv, 0.0, 1.0), tz),
+            0.0
+        );
+        lit = lit * ap.a + ap.rgb;
+    }
+
+    // Só a borda do clipmap dissolve no céu. A aerial já fez o ar até aqui.
     float far = max(cb.sky_horizon.w, 1.0);
-    float fade = smoothstep(far * 0.55, far, v_view_dist);
+    float fade = smoothstep(far * 0.85, far, v_view_dist);
     out_color = vec4(mix(lit, distant, fade), 1.0);
 }

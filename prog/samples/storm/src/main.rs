@@ -3,16 +3,16 @@
 //! Sponza stays a lighting map — this is the place that composes weather.
 //! Staged wetness, puddles that grow, wind on the streaks, lanterns on wet
 //! wood and on the water, and a depth rain map so the pier roof actually
-//! keeps the deck dry. Screen-space streaks stay (they cover the frame);
-//! particles would not.
+//! keeps the deck dry. Streaks are Tucano's view-space planes + rainfall maps,
+//! not hash columns; 24k particles stay out (they GPUVM'd RADV).
 
 use anyhow::{Context, Result};
 use harpia_app::{run, AppConfig, Sample};
 use harpia_math::{Mat4, Quat, Vec2, Vec3, Vec4};
 use harpia_render::{
-    color_desc, depth_desc, puddle_growth, rain_map_view_proj, shadow_atlas_desc, FlyCamera,
-    Light, PushConstants, SphereMesh, StormCb, GBUFFER_DEPTH_FORMAT, RAIN_MAP_SIZE, VERTEX_STRIDE,
-    WATER_GRID,
+    color_desc, decode_dds, depth_desc, puddle_growth, rain_asset_dir, rain_map_view_proj,
+    ripple_frames, sampled_desc, shadow_atlas_desc, FlyCamera, Light, PushConstants, SphereMesh,
+    StormCb, GBUFFER_DEPTH_FORMAT, RAIN_MAP_SIZE, RIPPLE_FRAMES, VERTEX_STRIDE, WATER_GRID,
 };
 use harpia_rhi::{
     Buffer, Device, Extent2D, Format, FrameInfo, Gpu, GraphicsPipeline, GraphicsPipelineDesc,
@@ -89,10 +89,17 @@ struct StormDemo {
     lights: Vec<Light>,
     light_buf: Option<Buffer>,
     rain_map: Option<Texture>,
+    rainfall: Texture,
+    rainfall_n: Texture,
+    flow: Texture,
+    ripples: Vec<Texture>,
     rt: Option<Targets>,
     extent: Extent2D,
     cam: FlyCamera,
     puddle: f32,
+    tweaks: StormTweaks,
+    show_ui: bool,
+    live: bool,
 }
 
 impl Default for StormDemo {
@@ -120,6 +127,10 @@ impl Default for StormDemo {
             lights: Vec::new(),
             light_buf: None,
             rain_map: None,
+            rainfall: Texture::NULL,
+            rainfall_n: Texture::NULL,
+            flow: Texture::NULL,
+            ripples: Vec::new(),
             rt: None,
             extent: Extent2D { width: 0, height: 0 },
             cam: FlyCamera {
@@ -130,7 +141,106 @@ impl Default for StormDemo {
                 ..FlyCamera::looking_at(Vec3::new(12.0, 3.85, 20.5), Vec3::new(-1.5, 1.05, 3.0))
             },
             puddle: 0.22,
+            tweaks: StormTweaks::default(),
+            show_ui: true,
+            live: false,
         }
+    }
+}
+
+/// CPU knobs the overlay writes. Defaults match `StormCb::default()` so
+/// `--frames N` without the overlay is the same picture.
+struct StormTweaks {
+    rain_intensity: f32,
+    wetness: f32,
+    ripple: f32,
+    streak_speed: f32,
+    streak_brightness: f32,
+    wind: [f32; 2],
+    sun_azimuth: f32,
+    sun_elevation: f32,
+    sun_color: [f32; 3],
+    sun_energy: f32,
+    gerstner_q: f32,
+    specular: f32,
+    exposure: f32,
+    foam: f32,
+    ssr_steps: f32,
+    ssr_thickness: f32,
+    ssr_distance: f32,
+    wave_amp: [f32; 4],
+    shallow: [f32; 3],
+    deep: [f32; 4],
+    lanterns: f32,
+}
+
+impl Default for StormTweaks {
+    fn default() -> Self {
+        let sun = Vec3::new(0.22, 0.40, -0.89).normalize();
+        Self {
+            rain_intensity: 0.9,
+            wetness: 0.85,
+            ripple: 1.0,
+            streak_speed: 2.3,
+            streak_brightness: 0.34,
+            wind: [0.55, 0.12],
+            sun_azimuth: sun.x.atan2(-sun.z).to_degrees(),
+            sun_elevation: sun.y.asin().to_degrees(),
+            sun_color: [0.55, 0.60, 0.72],
+            sun_energy: 1.0,
+            gerstner_q: 0.62,
+            specular: 220.0,
+            exposure: 1.0,
+            foam: 0.55,
+            ssr_steps: 28.0,
+            ssr_thickness: 0.9,
+            ssr_distance: 90.0,
+            wave_amp: [0.42, 0.26, 0.13, 0.06],
+            shallow: [0.08, 0.22, 0.26],
+            deep: [0.006, 0.03, 0.055, 0.16],
+            lanterns: 1.0,
+        }
+    }
+}
+
+impl StormTweaks {
+    fn sun_dir(&self) -> Vec4 {
+        let az = self.sun_azimuth.to_radians();
+        let el = self.sun_elevation.to_radians();
+        let c = el.cos();
+        Vec4::new(c * az.sin(), el.sin(), -c * az.cos(), 0.0)
+    }
+
+    fn apply(&self, cb: &mut StormCb) {
+        cb.rain.x = self.rain_intensity;
+        cb.rain.y = self.wetness;
+        cb.rain.z = self.ripple;
+        cb.streak.z = self.streak_speed;
+        cb.streak.w = self.streak_brightness;
+        cb.wind.x = self.wind[0];
+        cb.wind.y = self.wind[1];
+        cb.sun_dir = self.sun_dir();
+        cb.sun_color = Vec4::new(
+            self.sun_color[0] * self.sun_energy,
+            self.sun_color[1] * self.sun_energy,
+            self.sun_color[2] * self.sun_energy,
+            1.0,
+        );
+        cb.misc.y = self.gerstner_q;
+        cb.misc.z = self.specular;
+        cb.misc.w = self.exposure;
+        cb.ssr = Vec4::new(
+            self.ssr_steps,
+            self.ssr_thickness,
+            self.ssr_distance,
+            self.foam,
+        );
+        cb.wave0.z = self.wave_amp[0];
+        cb.wave1.z = self.wave_amp[1];
+        cb.wave2.z = self.wave_amp[2];
+        cb.wave3.z = self.wave_amp[3];
+        cb.shallow = Vec4::new(self.shallow[0], self.shallow[1], self.shallow[2], 0.0);
+        cb.deep = Vec4::new(self.deep[0], self.deep[1], self.deep[2], self.deep[3]);
     }
 }
 
@@ -173,6 +283,20 @@ fn light_bytes(lights: &[Light]) -> &[u8] {
             std::mem::size_of_val(lights),
         )
     }
+}
+
+fn load_rain_dds(gpu: &mut Gpu, name: &str) -> Result<Texture> {
+    let path = rain_asset_dir().join(name);
+    let bytes = std::fs::read(&path).with_context(|| format!("rain map {}", path.display()))?;
+    let img = decode_dds(&bytes).map_err(|e| anyhow::anyhow!("{e} ({})", path.display()))?;
+    let tex = gpu.create_texture(&sampled_desc(
+        img.width,
+        img.height,
+        1,
+        Format::Rgba8Unorm,
+    ))?;
+    gpu.upload_texture_mip(tex, 0, &img.rgba)?;
+    Ok(tex)
 }
 
 fn fullscreen(
@@ -259,6 +383,14 @@ impl Sample for StormDemo {
         self.light_buf = Some(gpu.create_storage_buffer(SLOT_LIGHTS, light_bytes(&packed))?);
 
         self.rain_map = Some(gpu.create_texture(&shadow_atlas_desc(RAIN_MAP_SIZE))?);
+        self.rainfall = load_rain_dds(gpu, "rainfall.dds").context("rainfall")?;
+        self.rainfall_n = load_rain_dds(gpu, "rainfall_ddn.dds").context("rainfall_n")?;
+        self.flow = load_rain_dds(gpu, "surface_flow_ddn.dds").context("flow")?;
+        self.ripples.clear();
+        for i in 1..=RIPPLE_FRAMES {
+            self.ripples
+                .push(load_rain_dds(gpu, &format!("Ripple/ripple{i}_ddn.dds"))?);
+        }
 
         self.sky_pso = Some(
             fullscreen(
@@ -366,7 +498,64 @@ impl Sample for StormDemo {
 
     fn update(&mut self, input: &harpia_app::SampleInput, dt: f32) {
         self.cam.update(input, dt);
-        self.puddle = puddle_growth(self.puddle, 0.9, dt, 0.55, 1.0);
+        self.puddle = puddle_growth(self.puddle, self.tweaks.rain_intensity, dt, 0.55, 1.0);
+        if input.pressed(harpia_app::SampleKey::F1) {
+            self.show_ui = !self.show_ui;
+        }
+    }
+
+    fn debug_ui(&mut self, ctx: &egui::Context) {
+        if !self.show_ui {
+            return;
+        }
+        egui::Window::new("Storm")
+            .default_pos([16.0, 16.0])
+            .default_width(340.0)
+            .resizable(false)
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.label("F1 hides this. Right mouse look, WASD move.");
+                if ui.button("Reset").clicked() {
+                    self.tweaks = StormTweaks::default();
+                }
+                ui.separator();
+                ui.collapsing("Light", |ui| {
+                    ui.add(egui::Slider::new(&mut self.tweaks.sun_azimuth, -180.0..=180.0).text("sun azimuth"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.sun_elevation, 1.0..=85.0).text("sun elevation"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.sun_energy, 0.0..=4.0).text("sun energy"));
+                    ui.color_edit_button_rgb(&mut self.tweaks.sun_color);
+                    ui.add(egui::Slider::new(&mut self.tweaks.lanterns, 0.0..=4.0).text("lanterns"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.exposure, 0.2..=3.0).text("exposure"));
+                });
+                ui.collapsing("Rain", |ui| {
+                    ui.add(egui::Slider::new(&mut self.tweaks.rain_intensity, 0.0..=2.0).text("intensity"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.wetness, 0.0..=1.0).text("wetness"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.ripple, 0.0..=3.0).text("ripples"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.streak_speed, 0.2..=6.0).text("streak speed"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.streak_brightness, 0.0..=1.5).text("streaks"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.wind[0], -2.0..=2.0).text("wind x"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.wind[1], -2.0..=2.0).text("wind y"));
+                });
+                ui.collapsing("Water", |ui| {
+                    ui.add(egui::Slider::new(&mut self.tweaks.gerstner_q, 0.0..=1.0).text("Gerstner Q"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.specular, 8.0..=800.0).text("specular"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.foam, 0.0..=1.5).text("foam"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.wave_amp[0], 0.0..=1.2).text("wave 0"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.wave_amp[1], 0.0..=1.0).text("wave 1"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.wave_amp[2], 0.0..=0.6).text("wave 2"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.wave_amp[3], 0.0..=0.4).text("wave 3"));
+                    ui.label("shallow");
+                    ui.color_edit_button_rgb(&mut self.tweaks.shallow);
+                    ui.add(egui::Slider::new(&mut self.tweaks.ssr_steps, 4.0..=64.0).text("SSR steps"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.ssr_thickness, 0.1..=4.0).text("SSR thickness"));
+                    ui.add(egui::Slider::new(&mut self.tweaks.ssr_distance, 10.0..=200.0).text("SSR distance"));
+                });
+                ui.collapsing("Fog / clouds", |ui| {
+                    ui.label(
+                        "Not in this scene. Fog is on Sponza; Hillaire and Nubis are on gate-terrain.",
+                    );
+                });
+            });
     }
 
     fn capture_targets(&self) -> Vec<(&'static str, Texture)> {
@@ -415,10 +604,36 @@ impl Sample for StormDemo {
             rain_map_vp: rain_vp,
             ..Default::default()
         };
+        if self.live {
+            self.tweaks.apply(&mut cb);
+            if let Some(buf) = self.light_buf {
+                let s = self.tweaks.lanterns;
+                let scaled: Vec<Light> = self.lights
+                    .iter()
+                    .copied()
+                    .map(|mut l| {
+                        l.color.x *= s;
+                        l.color.y *= s;
+                        l.color.z *= s;
+                        l
+                    })
+                    .collect();
+                gpu.write_storage_buffer(buf, light_bytes(&scaled))?;
+            }
+        }
         cb.rain.w = t;
         cb.misc.x = t;
         cb.wind.z = self.puddle;
         cb.material = GROUND_MAT;
+        cb.rain_view = Vec4::new((self.cam.fov_y * 0.5).tan(), w / h, 0.0, 0.0);
+        let (ia, ib) = ripple_frames(t);
+        cb.rain_tex0 = [
+            gpu.bindless_index(self.rainfall)?,
+            gpu.bindless_index(self.rainfall_n)?,
+            gpu.bindless_index(self.ripples[ia])?,
+            gpu.bindless_index(self.ripples[ib])?,
+        ];
+        cb.rain_tex1 = [0, gpu.bindless_index(self.flow)?, 0, 0];
 
         let plane_vb = self.plane_vb.context("plane vb")?;
         let plane_ib = self.plane_ib.context("plane ib")?;
@@ -580,5 +795,7 @@ fn main() -> Result<std::process::ExitCode> {
     if !interactive {
         config.resize_at = vec![(6, 800, 600), (12, 1280, 720)];
     }
-    run(config, StormDemo::default())
+    let mut demo = StormDemo::default();
+    demo.live = interactive;
+    run(config, demo)
 }

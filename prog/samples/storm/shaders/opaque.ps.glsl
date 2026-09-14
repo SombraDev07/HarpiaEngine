@@ -13,15 +13,17 @@ layout(set = 0, binding = 0, std140) uniform Storm {
     layout(offset = 240) vec4 sky_zenith;
     layout(offset = 256) vec4 sky_horizon;
     layout(offset = 272) vec4 rain;     // x intensity, y wetness, z ripple, w time
-    layout(offset = 304) vec4 ripple;
     layout(offset = 320) vec4 wind;     // z puddle, w water level
     layout(offset = 480) uint rain_map;
     layout(offset = 484) uint light_count;
     layout(offset = 496) vec4 material; // rgb dry albedo, a dry roughness; a < 0 = emissive
     layout(offset = 512) mat4 rain_map_vp;
+    layout(offset = 576) uvec4 rain_tex0; // _, _, ripple_a, ripple_b
+    layout(offset = 592) uvec4 rain_tex1; // _, flow
 } cb;
 
 layout(set = 1, binding = 0) uniform texture2D heap[];
+layout(set = 2, binding = 0) uniform sampler samp_wrap;
 layout(set = 2, binding = 1) uniform sampler samp_clamp;
 
 struct Light {
@@ -45,13 +47,6 @@ const float SHORE_BORDER = 0.65;
 
 float clamp_range(float v, float lo, float hi) {
     return clamp((v - lo) / max(hi - lo, 1e-3), 0.0, 1.0);
-}
-
-float hash11(float x) {
-    uint n = uint(int(floor(x))) * 374761393u;
-    n = (n ^ (n >> 13)) * 1274126177u;
-    n = n ^ (n >> 16);
-    return float(n) * (1.0 / 4294967296.0);
 }
 
 float d_ggx(float ndh, float alpha) {
@@ -97,13 +92,28 @@ float cone_falloff(vec3 l, vec4 dir_cos_outer, float cos_inner) {
     return clamp((cd - cos_outer) / max(cos_inner - cos_outer, 1e-4), 0.0, 1.0);
 }
 
-float cell_ripple(vec2 cell, vec2 pxz, float t) {
-    float h0 = hash11(cell.x * 13.0 + cell.y * 7.0);
-    float h1 = hash11(cell.x * 5.0 + cell.y * 17.0 + 3.0);
-    vec2 ctr = (cell + vec2(h0, h1)) * cb.ripple.x;
-    float dist = length(pxz - ctr);
-    float wave = sin(dist * cb.ripple.y - t * cb.ripple.z + h0 * 6.28318531);
-    return wave * exp(-dist * cb.ripple.w);
+vec2 unpack_xy(vec4 n) {
+    return n.xy * 2.0 - 1.0;
+}
+
+vec2 rain_ripple_n(vec2 xz, float t, vec2 wind) {
+    vec2 n = vec2(0.0);
+    uint a = cb.rain_tex0.z;
+    uint b = cb.rain_tex0.w;
+    if (a != 0u) {
+        vec2 uv = xz * 0.18 + wind * t * -0.08;
+        n += unpack_xy(textureLod(sampler2D(heap[nonuniformEXT(a)], samp_wrap), uv, 0.0));
+    }
+    if (b != 0u) {
+        vec2 uv = xz * 0.31 - wind * t * 0.05;
+        n += unpack_xy(textureLod(sampler2D(heap[nonuniformEXT(b)], samp_wrap), uv, 0.0)) * 0.65;
+    }
+    uint flow = cb.rain_tex1.y;
+    if (flow != 0u) {
+        vec2 uv = xz * 0.4 + wind * 0.02;
+        n += unpack_xy(textureLod(sampler2D(heap[nonuniformEXT(flow)], samp_wrap), uv, 0.0)) * 0.35;
+    }
+    return n;
 }
 
 void main() {
@@ -142,16 +152,10 @@ void main() {
     // Standing water is a puddle on a floor, not a film on a boulder.
     float wet_r = mix(0.34, WET_ROUGHNESS, pool);
     rough = mix(rough, wet_r, clamp_range(w, 0.2, 1.0));
-    vec2 pxz = v_world.xz;
-    vec2 base = floor(pxz / max(cb.ripple.x, 1e-3));
-    float acc = 0.0;
-    acc += cell_ripple(base + vec2(0.0, 0.0), pxz, cb.rain.w);
-    acc += cell_ripple(base + vec2(1.0, 0.0), pxz, cb.rain.w);
-    acc += cell_ripple(base + vec2(0.0, 1.0), pxz, cb.rain.w);
-    acc += cell_ripple(base + vec2(1.0, 1.0), pxz, cb.rain.w);
-    float fade = clamp(1.0 - length(pxz - cb.camera_pos.xz) / 34.0, 0.0, 1.0);
+    float fade = clamp(1.0 - length(v_world.xz - cb.camera_pos.xz) / 34.0, 0.0, 1.0);
     vec3 Nt = normalize(N0 + vec3(0.0, 1.0, 0.0) * (pool * 0.45));
-    Nt = normalize(Nt + vec3(acc * cb.rain.z * pool * fade * 0.18, 0.0, acc * cb.rain.z * pool * fade * 0.18));
+    vec2 rip = rain_ripple_n(v_world.xz, cb.rain.w, cb.wind.xy);
+    Nt = normalize(Nt + vec3(rip.x, 0.0, rip.y) * (cb.rain.z * pool * fade * 0.28));
 
     vec3 V = normalize(cb.camera_pos.xyz - v_world);
     vec3 sun = normalize(cb.sun_dir.xyz);

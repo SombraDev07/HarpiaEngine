@@ -2070,3 +2070,55 @@ A câmara da marcha está em km. O `view_proj` do clipmap tem far ~1.5 km e
 cortava a concha (1.5–4 km); há um proj só para as nuvens (near 0.05, far 80).
 
 `-- --no-clouds` é o A/B. Sem sombra no chão e sem aerial perspective.
+
+## D67 — Overlay egui; o editor continua na fase 8
+
+Os knobs de clima não se afinam em flags. Entrou a stack já escolhida para a
+fase 8 (`egui` + `egui-winit` + `egui-ash-renderer`), como HUD, não como
+Outliner. `egui-wgpu` continua fora (D0). `vk::*` do draw fica no `drv`; o
+sample só vê `egui::Context`.
+
+`--frames N` não instancia o Context. O overlay corre depois da pass da
+swapchain (LOAD em cima do blit). Pool à parte do bindless 8192. Não é docking,
+não é viewport, não fecha a fase 8.
+
+## D68 — Chuva do storm: contrato Tucano, não colunas de hash
+
+O screenshot com intensity 1.90 mostrava o D30: três camadas de hash em UV de
+ecrã (barcode / blobs no céu e na água) e `sin(dist)` por célula do mundo
+(anéis de alvo na superfície). Isso não é o contrato Tucano.
+
+Tucano (`Shaders/Rain.hlsl` + `EngineAssets/Textures/Rain/`): rainfall +
+rainfall_ddn em **três planos em view-space** (~4 / 12 / 28 m), clip suave
+contra o depth da cena, HG backscatter, flipbook de 24 frames `_ddn` nas
+poças. As texturas foram copiadas para `assets/rain/`. Decode DX10 BC1/BC5 →
+RGBA8 no `harpia-render` (o RHI não tem BC). Sampler wrap (set 2 binding 0).
+
+**Não** entram os 24 576 particles nem os cones volumétricos — GPUVM na RADV
+em 2026-08-18. `gate-rain` fica no hash: é o gate de layout, não a composição.
+
+`StormCb` 576 → 624 B (`rain_tex0/1`, `rain_view` no fim). Null 8 + RADV 16
+`validation_errors=0`.
+
+## D69 — Fase 6 fecha com sombra no chão e aerial no pixel
+
+Os quatro gates da fase 6 já passavam. Isso não fechava a fase: o `INDEX` pedia
+a sombra das nuvens **no terreno** (o `-- --cloud-shadow` do fog é o ar) e a
+aerial perspective (D19: `lit * T + inScatter`, não `mix` para a sky-view).
+
+Streaming já estava feito (D62): janela toroidal, upload por compute, reposição
+do indirecto na GPU. O checkbox do §15 estava só atrasado.
+
+**Sombra no chão.** O mesmo `CloudField` do inject, mapa 64² na base da camada,
+amostrado no `terrain.ps` só no termo directo. `-- --no-clouds` continua a ter
+sombra — a densidade existe no campo, não no apply de ecrã.
+`-- --no-cloud-shadow` é o A/B (28.75% dos píxeis, max canal 30).
+
+**Aerial.** Compute 32³, far 2 km (o clipmap acaba a ~1 km; 32 km de Hillaire
+deixava o chão na primeira fatia). Coeficientes Rayleigh/Mie, `mie.w = 12` para
+um quilómetro de ar se ver. O fade para a sky-view fica só na borda do anel
+(`smoothstep(0.85, 1)`). `-- --no-aerial` é o A/B (55.72% dos píxeis, max canal
+43). Slot de volume **2**.
+
+`-- --gradient` desliga os três (céu, sombra, aerial). VT/feedback, grama
+compute e impostores **não** entram neste exit.

@@ -15,20 +15,23 @@
 //! O fundo já não é um gradiente: o `gate-sky` (Hillaire) compõe-se aqui, e o
 //! fade do último anel amostra a mesma LUT. As nuvens Nubis (meia res +
 //! reprojecção) aplicam-se **por cima do céu**, mascadas pelo depth: o chão não
-//! as recebe. `-- --gradient` restaura o céu antigo; `-- --no-clouds` tira só
-//! as nuvens.
+//! as recebe. A sombra das nuvens no chão e a perspectiva aérea (32³) ligam-se
+//! por omissão. `-- --gradient` restaura o céu antigo; `-- --no-clouds` tira
+//! só as nuvens desenhadas; `-- --no-cloud-shadow` e `-- --no-aerial` são o A/B
+//! das duas peças que faltavam para fechar a fase 6.
 
 use anyhow::{Context, Result};
 use harpia_app::{AppConfig, Sample, run};
 use harpia_math::{perspective_vk, Mat4, Vec2, Vec3, Vec4};
 use harpia_render::{
-    cloud_noise_base, cloud_noise_detail, cloud_volume_desc, Access, AtmosphereCb, CLIPMAP_LEVELS,
-    CLIPMAP_N, CLIPMAP_PATCH, CloudCb, FIELD_STREAM_SIDE, FlyCamera, GBUFFER_DEPTH_FORMAT, Load,
-    MULTISCATTER_SIZE, NoiseVolume, Pass, PassPlan, RenderGraph, SKYVIEW_H, SKYVIEW_W, TILE_N,
-    TRANSMITTANCE_H, TRANSMITTANCE_W, TerrainCb, TileUpload, ToroidalField, clipmap_patch_bounds,
-    clipmap_patch_count, clipmap_patch_vertex_count, clipmap_patches_per_level, clipmap_range,
-    clipmap_vertex_count, color_desc, multiscatter_desc, skyview_desc, terrain_height,
-    transmittance_desc,
+    aerial_desc, aerial_dispatch, cloud_noise_base, cloud_noise_detail, cloud_volume_desc, Access,
+    AerialCb, AtmosphereCb, CLIPMAP_LEVELS, CLIPMAP_N, CLIPMAP_PATCH, CloudCb, CloudField,
+    CloudParams, COVERAGE_FAR, FIELD_STREAM_SIDE, FlyCamera, GBUFFER_DEPTH_FORMAT, Load,
+    MULTISCATTER_SIZE, NoiseVolume, Pass, PassPlan, RenderGraph, SKYVIEW_H, SKYVIEW_W,
+    TERRAIN_AERIAL_FAR_KM, TILE_N, TRANSMITTANCE_H, TRANSMITTANCE_W, TerrainCb, TileUpload,
+    ToroidalField, clipmap_patch_bounds, clipmap_patch_count, clipmap_patch_vertex_count,
+    clipmap_patches_per_level, clipmap_range, clipmap_vertex_count, color_desc, multiscatter_desc,
+    sampled_desc, skyview_desc, terrain_height, transmittance_desc,
 };
 use harpia_rhi::{
     Buffer, ComputePipeline, ComputePipelineDesc, Device, Extent2D, Format, FrameInfo, Gpu,
@@ -110,6 +113,10 @@ const METRES_TO_KM: f32 = 0.001;
 /// clip the shell (1.5–4 km).
 const CLOUD_NEAR_KM: f32 = 0.05;
 const CLOUD_FAR_KM: f32 = 80.0;
+/// Volume SRV slot for the aerial 32³. 0/1 are the Nubis noise volumes.
+const AERIAL_SLOT: u32 = 2;
+const CLOUD_SHADOW_MAP: u32 = 64;
+const CLOUD_SHADOW_EXTENT_KM: f32 = 8.0;
 
 struct TerrainGate {
     pso: Option<GraphicsPipeline>,
@@ -159,6 +166,10 @@ struct TerrainGate {
     skyview: Option<Texture>,
     /// `-- --no-clouds`: Hillaire sky, no Nubis. A/B for this slice.
     no_clouds: bool,
+    /// `-- --no-cloud-shadow`: keep the drawn clouds, skip the ground map.
+    no_cloud_shadow: bool,
+    /// `-- --no-aerial`: Hillaire + clouds, skip the 32³ froxels.
+    no_aerial: bool,
     clouds_pso: Option<GraphicsPipeline>,
     reproject_pso: Option<GraphicsPipeline>,
     apply_clouds_pso: Option<GraphicsPipeline>,
@@ -167,6 +178,9 @@ struct TerrainGate {
     cloud_composite: Option<Texture>,
     prev_view_proj_km: Mat4,
     cloud_warm: bool,
+    cloud_shadow: Option<Texture>,
+    aerial_pso: Option<ComputePipeline>,
+    aerial: Option<Texture>,
     /// `-- --field`: a altura vem do campo cozido em vez do FBM avaliado no VS.
     ///
     /// Opt-in enquanto não estiver medido. O caminho analítico fica a ser o
@@ -216,6 +230,8 @@ impl Default for TerrainGate {
             multiscatter: None,
             skyview: None,
             no_clouds: false,
+            no_cloud_shadow: false,
+            no_aerial: false,
             clouds_pso: None,
             reproject_pso: None,
             apply_clouds_pso: None,
@@ -224,6 +240,9 @@ impl Default for TerrainGate {
             cloud_composite: None,
             prev_view_proj_km: Mat4::IDENTITY,
             cloud_warm: false,
+            cloud_shadow: None,
+            aerial_pso: None,
+            aerial: None,
             field: false,
             field_tex: None,
             field_win: ToroidalField::new(),
@@ -354,6 +373,16 @@ impl TerrainGate {
         if let Some(sv) = skyview_res {
             terrain = terrain.uses(sv, Access::Sampled);
         }
+        if self.wants_aerial() {
+            let aerial = g.texture("aerial", self.aerial.context("aerial")?);
+            g.pass(Pass::new("aerial").uses(aerial, Access::StorageWrite));
+            terrain = terrain.uses(aerial, Access::Sampled);
+        }
+        if let Some(map) = self.cloud_shadow {
+            if self.wants_cloud_shadow() {
+                terrain = terrain.uses(g.persistent_texture("cloud-shadow", map), Access::Sampled);
+            }
+        }
         if let Some(f) = field {
             // `Sampled` e não `StorageRead`: muda o layout de GENERAL para
             // SHADER_READ_ONLY antes desta passe, e de volta antes do próximo
@@ -413,6 +442,14 @@ impl TerrainGate {
 
     fn wants_clouds(&self) -> bool {
         !self.gradient && !self.no_clouds
+    }
+
+    fn wants_aerial(&self) -> bool {
+        !self.gradient && !self.no_aerial
+    }
+
+    fn wants_cloud_shadow(&self) -> bool {
+        !self.gradient && !self.no_cloud_shadow
     }
 
     fn cloud_history_dst(&self, frame_index: u32) -> Texture {
@@ -554,6 +591,45 @@ impl Sample for TerrainGate {
         gpu.bind_volume_srv(0, base_tex)?;
         gpu.bind_volume_srv(1, detail_tex)?;
         tracing::info!(base = base.size, detail = detail.size, "cloud noise ready");
+
+        if self.wants_cloud_shadow() {
+            let field = CloudField::new(&base, &detail, cloud_field_params());
+            let map = field.shadow_map(
+                sun_dir(),
+                (0.0, 0.0),
+                CLOUD_SHADOW_EXTENT_KM,
+                CLOUD_SHADOW_MAP,
+            );
+            let mean = map.iter().sum::<f32>() / map.len() as f32;
+            let bytes: Vec<u8> = map.iter().flat_map(|v| v.to_ne_bytes()).collect();
+            let tex = gpu.create_texture(&sampled_desc(
+                CLOUD_SHADOW_MAP,
+                CLOUD_SHADOW_MAP,
+                1,
+                Format::R32Float,
+            ))?;
+            gpu.upload_texture_mip(tex, 0, &bytes)?;
+            tracing::info!(
+                size = CLOUD_SHADOW_MAP,
+                mean_tr = format!("{mean:.3}"),
+                "cloud shadow map"
+            );
+            self.cloud_shadow = Some(tex);
+        }
+
+        if self.wants_aerial() {
+            self.aerial_pso = Some(
+                gpu.create_compute_pipeline(&ComputePipelineDesc {
+                    cs_spirv: include_bytes!(concat!(env!("OUT_DIR"), "/aerial.cs.spv")),
+                    cs_entry: "CSMain",
+                })
+                .context("aerial CS")?,
+            );
+            let aerial = gpu.create_texture(&aerial_desc())?;
+            gpu.bind_volume_uav(0, aerial)?;
+            gpu.bind_volume_srv(AERIAL_SLOT, aerial)?;
+            self.aerial = Some(aerial);
+        }
 
         self.clouds_pso = Some(
             gpu.create_graphics_pipeline(&GraphicsPipelineDesc {
@@ -743,7 +819,7 @@ impl Sample for TerrainGate {
             self.cam.position.y = (ground + 45.0).max(70.0);
         }
         let camera = self.cam.camera(w / h);
-        let sun = Vec3::new(0.42, 0.70, -0.58).normalize();
+        let sun = sun_dir();
 
         // A janela segue a câmara. Decidir o que entra é barato; cozer é o que
         // custa, e só acontece quando a câmara atravessa um tile. Tudo o que mexe
@@ -783,6 +859,13 @@ impl Sample for TerrainGate {
             } else {
                 gpu.bindless_index(self.skyview.context("skyview")?)?
             },
+            cloud_shadow: if self.wants_cloud_shadow() {
+                gpu.bindless_index(self.cloud_shadow.context("cloud shadow")?)?
+            } else {
+                0
+            },
+            aerial: if self.wants_aerial() { AERIAL_SLOT } else { 0 },
+            cloud_origin: Vec4::new(0.0, 0.0, CLOUD_SHADOW_EXTENT_KM, TERRAIN_AERIAL_FAR_KM),
             ..Default::default()
         };
 
@@ -983,6 +1066,21 @@ impl Sample for TerrainGate {
             gpu.barriers(&next_barriers())?;
             draw_fullscreen(gpu, sky_pso, color)?;
             gpu.mark("sky");
+        }
+
+        if self.wants_aerial() {
+            let mut acb = AerialCb::default();
+            acb.inv_view_proj = camera.view_proj().inverse();
+            acb.camera_pos = cb.camera_pos;
+            acb.sun_dir = cb.sun_dir;
+            acb.sun_illuminance = cb.sun_color;
+            gpu.write_frame_bytes(acb.as_bytes())?;
+            gpu.set_compute_pipeline(self.aerial_pso.as_ref().context("aerial pso")?)?;
+            gpu.bind_compute_bindless()?;
+            gpu.barriers(&next_barriers())?;
+            let (ax, ay, az) = aerial_dispatch();
+            gpu.dispatch(ax, ay, az)?;
+            gpu.mark("aerial");
         }
 
         gpu.write_frame_bytes(cb.as_bytes())?;
@@ -1186,6 +1284,8 @@ fn main() -> Result<std::process::ExitCode> {
     let still = config.extra.iter().any(|a| a == "--static");
     let gradient = config.extra.iter().any(|a| a == "--gradient");
     let no_clouds = config.extra.iter().any(|a| a == "--no-clouds");
+    let no_cloud_shadow = config.extra.iter().any(|a| a == "--no-cloud-shadow");
+    let no_aerial = config.extra.iter().any(|a| a == "--no-aerial");
     run(
         config,
         TerrainGate {
@@ -1194,9 +1294,34 @@ fn main() -> Result<std::process::ExitCode> {
             still,
             gradient,
             no_clouds,
+            no_cloud_shadow,
+            no_aerial,
             ..TerrainGate::default()
         },
     )
+}
+
+fn sun_dir() -> Vec3 {
+    Vec3::new(0.42, 0.70, -0.58).normalize()
+}
+
+fn cloud_field_params() -> CloudParams {
+    let c = CloudCb::default();
+    CloudParams {
+        bottom_km: c.layer.x,
+        top_km: c.layer.y,
+        // O mapa não tem raio de vista: usa a cobertura que o march Nubis usa ao
+        // longe, que é a que cai no chão.
+        coverage: COVERAGE_FAR,
+        density: c.layer.w,
+        base_scale: c.shape.x,
+        detail_scale: c.shape.y,
+        detail_strength: c.shape.z,
+        wind: Vec3::ZERO,
+        ground_radius_km: c.ambient.w,
+        light_len_km: c.steps.z,
+        extinction: c.steps.w,
+    }
 }
 
 fn cache_dir() -> std::path::PathBuf {
