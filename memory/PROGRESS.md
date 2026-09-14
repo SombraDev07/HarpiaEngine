@@ -1,9 +1,7 @@
 # Progress
 
-**Fase actual: 6 (mundo) FECHADA** (Linux / RADV, 2026-09). Clipmap + veg +
-instâncias + streaming D62 + Hillaire/Nubis + sombra das nuvens no chão + aerial
-32³. **Próxima: fase 7** (GI + post extra). Occupancy no lighting no mesmo PR
-em que o volume nascer, ou não nasce.
+**Fase actual: 8 (editor)** — wave **P feita** (D74). Exit = E0 (docking +
+Sponza). Mapa: `docs/Harpia-Editor-Roadmap.md`.
 
 Quadro: `docs/Rust-Rewrite-Roadmap.md` §15. Este ficheiro é o diário; o roadmap é o mapa.
 
@@ -16,7 +14,7 @@ Quadro: `docs/Rust-Rewrite-Roadmap.md` §15. Este ficheiro é o diário; o roadm
 - [x] Fase 4 — CSM câmara real + TAA + Sponza 90
 - [x] Fase 5 — fog → céu → clouds → water → rain, todos verdes; fog e chuva na Sponza
 - [x] Fase 6 — um clipmap + veg + mundo
-- [ ] Fase 7 — GI honesta (occupancy no lighting ou 0 bytes)
+- [x] Fase 7 — GI honesta (occupancy no lighting; bloom/ssr FFX; GTAO; exposure; probes)
 - [ ] Fase 8 — editor
 - [ ] Fase 9 — opcional
 
@@ -65,6 +63,23 @@ cargo run -p gate-water -- --backend null --frames 8
 cargo run -p gate-rain -- --backend null --frames 8
 cargo run -p storm -- --backend null --frames 8
 cargo run -p gate-terrain -- --backend null --frames 8
+cargo run -p gate-bloom
+cargo run -p gate-bloom -- --frames 16 -- --no-bloom
+cargo run -p gate-ssr
+cargo run -p gate-ssr -- --frames 16 -- --no-ssr
+cargo run -p gate-bloom -- --backend null --frames 8
+cargo run -p gate-ssr -- --backend null --frames 8
+cargo run -p gate-gtao
+cargo run -p gate-occupancy
+cargo run -p gate-exposure
+cargo run -p gate-probes
+cargo run -p gate-gtao -- --backend null --frames 8
+cargo run -p gate-occupancy -- --backend null --frames 8
+cargo run -p gate-exposure -- --backend null --frames 8
+cargo run -p gate-probes -- --backend null --frames 8
+# Sponza default-on GI; `-- --no-gi` é o A/B da pilha toda
+cargo run -p sponza -- --frames 90
+cargo run -p sponza -- --frames 16 -- --no-gi
 ```
 
 ## Feito (para não redescobrir)
@@ -1068,4 +1083,61 @@ aerial 55.72% (max 43). Null 8 + RADV 16 `validation_errors=0` nos quatro
 gates de exit. `-- --no-cloud-shadow` / `-- --no-aerial` / `-- --gradient`.
 
 VT/feedback, grama compute, impostores: a seguir, não neste exit. D69.
+
+## Sessão 2026-09-14 — FidelityFX SPD + SSSR na engine (D70)
+
+Headers GPUOpen em `prog/3rdPartyLibs/ffx-{spd,sssr}/` + LICENSE. Wrappers
+`prog/plugins/ffx-{spd,sssr}/` (rlib + cdylib): SPIR-V e `SpdSetup` em CPU.
+**Zero** `ash` / `vkCmd*`. Hello-triangle não depende deles; o loader
+`harpia-plugin` continua idle.
+
+`gate-bloom`: Karis SPD, `-- --no-bloom`. RADV 16 `validation_errors=0`. A/B
+pirâmide 24.43% dos píxeis. Null 8.
+
+`gate-ssr`: Hi-Z = SPD min sobre profundidade em R32 (não D32 sampled) +
+marcha `ffx_sssr`. `-- --no-ssr`. Buffer SSR 9.34% dos píxeis. Sem DNSR.
+
+Constantes SPD no UBO (push constants do layout são VERTEX|FRAGMENT). UAV
+slots consumidos na **execução**: o último `bind_storage_image` de um slot
+vale para todos os dispatches do command buffer — Hi-Z em 0..N, SSR no 15.
+
+## Sessão 2026-09-14 (parte 2) — fase 7 fecha (D71)
+
+GTAO Jimenez, occupancy 32³, auto-exposure, probes CPU no miss do SSSR, default-on
+na Sponza. Hello-triangle zero plugins. WorldSDF e SSGI/DDGI fora.
+
+**Gates RADV 16, validation 0, resize 6/12.** `gtao` 68.18%; `occupancy` 1.85%
+(no Lambert PS); `exposure` 69.72%; `probes` 43.02% (miss do SSR); bloom/ssr
+continuam verdes. Null 8.
+
+**Sponza** `--frames 90` validation 0, resize 30/60. Occupancy 8960 voxels.
+Compose `gi.ps` lê GTAO × occupancy, SSSR, probe, exposure; bloom SPD a seguir.
+`-- --no-gi` e flags por pass. GI ~5.7 ms em debug (RX 6700).
+
+Quad interior com `cull_back`: winding do `plane_world` cullava o quarto — GTAO
+a 0%. Storage+sampled: **não** `upload_texture_mip` (TRANSFER_DST vs UAV GENERAL).
+SPD atomic no slot 9. `shaderStorageBufferArrayNonUniformIndexing` para luma.
+
+Fase 7 **fechou** nesta sessão (D71).
+
+## Sessão 2026-09-14 (parte 3) — roadmap Swarm (D72)
+
+Doutrina: `docs/Swarm-Reference-Roadmap.md`. Não é código. Fase 8 continua a
+ser o próximo exit. S1 (híbrido viewport + PSO no load + blit único) é
+higiene dos PRs do editor; packed instances / drawlist / placement / pass
+unit ficam depois do verde.
+
+## Sessão 2026-09-14 (parte 4) — roadmap do editor (D73)
+
+`docs/Harpia-Editor-Roadmap.md`. Checks P → E0…E6. Exit da fase 8 = só E0.
+Authoring ≠ GPU handles. Libs: `gltf` / `rapier3d` / `kira` / `winit`+`gilrs`.
+Próximo código: crate `harpia-editor` + viewport, não scatter.
+
+## Sessão 2026-09-14 (parte 5) — wave P do editor (D74)
+
+Crate `harpia-editor` (authoring RON, `ChildOf`, `RuntimePath`) + sample
+`harpia-editor` `--frames 8`. Viewport em `present_format` (BGRA), blit PSO no
+load, shaders em `prog/engine/render/shaders/`. `rfd` 0.17 xdg-portal (sem
+wayland). RADV validation 0; Null 8. Wave P **fechada**. E0 = docking + Sponza.
+
 

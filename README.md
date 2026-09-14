@@ -12,8 +12,8 @@ PBR, IBL, fog, clima e bindless honestos — não a checklist a copiar.
 
 ## Estado
 
-Fases **0–6 fechadas**. Fase **7** (GI + post extra) é a próxima.
-Linux é a plataforma de desenvolvimento; o host de referência é AMD / RADV.
+Fases **0–7 fechadas**. Fase **8** (editor) aberta. Linux é a plataforma de desenvolvimento;
+o host de referência é AMD / RADV.
 
 | Fase | Gate | Estado |
 |---|---|---|
@@ -23,8 +23,9 @@ Linux é a plataforma de desenvolvimento; o host de referência é AMD / RADV.
 | 3 PBR | `gate-pbr-grid` | feito |
 | 4 CSM + TAA | `gate-csm`, `gate-taa`, Sponza | feito |
 | 5 clima | fog, céu, nuvens, água, chuva | feito |
-| 6 mundo | terreno, vegetação, instâncias | em curso |
-| 7–9 | GI, editor, opcionais | não |
+| 6 mundo | terreno, vegetação, instâncias | feito |
+| 7 GI + post | `gtao` `occupancy` `exposure` `bloom` `ssr` `probes`; Sponza 90 | **feito** |
+| 8–9 | editor, opcionais | não |
 
 O quadro oficial, com checks, está em [`docs/Rust-Rewrite-Roadmap.md`](docs/Rust-Rewrite-Roadmap.md) §15.
 
@@ -39,6 +40,7 @@ O quadro oficial, com checks, está em [`docs/Rust-Rewrite-Roadmap.md`](docs/Rus
 | Antialiasing | TAA com history e clamp 3×3. |
 | Clima | Fog em froxels, céu Hillaire, nuvens Nubis, água Gerstner, chuva. |
 | Mundo | Clipmap (Losasso/Hoppe), culling em compute, céu e nuvens no terreno. |
+| GI + post | GTAO, occupancy 32³, probes CPU no miss do SSR, SSSR Hi-Z, bloom SPD, auto-exposure. |
 
 **Sponza** (glTF) é a cena de referência de luz e sombra.
 **`storm`** é a demo de composição de clima. Um interior não substitui o outro.
@@ -58,6 +60,7 @@ cd HarpiaEngine
 
 python3 prog/tools/fetch_sponza.py          # Sponza glTF (CC-BY, Khronos / Crytek)
 
+cargo run -p editor -- --frames 8          # wave P; E0 ainda sem docking/Sponza
 cargo run -p sponza --release -- --frames 90
 cargo run -p storm --release -- --frames 16
 cargo run -p storm --release -- --interactive   # overlay egui; F1 esconde
@@ -91,8 +94,8 @@ prog/
     core/ memory/ math/
     drv/          # harpia-rhi — o único sítio com vk::*
     render/       # frame graph, PBR, clima, clipmap
-    scene/ app/ plugin/
-  samples/        # hello-triangle, sponza, storm, gates/*
+    scene/ app/ plugin/ editor/
+  samples/        # hello-triangle, editor, sponza, storm, gates/*
   tools/          # shader-build, fetch_sponza
   plugins/        # cdylibs (FidelityFX, quando a fase o pedir)
   1stPartyLibs/ 3rdPartyLibs/
@@ -112,6 +115,8 @@ legado vive como `.spvasm` e é montado no build.
 | [`docs/Rust-Rewrite-Roadmap.md`](docs/Rust-Rewrite-Roadmap.md) | Fases, packing, o que entra quando. |
 | [`docs/Bindless-Descriptor-Layout.md`](docs/Bindless-Descriptor-Layout.md) | Contrato do heap bindless. |
 | [`docs/AAA-Gap-Analysis.md`](docs/AAA-Gap-Analysis.md) | O que falta, com números medidos. |
+| [`docs/Swarm-Reference-Roadmap.md`](docs/Swarm-Reference-Roadmap.md) | Saber/Swarm: o que pegar, quando, como. Não é port. |
+| [`docs/Harpia-Editor-Roadmap.md`](docs/Harpia-Editor-Roadmap.md) | Editor: waves com checks. E0 fecha a fase 8. |
 | [`AGENTS.md`](AGENTS.md) | Regras duras para quem implementa. |
 
 ## Licença

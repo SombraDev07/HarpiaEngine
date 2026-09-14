@@ -2122,3 +2122,110 @@ um quilómetro de ar se ver. O fade para a sky-view fica só na borda do anel
 
 `-- --gradient` desliga os três (céu, sombra, aerial). VT/feedback, grama
 compute e impostores **não** entram neste exit.
+
+## D70 — FidelityFX SPD e SSSR entram por plugin, não por `harpia-render`
+
+Pedido: colocar FFX SPD e FFX SSSR na engine. Doutrina: vendor em
+`prog/3rdPartyLibs/<nome>/` + LICENSE; wrapper em `prog/plugins/` (cdylib);
+plugin **nunca** chama `vkCmd*`. SPD só para bloom. FSR continua depois do
+exit da fase 7. Hello-triangle zero plugins.
+
+**O que entrou.** Headers GPUOpen (SPD v2.0 `7c796c6`, SSSR v1.3 `34dcacd`).
+O host C++ da AMD **não** — emite Vulkan. Crates `harpia-ffx-spd` /
+`harpia-ffx-sssr` exportam SPIR-V + `SpdSetup` (port do `A_CPU`). Símbolos C
+com prefixo por crate (`harpia_ffx_spd_*`), senão dois rlib no mesmo binário
+colidem. `ffx_sssr.h` é HLSL; `ffx_sssr.glsl.h` é a tradução mecânica
+(glslang neste host, sem DXC no PATH para o sample). `WaveActiveCountBits`
+é 64 — o march não sai cedo por occupancy. Vulkan depth 0=near: **não**
+definir `FFX_SSSR_INVERTED_DEPTH_RANGE`. DNSR não está vendored.
+
+**Gates.** `gate-bloom` (Karis, `-- --no-bloom`) e `gate-ssr` (`-- --no-ssr`).
+RADV 16 `validation_errors=0`, resize 6/12, Null 8. A/B: pirâmide bloom
+24.43%; buffer SSR 9.34%. Fase 7 **não** fecha.
+
+**RHI.** `shaderStorageImageArrayNonUniformIndexing` + dynamic indexing no
+device. Push constants do layout bindless são VERTEX|FRAGMENT — SPD vai no
+UBO set 0. UAV: o último bind de um slot é o que **todos** os dispatches do
+CB vêem; Hi-Z 0..N, reflexão no slot 15.
+
+## D71 — Fase 7 fecha: occupancy no lighting, probes CPU, GI default-on na Sponza
+
+Barra: occupancy no lighting no mesmo PR, ou o volume não nasce. O gate
+`occupancy` cone-traceia no Lambert PS (1.85% dos canais). A Sponza lê o
+mesmo volume no compose (`gi.ps`) — o forward `color.ps.spvasm` não foi
+convertido neste slice. O volume não é órfão: lighting (gate) e compose
+(referência) amostram. Stamp CPU de AABBs 32³ RGBA8, set 5 slot 2 (a aerial
+do terreno também usa o 2; não partilham frame).
+
+Probes: lat-long CPU (`box_radiance` / `atrium_radiance`) + GGX, amostrado
+no miss do SSSR. Sem `parry3d`, sem captura de cubemap GPU. GTAO Jimenez
+3×4. Auto-exposure: Rec.709 atómico → 1×1 R32, grey 0.18, adapt
+`1-exp(-dt*1.2)`. Bloom Karis e SSSR já estavam (D70).
+
+Default-on na Sponza; `-- --no-gi` e `-- --no-{gtao,occupancy,ssr,probes,exposure,bloom}`.
+WorldSDF não entrou (nada leria o atlas). SSGI/DDGI continuam fora.
+
+SPD atomic **slot 9** (prims da Sponza no 0). Luma acc 10. Normals UAV 13.
+Exposure UAV 14. SSR 15. Hello-triangle zero plugins.
+
+**Não** `upload_texture_mip` numa imagem storage+sampled: o create deixa
+GENERAL, o upload deixa TRANSFER_DST, o UAV espera GENERAL. Adapt trata 0
+como 1.0. Quads de quarto: `cull_back: false` — o `plane_world` +
+`perspective_vk` cullava o interior e o A/B saía 0%.
+
+Device: `shaderStorageBufferArrayNonUniformIndexing` + dynamic indexing
+(luma/adapt indexam o array do set 3 pelo slot do UBO).
+
+RADV RX 6700: gates 16 validation 0; Sponza 90 validation 0 resize 30/60.
+Null 8. Fase 8 é o editor.
+
+## D72 — Swarm é referência de geometria/shaders, não um port
+
+Fonte: REAC 2025 Saber (`docs/Swarm-Reference-Roadmap.md`). Como a Dagor é
+terreno/PBR, a Swarm é *como a geometria chega ao GPU e como os shaders não
+explodem*. A barra ganha. A ordem §15 **não muda**.
+
+**Pegar (quatro fatias):** (1) híbrido explícito — estático GPU, selecção CPU,
+sem switch automático; (2) um instance manager packed (célula + paleta, sem
+desinstanciar); (3) draw list gather/map/reduce por `(PSO, mesh, pass)`;
+(4) pass unit + combos gerados da cena + zero `vkCreateGraphicsPipelines` no
+frame quente.
+
+**Quando:** S1 (path + PSO no load + blit partilhado) *dentro* da fase 8, sem
+mudar o exit (`--frames 8` docking + viewport). S2–S5 depois desse verde.
+Hello-triangle continua sem instance manager e sem plugins.
+
+**Recusar:** Actor/ECS/static como três runtimes; DSL `.ecs`; uber 256
+defines; latência de 2 frames no editor; occluders manuais; mesh shaders por
+omissão (D60); DGI de boleia (D71).
+
+## D73 — Editor: waves E0–E6; anim/física/áudio/input são crates
+
+Mapa: `docs/Harpia-Editor-Roadmap.md`. O editor constrói o mundo e coze para
+o runtime (pipeline Swarm), não visualiza meshes. **Fase 8 oficial = só E0**
+(`--frames 8` docking + viewport). E1+ não saltam E0.
+
+Authoring (paths, prefabs, máscaras) ≠ `harpia-scene::Mesh { vb, ib }`. Sem
+esse corte, gravar a cena parte no reload.
+
+**Não inventar:** animação = clips `gltf`; física = `rapier3d` quando o
+preview de colisão existir (D33); áudio = `kira` quando houver fonte na cena;
+input do editor = `winit` + egui; `gilrs` no jogo. Sem graph de animação, sem
+solver, sem mixer, sem action map caseiros. Sculpt raise/lower fora do MVP.
+Shader Studio fora. `serde`+RON no E1; `postcard` no cook (E6).
+
+Crate `harpia-editor` + sample próprio. Não o HUD do `storm` (D67).
+
+## D74 — Wave P do editor: authoring ≠ GPU
+
+`prog/engine/editor` + `prog/samples/editor` (`harpia-editor`). `.scene` é RON
+com paths/UUIDs/`RuntimePath`/`ChildOf`. `harpia-scene::Mesh { vb, ib }` não
+entra no ficheiro. Viewport RT em `present_format()` (BGRA neste X11);
+blit PSO no `init`; GLSL partilhado em `prog/engine/render/shaders/`.
+
+`--frames 8` default, resize 3/6. RADV validation 0; Null 8. Hello-triangle
+sem este crate.
+
+`rfd` 0.17 com `xdg-portal`, **sem** feature `wayland` (este host é X11).
+Pick/save nunca do `frame()`. E0 continua: docking + Sponza, não um quad magenta.
+

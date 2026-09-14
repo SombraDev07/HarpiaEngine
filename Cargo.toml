@@ -10,7 +10,9 @@ members = [
     "prog/engine/plugin",
     "prog/tools/shader-build",
     "prog/engine/app",
+    "prog/engine/editor",
     "prog/samples/hello-triangle",
+    "prog/samples/editor",
     "prog/samples/gates/bindless",
     "prog/samples/gates/pbr-grid",
     "prog/samples/gates/clouds",
@@ -49,8 +51,15 @@ harpia-rhi = { path = "prog/engine/drv" }
 harpia-render = { path = "prog/engine/render" }
 harpia-plugin = { path = "prog/engine/plugin" }
 harpia-app = { path = "prog/engine/app" }
+harpia-editor = { path = "prog/engine/editor" }
 
-glam = "0.29"
+glam = { version = "0.29", features = ["serde"] }
+bevy_reflect = "0.19"
+serde = { version = "1", features = ["derive"] }
+ron = "0.10"
+uuid = { version = "1", features = ["v4", "serde"] }
+# Portal XDG, sem a feature `wayland` (este host é X11 e não tem wayland-client.pc).
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

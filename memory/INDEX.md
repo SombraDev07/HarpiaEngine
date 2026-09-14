@@ -4,13 +4,12 @@ Persistência entre sessões da IA. **Não** é o allocator (`prog/engine/memory
 
 ## Onde estás (lê isto primeiro)
 
-**Fase 6 (mundo) FECHADA. Próxima = fase 7 (GI + post extra).**
-Céu Hillaire + nuvens Nubis + sombra das nuvens no chão + aerial 32³ no
-`gate-terrain` (D65–D66, D69). Overlay **egui** no `storm -- --interactive` (D67).
-Chuva do `storm` passou a mapas Tucano + planos em view-space (D68) — não é
-CryEngine. Streaming do campo: janela toroidal D62. VT/feedback fica a seguir.
+**Fase 6 (mundo) FECHADA. Fase 7 (GI + post) FECHADA** — GTAO, bloom SPD, auto-exposure,
+SSR, probes CPU, occupancy 32³ no lighting (gate) e no compose da Sponza (D71).
+**Fase 8 (editor):** wave **P feita** (D74). Exit oficial = **E0** (docking +
+Sponza no viewport). Mapa: `docs/Harpia-Editor-Roadmap.md`.
 
-**Os mesh shaders (fase 9) foram escritos fora de ordem e medidos a negativo** — 1.099 ms contra 0.738 na Sponza, opt-in atrás de `-- --mesh`, roadmap §15 actualizado (D60). O desvio não se repete: a fase 7 é o passo seguinte.
+**Os mesh shaders (fase 9) foram escritos fora de ordem e medidos a negativo** — 1.099 ms contra 0.738 na Sponza, opt-in atrás de `-- --mesh`, roadmap §15 actualizado (D60). O desvio não se repete: a fase 8 (editor) é o passo seguinte.
 
 Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abaixo em `PROGRESS.md`. Sem gate verde, a fase não está feita.
 
@@ -23,7 +22,7 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 | **4 CSM+TAA** | **`csm` + `taa` 16; Sponza 90** | **feito** |
 | **5 clima** | fog → clouds → water → rain | **feito** |
 | **6 mundo** | terreno + veg + instâncias | **feito** |
-| 7…9 | ver roadmap §15 | não |
+| 7…9 | ver roadmap §15 | **7 fechada** |
 
 ## Ordem de leitura (início de sessão)
 
@@ -51,6 +50,20 @@ Quadro oficial com checks: `docs/Rust-Rewrite-Roadmap.md` §15. Cópia viva abai
 - Código
 - Doutrina (`docs/Rust-Rewrite-*.md`)
 - Layout bindless (`docs/Bindless-Descriptor-Layout.md`) — contrato; o heap já existe na fase 2
+
+## Editor (Harpia, não Tucano)
+
+`docs/Harpia-Editor-Roadmap.md` — waves P → E0…E6 com checks. E0 fecha a fase 8
+oficial. Authoring ≠ GPU. Animação/física/áudio/input = crates (`gltf`,
+`rapier3d`, `kira`, `winit`/`gilrs`), não motores nossos.
+
+## Comparação com a Swarm (Saber)
+
+`docs/Swarm-Reference-Roadmap.md` — REAC 2025, geometria + shaders. **Não** é
+port, **não** adianta a fase 8. O que se pega: híbrido explícito, instance
+buffer packed, draw list por PSO, pass unit + precache. O que se recusa: uber
+256 defines, ECS DSL, GPU path a 100%, occluders manuais. S1 entra *dentro*
+dos PRs do editor; S2–S5 só depois do `--frames 8` verde.
 
 ## Comparação com a Dagor
 

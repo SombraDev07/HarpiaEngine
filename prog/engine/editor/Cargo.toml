@@ -1,0 +1,18 @@
+[package]
+name = "harpia-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Authoring scene data (paths, prefabs, hierarchy). No vk::*, no GPU handles."
+
+[dependencies]
+bevy_ecs.workspace = true
+bevy_reflect.workspace = true
+harpia-core.workspace = true
+harpia-math.workspace = true
+rfd.workspace = true
+ron.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

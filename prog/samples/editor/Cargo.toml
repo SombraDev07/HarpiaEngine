@@ -1,0 +1,22 @@
+[package]
+name = "editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Harpia editor sample. Wave P/E0: --frames 8, viewport present_format. Not the storm HUD."
+
+[[bin]]
+name = "harpia-editor"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+harpia-app.workspace = true
+harpia-editor.workspace = true
+harpia-memory.workspace = true
+harpia-render.workspace = true
+harpia-rhi.workspace = true
+
+[build-dependencies]
+harpia-shader-build.workspace = true

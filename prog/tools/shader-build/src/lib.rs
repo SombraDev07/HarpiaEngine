@@ -17,7 +17,7 @@
 //! the build instead of the frame. Before this, the only thing validating SPIR-V
 //! was the Vulkan layer at runtime, which meant finding out in a screenshot.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 /// Which stage a `.glsl` source is. `.spvasm` carries its own entry point.
@@ -76,33 +76,42 @@ impl Stage {
 /// Paths are relative to `<manifest>/shaders`, so `../../fog/shaders/x.spvasm`
 /// works and keeps one copy of a shader shared between samples.
 pub fn build(pairs: &[(&str, &str)]) {
+    build_with_includes(pairs, &[]);
+}
+
+/// Same as [`build`], plus `-I` directories for `#include` (FidelityFX headers).
+pub fn build_with_includes(pairs: &[(&str, &str)], includes: &[&Path]) {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     let shader_dir = manifest.join("shaders");
 
+    for inc in includes {
+        println!("cargo:rerun-if-changed={}", inc.display());
+    }
+
     for (src_name, dst_name) in pairs {
-        let src = shader_dir.join(src_name);
+        let src = normalize_path(&shader_dir.join(src_name));
         let dst = out.join(dst_name);
         println!("cargo:rerun-if-changed={}", src.display());
-        compile(&src, &dst);
+        compile(&src, &dst, includes);
     }
 }
 
-fn compile(src: &Path, dst: &Path) {
+fn compile(src: &Path, dst: &Path, includes: &[&Path]) {
     let name = src.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     if name.ends_with(".glsl") {
         let stage = Stage::from_name(name)
             .unwrap_or_else(|| panic!("{name}: cannot tell the stage; name it .vs/.ps/.cs.glsl"));
-        compile_glsl(src, dst, stage);
+        compile_glsl(src, dst, stage, includes);
     } else {
         assemble_spvasm(src, dst);
     }
     validate(dst);
 }
 
-fn compile_glsl(src: &Path, dst: &Path, stage: Stage) {
-    let status = Command::new("glslangValidator")
-        .arg("-V") // Vulkan SPIR-V
+fn compile_glsl(src: &Path, dst: &Path, stage: Stage, includes: &[&Path]) {
+    let mut cmd = Command::new("glslangValidator");
+    cmd.arg("-V") // Vulkan SPIR-V
         .arg("--target-env")
         .arg("vulkan1.3")
         .arg("-S")
@@ -110,11 +119,12 @@ fn compile_glsl(src: &Path, dst: &Path, stage: Stage) {
         .arg("--source-entrypoint")
         .arg("main")
         .arg("-e")
-        .arg(stage.entry_point())
-        .arg("-o")
-        .arg(dst)
-        .arg(src)
-        .status();
+        .arg(stage.entry_point());
+    for inc in includes {
+        // glslang wants `-I<path>` glued; a separate `-I <path>` is rejected.
+        cmd.arg(format!("-I{}", inc.display()));
+    }
+    let status = cmd.arg("-o").arg(dst).arg(src).status();
     match status {
         Ok(st) if st.success() => {}
         Ok(st) => panic!(
@@ -187,7 +197,27 @@ fn fallback_assembler() -> PathBuf {
         }
         dir = parent;
     }
-    panic!("cannot find prog/tools/assemble_spvasm.py from {}", manifest.display());
+    panic!(
+        "cannot find prog/tools/assemble_spvasm.py from {}",
+        manifest.display()
+    );
+}
+
+/// `glslangValidator` cannot open `missing_dir/../file` — the kernel looks up
+/// `missing_dir` first. Samples share shaders via `../../../engine/render/...`
+/// without a local `shaders/` folder; collapse `..` before invoking the compiler.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -209,5 +239,16 @@ mod tests {
         assert_eq!(Stage::Vertex.entry_point(), "VSMain");
         assert_eq!(Stage::Fragment.entry_point(), "PSMain");
         assert_eq!(Stage::Compute.entry_point(), "CSMain");
+    }
+
+    #[test]
+    fn parent_dir_does_not_need_the_missing_folder_to_exist() {
+        let p = PathBuf::from(
+            "/home/proj/prog/samples/editor/shaders/../../../engine/render/shaders/blit.ps.glsl",
+        );
+        assert_eq!(
+            super::normalize_path(&p),
+            PathBuf::from("/home/proj/prog/engine/render/shaders/blit.ps.glsl")
+        );
     }
 }

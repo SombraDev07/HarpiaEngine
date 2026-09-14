@@ -29,6 +29,14 @@ Copiado do roadmap C++ + o que esta sessão já toca. Actualizar quando GPUVM / 
   loop mata o processo. O RHI crava o clip antes de `cmd_draw`.
 - Atlas/glyphs: `set_textures` faz layout transition e submete no mesmo queue.
 
+## Editor / rfd (D74)
+
+- Viewport do editor: `present_format()`, não RGBA hardcoded. Neste host BGRA.
+- `rfd` 0.17: só `xdg-portal`. A feature `wayland` puxa `wayland-sys` e este
+  host não tem `wayland-client.pc`. O diálogo **nunca** corre dentro de `frame()`.
+- `glslangValidator` não abre `dir_inexistente/../file`. `harpia-shader-build`
+  colapsa `..` (shaders partilhados em `engine/render/shaders/`).
+
 ## Chuva Tucano (D68)
 
 - Streaks em **planos view-space**, não UV de ecrã. Pintar chuva no UV pinta
@@ -497,3 +505,43 @@ output.**
 - Mapa de sombra das nuvens é **CPU**, mesma `CloudField` do inject do fog. O
   lookup no chão projecta o ponto ao longo do sol até à base da camada (1.5 km),
   não o XZ do terreno — senão a sombra não acompanha o sol.
+
+## FidelityFX / UAV slots (D70)
+
+- Plugin **não** chama `vkCmd*` / `ash`. Headers em `3rdPartyLibs`, SPIR-V no
+  wrapper. Hello-triangle não dlopen.
+- Push constants do `PipelineLayout` bindless: VERTEX|FRAGMENT **sem** COMPUTE.
+  Constantes SPD no UBO set 0.
+- `shaderStorageImageArrayNonUniformIndexing` tem de estar ligado: SPD indexa
+  o array de UAV por mip.
+- **O último `bind_storage_image` de um slot vale para o command buffer
+  inteiro** (UPDATE_AFTER_BIND, consumo na execução). Rebindar o slot 0 para a
+  reflexão **depois** do SPD faz o SPD (e o copy) escreverem na reflexão. Hi-Z
+  em 0..N, SSR no slot 15, todos os binds **antes** do primeiro dispatch.
+- Vulkan depth 0=near, 1=far. Não definir `FFX_SSSR_INVERTED_DEPTH_RANGE`. Hi-Z
+  com `min`. Profundidade para o copy: RT R32 (`gl_FragCoord.z`), não D32 no
+  heap — o D32 sampled neste path saía tudo a zero no compute sem validation.
+- `WaveActiveCountBits` no GLSL é 64 (sem ballot). Occupancy early-out desligado.
+- Dois plugins em rlib no mesmo binário: símbolos C **por crate**, não
+  `harpia_plugin_abi_version` genérico.
+
+## Fase 7 / occupancy / exposure (D71)
+
+- Occupancy set 5 **slot 2**, RGBA8. Dummy de volume é RGBA16F (já misturado no
+  terreno: ruído RGBA8 + aerial RGBA16F). Slot 2 no **terreno** é a aerial —
+  não ligar occupancy e aerial no mesmo frame.
+- Interior de quarto com `plane_xz` + `plane_world`: `cull_back` esconde as
+  paredes. O A/B sai 0% e parece que o pass não está no pixel. `cull_back:
+  false` nesses quads.
+- **Não** `upload_texture_mip` em storage+sampled (exposure 1×1). Create →
+  GENERAL; upload → TRANSFER_DST; UAV no set 4 espera GENERAL. Validation:
+  `expects GENERAL, current TRANSFER_DST`. Adapt trata 0 como exposição 1.0.
+- Luma/adapt indexam `acc[slot]` no set 3: precisa
+  `shaderStorageBufferArrayNonUniformIndexing` (sampled-image nonuniform não
+  chega). SPD atomic no **slot 9**, luma no **10**.
+- UAV: rebindar a pirâmide 0..N **antes** do bloom SPD; normals 13, exposure
+  14, SSR 15. Hi-Z do SSSR a partir de view-linear (`clip.w` → NDC), não D32
+  no compute.
+- Occupancy na Sponza vive no compose (`gi.ps`), não no `color.ps.spvasm`.
+  O gate prova o lighting. Sem os dois, o volume é o 4/10.
+

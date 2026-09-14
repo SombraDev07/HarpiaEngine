@@ -12,7 +12,10 @@ use bevy_ecs::prelude::*;
 use harpia_math::{Mat4, Vec3, Vec4};
 use harpia_rhi::{Buffer, Texture};
 
-/// A malha que uma entidade desenha.
+/// A malha que uma entidade **desenha** — handles GPU, produto do cook/sync.
+///
+/// Isto **não** é o ficheiro da cena. Authoring usa `harpia_editor::MeshRef`
+/// (um path). Gravar `vb`/`ib` num `.scene` parte no reload (D73).
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Mesh {
     pub vb: Buffer,
